@@ -2,10 +2,88 @@ from flask import Flask, render_template, request, redirect, url_for, session, s
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
 import sqlite3, os, uuid
-from scripts.nikuy_kokhaviyot import process_xls
+
+import xlrd
+import openpyxl
+from openpyxl import Workbook
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+from openpyxl.utils import get_column_letter
+
+H_ALIGN = {1:'left',2:'center',3:'right',4:'fill',5:'justify',6:'centerContinuous',7:'distributed'}
+V_ALIGN = {0:'top',1:'center',2:'bottom',3:'justify',4:'distributed'}
+NO_BORDER = Border(left=Side(border_style=None), right=Side(border_style=None),
+                   top=Side(border_style=None), bottom=Side(border_style=None))
+
+def clean(val):
+    if isinstance(val, str):
+        return val.replace('*','').replace('?','').strip()
+    return val
+
+def idx_to_hex(cmap, idx):
+    if idx in (0,64,65,32767,None): return None
+    rgb = cmap.get(idx)
+    if rgb and None not in rgb:
+        return '{:02X}{:02X}{:02X}'.format(*rgb)
+    return None
+
+def process_xls(input_path, output_path):
+    wb_in  = xlrd.open_workbook(input_path, formatting_info=True)
+    cmap   = wb_in.colour_map
+    wb_out = Workbook()
+    wb_out.remove(wb_out.active)
+    for s_idx in range(wb_in.nsheets):
+        ws_in  = wb_in.sheet_by_index(s_idx)
+        ws_out = wb_out.create_sheet(title=ws_in.name)
+        ws_out.sheet_view.rightToLeft = True
+        ws_out.sheet_view.showGridLines = False
+        for c in range(ws_in.ncols):
+            ltr = get_column_letter(c+1)
+            ci  = ws_in.colinfo_map.get(c)
+            w   = (ci.width/256.0) if (ci and ci.width) else 1.0
+            ws_out.column_dimensions[ltr].width = max(w, 0.5)
+        for r in range(ws_in.nrows):
+            ri = ws_in.rowinfo_map.get(r)
+            orig_pts = (ri.height/20.0) if (ri and ri.height) else 12.75
+            has_content = any(v != '' for v in ws_in.row_values(r))
+            if has_content:
+                new_h = orig_pts if orig_pts >= 25 else (18 if orig_pts >= 15 else 15)
+            else:
+                new_h = 2 if orig_pts <= 8 else (orig_pts if orig_pts <= 50 else 12)
+            ws_out.row_dimensions[r+1].height = new_h
+        for r in range(ws_in.nrows):
+            for c in range(ws_in.ncols):
+                val = clean(ws_in.cell_value(r, c))
+                xf  = wb_in.xf_list[ws_in.cell_xf_index(r, c)]
+                fi  = wb_in.font_list[xf.font_index]
+                cell = ws_out.cell(row=r+1, column=c+1, value=val)
+                fc = idx_to_hex(cmap, fi.colour_index)
+                cell.font = Font(bold=bool(fi.bold), italic=bool(fi.italic),
+                                 size=fi.height/20, name=fi.name or 'Arial',
+                                 color=fc or '000000')
+                bg = idx_to_hex(cmap, xf.background.pattern_colour_index)
+                if bg and xf.background.fill_pattern != 0:
+                    cell.fill = PatternFill(fill_type='solid', fgColor=bg)
+                cell.alignment = Alignment(
+                    horizontal=H_ALIGN.get(xf.alignment.hor_align,'general'),
+                    vertical=V_ALIGN.get(xf.alignment.vert_align,'bottom'),
+                    wrapText=bool(xf.alignment.text_wrapped),
+                    shrinkToFit=bool(xf.alignment.shrink_to_fit),
+                    readingOrder=2)
+                cell.border = NO_BORDER
+        for r1,r2,c1,c2 in ws_in.merged_cells:
+            if r2>r1 or c2>c1:
+                try:
+                    ws_out.merge_cells(start_row=r1+1, start_column=c1+1,
+                                       end_row=r2, end_column=c2)
+                except: pass
+    for ws in wb_out.worksheets:
+        ws.column_dimensions['G'].width  += 4.5
+        ws.column_dimensions['S'].width  += 3.0
+        ws.column_dimensions['AU'].width += 3.0
+    wb_out.save(output_path)
 
 app = Flask(__name__)
-app.secret_key = 'zman_emet_secret_2024_change_this'
+app.secret_key = os.environ.get('SECRET_KEY', 'zman_emet_secret_2024')
 
 DB = 'platform.db'
 UPLOAD_FOLDER = 'uploads'
@@ -43,7 +121,6 @@ def init_db():
             script_id TEXT,
             PRIMARY KEY (user_id, script_id)
         )''')
-        # Create default admin if not exists
         existing = db.execute("SELECT id FROM users WHERE username='admin'").fetchone()
         if not existing:
             db.execute("INSERT INTO users (username, password, full_name, is_admin) VALUES (?, ?, ?, 1)",
@@ -70,8 +147,6 @@ def admin_required(f):
         return f(*args, **kwargs)
     return decorated
 
-# ─── AUTH ───────────────────────────────────────────────────────────────────
-
 @app.route('/', methods=['GET', 'POST'])
 def login():
     if 'user_id' in session:
@@ -96,8 +171,6 @@ def logout():
     session.clear()
     return redirect(url_for('login'))
 
-# ─── USER DASHBOARD ─────────────────────────────────────────────────────────
-
 @app.route('/dashboard')
 @login_required
 def dashboard():
@@ -114,24 +187,21 @@ def dashboard():
 def run_script(script_id):
     if session.get('is_admin'):
         return redirect(url_for('admin'))
-    # Check permission
     with get_db() as db:
         perm = db.execute("SELECT 1 FROM permissions WHERE user_id=? AND script_id=?",
                           (session['user_id'], script_id)).fetchone()
     if not perm or script_id not in SCRIPTS:
         flash('אין לך הרשאה לסקריפט זה')
         return redirect(url_for('dashboard'))
-
     script = SCRIPTS[script_id]
     result = None
-    error = None
-
+    error  = None
     if request.method == 'POST':
         file = request.files.get('file')
         if not file or file.filename == '':
             error = 'לא נבחר קובץ'
         else:
-            uid = str(uuid.uuid4())[:8]
+            uid      = str(uuid.uuid4())[:8]
             filename = secure_filename(file.filename)
             in_path  = os.path.join(UPLOAD_FOLDER, f'{uid}_{filename}')
             out_name = filename.rsplit('.', 1)[0] + '_ללא_כוכביות.xlsx'
@@ -145,7 +215,6 @@ def run_script(script_id):
             finally:
                 try: os.remove(in_path)
                 except: pass
-
     return render_template('run.html', script=script, result=result, error=error)
 
 @app.route('/download/<filename>')
@@ -155,10 +224,8 @@ def download(filename):
     if not os.path.exists(path):
         flash('הקובץ לא נמצא')
         return redirect(url_for('dashboard'))
-    return send_file(path, as_attachment=True,
-                     download_name=filename.split('_', 1)[-1] if '_' in filename else filename)
-
-# ─── ADMIN ──────────────────────────────────────────────────────────────────
+    display_name = filename.split('_', 1)[-1] if '_' in filename else filename
+    return send_file(path, as_attachment=True, download_name=display_name)
 
 @app.route('/admin')
 @login_required
