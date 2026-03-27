@@ -256,6 +256,22 @@ def find_row_label_value(sheet, row_index, label):
     return ""
 
 
+def find_row_label_value_with_offsets(sheet, row_index, label, offsets):
+    if row_index >= sheet.nrows:
+        return ""
+    values = [sheet.cell_value(row_index, c) for c in range(sheet.ncols)]
+    for idx, value in enumerate(values):
+        if str(value).strip() == label:
+            for offset in offsets:
+                candidate_index = idx + offset
+                if 0 <= candidate_index < len(values):
+                    candidate = values[candidate_index]
+                    if candidate not in ("", None):
+                        return candidate
+            return ""
+    return ""
+
+
 def extract_payable_hours(summary_sheet):
     totals = {}
     for row_index in range(summary_sheet.nrows):
@@ -269,9 +285,17 @@ def extract_payable_hours(summary_sheet):
 
 
 def extract_flamingo_worker_pair(detail_sheet, summary_sheet):
-    worker_name = str(get_sheet_cell(detail_sheet, 5, 2, "")).strip() or detail_sheet.name
+    worker_name = str(find_row_label_value_with_offsets(detail_sheet, 5, "שם לתצוגה", [2, 1])).strip() or detail_sheet.name
     department = str(find_row_label_value(detail_sheet, 5, "מחלקה")).strip()
     rate_raw = find_row_label_value(detail_sheet, 5, "הערות")
+    worker_number = find_row_label_value(detail_sheet, 5, "מספר בשכר")
+    id_number = find_row_label_value(detail_sheet, 5, "תעודת זהות")
+    start_date = find_row_label_value(detail_sheet, 5, "תחילת עבודה")
+    department = str(find_row_label_value_with_offsets(detail_sheet, 5, "מחלקה", [3, 2, 1])).strip()
+    rate_raw = find_row_label_value_with_offsets(detail_sheet, 5, "הערות", [4, 3, 2, 1])
+    worker_number = find_row_label_value_with_offsets(detail_sheet, 5, "מספר בשכר", [5, 4, 3, 2, 1])
+    id_number = find_row_label_value_with_offsets(detail_sheet, 5, "תעודת זהות", [2, 1])
+    start_date = find_row_label_value_with_offsets(detail_sheet, 5, "תחילת עבודה", [4, 3, 2, 1])
     notes = []
     status = "OK"
 
@@ -306,6 +330,9 @@ def extract_flamingo_worker_pair(detail_sheet, summary_sheet):
     return {
         "worker_name": worker_name,
         "department": department,
+        "worker_number": worker_number,
+        "id_number": id_number,
+        "start_date": start_date,
         "detail_sheet": detail_sheet.name,
         "summary_sheet": summary_name,
         "hourly_rate": hourly_rate,
@@ -322,6 +349,7 @@ def write_flamingo_summary_sheet(ws, worker_rows):
     ws.sheet_view.rightToLeft = True
     ws.sheet_view.showGridLines = False
     ws.title = safe_sheet_title("Payroll Summary", "Payroll Summary")
+    ws.freeze_panes = "A12"
 
     successful_rows = [row for row in worker_rows if row["status"] == "OK"]
     total_workers = len(worker_rows)
@@ -331,25 +359,43 @@ def write_flamingo_summary_sheet(ws, worker_rows):
     average_rate = (sum(row["hourly_rate"] or 0 for row in successful_rows) / len(successful_rows)) if successful_rows else 0
 
     metrics = [
-        ("Total workers", total_workers),
-        ("Calculated successfully", len(successful_rows)),
-        ("Requires attention", unresolved_workers),
-        ("Total payable hours", format_hours(total_hours)),
-        ("Total payroll", round(total_salary, 2)),
-        ("Average hourly rate", round(average_rate, 2)),
+        ("Total workers", total_workers, "DBEAFE"),
+        ("Calculated successfully", len(successful_rows), "DCFCE7"),
+        ("Requires attention", unresolved_workers, "FEE2E2"),
+        ("Total payable hours", format_hours(total_hours), "FEF3C7"),
+        ("Total payroll", round(total_salary, 2), "E9D5FF"),
+        ("Average hourly rate", round(average_rate, 2), "FCE7F3"),
     ]
 
+    ws.merge_cells("A1:D1")
     ws["A1"] = "Flamingo Payroll Summary"
-    ws["A1"].font = Font(bold=True, size=16)
+    ws["A1"].font = Font(bold=True, size=18, color="0F172A")
+    ws["A1"].fill = PatternFill(fill_type="solid", fgColor="BFDBFE")
+    ws["A1"].alignment = Alignment(horizontal="center")
+    ws["A2"] = "Automatic payroll calculation from monthly attendance export"
+    ws["A2"].font = Font(italic=True, size=11, color="475569")
 
-    for offset, (label, value) in enumerate(metrics, start=3):
-        ws.cell(row=offset, column=1, value=label).font = Font(bold=True)
-        ws.cell(row=offset, column=2, value=value)
+    for index, (label, value, fill_color) in enumerate(metrics):
+        start_col = 1 + (index % 3) * 4
+        row = 4 + (index // 3) * 3
+        ws.merge_cells(start_row=row, start_column=start_col, end_row=row, end_column=start_col + 1)
+        ws.merge_cells(start_row=row + 1, start_column=start_col, end_row=row + 1, end_column=start_col + 1)
+        label_cell = ws.cell(row=row, column=start_col, value=label)
+        value_cell = ws.cell(row=row + 1, column=start_col, value=value)
+        label_cell.font = Font(bold=True, color="334155")
+        value_cell.font = Font(bold=True, size=14, color="0F172A")
+        label_cell.fill = PatternFill(fill_type="solid", fgColor=fill_color)
+        value_cell.fill = PatternFill(fill_type="solid", fgColor=fill_color)
+        label_cell.alignment = Alignment(horizontal="center")
+        value_cell.alignment = Alignment(horizontal="center")
 
     header_row = 11
     headers = [
         "Worker Name",
+        "Worker Number",
+        "ID Number",
         "Department",
+        "Start Date",
         "Detail Sheet",
         "Summary Sheet",
         "Hourly Rate",
@@ -364,11 +410,15 @@ def write_flamingo_summary_sheet(ws, worker_rows):
         cell.font = Font(bold=True, color="FFFFFF")
         cell.fill = PatternFill(fill_type="solid", fgColor="1E3A8A")
         cell.alignment = Alignment(horizontal="center")
+    ws.auto_filter.ref = f"A{header_row}:{get_column_letter(len(headers))}{header_row}"
 
     for row_index, worker in enumerate(worker_rows, start=header_row + 1):
         values = [
             worker["worker_name"],
+            worker["worker_number"],
+            worker["id_number"],
             worker["department"],
+            worker["start_date"],
             worker["detail_sheet"],
             worker["summary_sheet"],
             worker["hourly_rate"],
@@ -379,11 +429,13 @@ def write_flamingo_summary_sheet(ws, worker_rows):
         ]
         for col_index, value in enumerate(values, start=1):
             ws.cell(row=row_index, column=col_index, value=value)
-        if worker["status"] != "OK":
-            for col_index in range(1, len(headers) + 1):
-                ws.cell(row=row_index, column=col_index).fill = PatternFill(fill_type="solid", fgColor="FEF2F2")
+        fill_color = "ECFDF5" if worker["status"] == "OK" else "FEE2E2"
+        for col_index in range(1, len(headers) + 1):
+            ws.cell(row=row_index, column=col_index).fill = PatternFill(fill_type="solid", fgColor=fill_color)
+        ws.cell(row=row_index, column=8).number_format = '0.00'
+        ws.cell(row=row_index, column=10).number_format = '#,##0.00'
 
-    widths = [22, 18, 18, 18, 14, 14, 16, 22, 42]
+    widths = [22, 16, 18, 18, 14, 18, 18, 14, 14, 16, 22, 42]
     for col_index, width in enumerate(widths, start=1):
         ws.column_dimensions[get_column_letter(col_index)].width = width
 
@@ -392,13 +444,15 @@ def write_flamingo_attention_sheet(ws, worker_rows):
     ws.sheet_view.rightToLeft = True
     ws.sheet_view.showGridLines = False
     ws.title = safe_sheet_title("Requires Attention", "Requires Attention")
+    ws.freeze_panes = "A2"
 
-    headers = ["Worker Name", "Issue", "Hourly Rate", "Payable Hours", "Recommended Action"]
+    headers = ["Worker Name", "Worker Number", "ID Number", "Issue", "Hourly Rate", "Payable Hours", "Recommended Action"]
     for col_index, header in enumerate(headers, start=1):
         cell = ws.cell(row=1, column=col_index, value=header)
         cell.font = Font(bold=True, color="FFFFFF")
         cell.fill = PatternFill(fill_type="solid", fgColor="B91C1C")
         cell.alignment = Alignment(horizontal="center")
+    ws.auto_filter.ref = f"A1:{get_column_letter(len(headers))}1"
 
     issues = [row for row in worker_rows if row["status"] != "OK"]
     for row_index, worker in enumerate(issues, start=2):
@@ -411,6 +465,8 @@ def write_flamingo_attention_sheet(ws, worker_rows):
 
         values = [
             worker["worker_name"],
+            worker["worker_number"],
+            worker["id_number"],
             worker["status"],
             worker["hourly_rate_raw"],
             format_hours(worker["payable_hours"]),
@@ -418,8 +474,9 @@ def write_flamingo_attention_sheet(ws, worker_rows):
         ]
         for col_index, value in enumerate(values, start=1):
             ws.cell(row=row_index, column=col_index, value=value)
+            ws.cell(row=row_index, column=col_index).fill = PatternFill(fill_type="solid", fgColor="FEF2F2")
 
-    widths = [22, 24, 14, 14, 60]
+    widths = [22, 16, 18, 24, 14, 14, 60]
     for col_index, width in enumerate(widths, start=1):
         ws.column_dimensions[get_column_letter(col_index)].width = width
 
@@ -428,6 +485,7 @@ def write_flamingo_department_sheet(ws, worker_rows):
     ws.sheet_view.rightToLeft = True
     ws.sheet_view.showGridLines = False
     ws.title = safe_sheet_title("Department Summary", "Department Summary")
+    ws.freeze_panes = "A2"
 
     headers = ["Department", "Workers", "Calculated Workers", "Payable Hours", "Payroll"]
     for col_index, header in enumerate(headers, start=1):
@@ -435,6 +493,7 @@ def write_flamingo_department_sheet(ws, worker_rows):
         cell.font = Font(bold=True, color="FFFFFF")
         cell.fill = PatternFill(fill_type="solid", fgColor="0F766E")
         cell.alignment = Alignment(horizontal="center")
+    ws.auto_filter.ref = f"A1:{get_column_letter(len(headers))}1"
 
     department_totals = defaultdict(lambda: {"workers": 0, "calculated": 0, "hours": 0.0, "salary": 0.0})
     for worker in worker_rows:
@@ -456,8 +515,52 @@ def write_flamingo_department_sheet(ws, worker_rows):
         ]
         for col_index, value in enumerate(values, start=1):
             ws.cell(row=row_index, column=col_index, value=value)
+            if row_index % 2 == 0:
+                ws.cell(row=row_index, column=col_index).fill = PatternFill(fill_type="solid", fgColor="F0FDFA")
 
     widths = [24, 12, 18, 16, 16]
+    for col_index, width in enumerate(widths, start=1):
+        ws.column_dimensions[get_column_letter(col_index)].width = width
+
+
+def write_flamingo_top_earners_sheet(ws, worker_rows):
+    ws.sheet_view.rightToLeft = True
+    ws.sheet_view.showGridLines = False
+    ws.title = safe_sheet_title("Top Earners", "Top Earners")
+    ws.freeze_panes = "A2"
+
+    headers = ["Rank", "Worker Name", "ID Number", "Department", "Hourly Rate", "Payable Hours", "Calculated Salary"]
+    for col_index, header in enumerate(headers, start=1):
+        cell = ws.cell(row=1, column=col_index, value=header)
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = PatternFill(fill_type="solid", fgColor="7C3AED")
+        cell.alignment = Alignment(horizontal="center")
+    ws.auto_filter.ref = f"A1:{get_column_letter(len(headers))}1"
+
+    ranked_workers = sorted(
+        [row for row in worker_rows if row["status"] == "OK" and row["salary"] is not None],
+        key=lambda row: row["salary"],
+        reverse=True,
+    )[:10]
+
+    for row_index, worker in enumerate(ranked_workers, start=2):
+        values = [
+            row_index - 1,
+            worker["worker_name"],
+            worker["id_number"],
+            worker["department"],
+            worker["hourly_rate"],
+            format_hours(worker["payable_hours"]),
+            worker["salary"],
+        ]
+        for col_index, value in enumerate(values, start=1):
+            ws.cell(row=row_index, column=col_index, value=value)
+            if row_index % 2 == 0:
+                ws.cell(row=row_index, column=col_index).fill = PatternFill(fill_type="solid", fgColor="F5F3FF")
+        ws.cell(row=row_index, column=5).number_format = '0.00'
+        ws.cell(row=row_index, column=7).number_format = '#,##0.00'
+
+    widths = [10, 22, 18, 20, 14, 14, 16]
     for col_index, width in enumerate(widths, start=1):
         ws.column_dimensions[get_column_letter(col_index)].width = width
 
@@ -478,6 +581,7 @@ def run_flamingo_payroll(input_path, output_path, extension):
     write_flamingo_summary_sheet(summary_ws, worker_rows)
     write_flamingo_attention_sheet(output_wb.create_sheet(), worker_rows)
     write_flamingo_department_sheet(output_wb.create_sheet(), worker_rows)
+    write_flamingo_top_earners_sheet(output_wb.create_sheet(), worker_rows)
     output_wb.save(output_path)
 
 
