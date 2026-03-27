@@ -21,6 +21,10 @@
 - [x] Inspect one real Flamingo export and map worker sheet / summary sheet matching rules
 - [x] Add the Flamingo payroll script using the new script registry
 - [x] Generate payroll summary and exceptions sheets for Flamingo
+- [ ] Fix Matan missing-hours report regression in production
+- [ ] Clean all remaining broken UI text into readable English first
+- [ ] Create a staging Render service separate from production
+- [ ] Define release checklist and backup workflow
 - [ ] Build Matan missing-hours filter tool
 - [ ] Build Matan manual-edits report from monthly detailed XLS
 - [ ] Build Matan organization-chart PDF from organizational CSV
@@ -32,6 +36,10 @@
 - [ ] Add protection against repeated failed login attempts
 - [ ] Optimize processing speed for larger reports
 - [ ] Decide whether to move long-running processing to a background job
+- [ ] Split the monolithic `app.py` into cleaner modules
+- [ ] Add automated regression tests for existing scripts
+- [ ] Add monitoring and error tracking
+- [ ] Add customer usage analytics
 - [ ] Add custom domain instead of relying on the default `onrender.com` address
 - [ ] Add richer payroll analytics such as top earners and payroll distribution for Flamingo
 - [ ] Add more preset management reports for Matan Health Care
