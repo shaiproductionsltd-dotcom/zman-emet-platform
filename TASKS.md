@@ -18,7 +18,9 @@
 
 - [ ] Improve the wording in the waiting UI so it clearly explains that the report is being prepared
 - [ ] Clean the mixed English/Hebrew text on the upload flow and success screen
-- [ ] Add the next customer-specific script using the new script registry
+- [x] Inspect one real Flamingo export and map worker sheet / summary sheet matching rules
+- [x] Add the Flamingo payroll script using the new script registry
+- [x] Generate payroll summary and exceptions sheets for Flamingo
 - [ ] Create the final Render production service with the final public name
 
 ## Later
@@ -28,3 +30,4 @@
 - [ ] Optimize processing speed for larger reports
 - [ ] Decide whether to move long-running processing to a background job
 - [ ] Add custom domain instead of relying on the default `onrender.com` address
+- [ ] Add richer payroll analytics such as top earners and payroll distribution for Flamingo

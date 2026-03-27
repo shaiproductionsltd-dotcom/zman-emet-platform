@@ -1,5 +1,6 @@
 from pathlib import Path
 from zipfile import BadZipFile
+from collections import defaultdict
 import os
 import sqlite3
 import uuid
@@ -188,6 +189,298 @@ def run_attendance_cleanup(input_path, output_path, extension):
     process_spreadsheet(input_path, output_path, extension)
 
 
+PAYABLE_HOUR_LABELS = {"רגילות", "100%", "125%", "150%", "175%", "200%"}
+
+
+def parse_numeric_rate(value):
+    if value in ("", None):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value).strip().replace(",", ".")
+    if not text:
+        return None
+    return float(text)
+
+
+def parse_hours_value(value):
+    if value in ("", None):
+        return None
+    if isinstance(value, (int, float)):
+        numeric = float(value)
+        if 0 <= numeric <= 1:
+            return numeric * 24
+        return numeric
+    text = str(value).strip()
+    if not text:
+        return None
+    if ":" in text:
+        hours_text, minutes_text = text.split(":", 1)
+        return int(hours_text) + (int(minutes_text) / 60.0)
+    return float(text.replace(",", "."))
+
+
+def format_hours(hours_value):
+    if hours_value in (None, ""):
+        return ""
+    total_minutes = int(round(float(hours_value) * 60))
+    hours, minutes = divmod(total_minutes, 60)
+    return f"{hours:02d}:{minutes:02d}"
+
+
+def safe_sheet_title(title, fallback):
+    cleaned = "".join(ch for ch in str(title) if ch not in '[]:*?/\\')[:31].strip()
+    return cleaned or fallback
+
+
+def get_sheet_cell(sheet, row_index, col_index, default=""):
+    if row_index >= sheet.nrows or col_index >= sheet.ncols:
+        return default
+    value = sheet.cell_value(row_index, col_index)
+    if isinstance(value, str):
+        return value.strip()
+    return value
+
+
+def find_row_label_value(sheet, row_index, label):
+    if row_index >= sheet.nrows:
+        return ""
+    values = [sheet.cell_value(row_index, c) for c in range(sheet.ncols)]
+    for idx, value in enumerate(values):
+        if str(value).strip() == label:
+            for next_idx in range(idx + 1, len(values)):
+                candidate = values[next_idx]
+                if candidate not in ("", None):
+                    return candidate
+            return ""
+    return ""
+
+
+def extract_payable_hours(summary_sheet):
+    totals = {}
+    for row_index in range(summary_sheet.nrows):
+        label = str(get_sheet_cell(summary_sheet, row_index, 9, "")).strip()
+        if label in PAYABLE_HOUR_LABELS:
+            totals[label] = parse_hours_value(get_sheet_cell(summary_sheet, row_index, 13, ""))
+    available = [value for value in totals.values() if value is not None]
+    if not available:
+        return None, totals
+    return sum(available), totals
+
+
+def extract_flamingo_worker_pair(detail_sheet, summary_sheet):
+    worker_name = str(get_sheet_cell(detail_sheet, 5, 2, "")).strip() or detail_sheet.name
+    department = str(find_row_label_value(detail_sheet, 5, "מחלקה")).strip()
+    rate_raw = find_row_label_value(detail_sheet, 5, "הערות")
+    notes = []
+    status = "OK"
+
+    try:
+        hourly_rate = parse_numeric_rate(rate_raw)
+    except ValueError:
+        hourly_rate = None
+        status = "Invalid hourly rate"
+        notes.append(f"Hourly rate value is invalid: {rate_raw}")
+
+    if hourly_rate is None and status == "OK":
+        status = "Missing hourly rate"
+        notes.append("Set hourly rate in the הערות field and export the report again.")
+
+    payable_hours = None
+    payable_breakdown = {}
+    summary_name = ""
+    if summary_sheet is None:
+        status = "Could not match summary sheet"
+        notes.append("Expected the summary sheet immediately after the worker detail sheet.")
+    else:
+        summary_name = summary_sheet.name
+        payable_hours, payable_breakdown = extract_payable_hours(summary_sheet)
+        if payable_hours is None and status == "OK":
+            status = "Missing payable hours"
+            notes.append("No payable hour values were found in the summary sheet.")
+
+    calculated_salary = None
+    if status == "OK":
+        calculated_salary = round(payable_hours * hourly_rate, 2)
+
+    return {
+        "worker_name": worker_name,
+        "department": department,
+        "detail_sheet": detail_sheet.name,
+        "summary_sheet": summary_name,
+        "hourly_rate": hourly_rate,
+        "hourly_rate_raw": rate_raw,
+        "payable_hours": payable_hours,
+        "payable_breakdown": payable_breakdown,
+        "salary": calculated_salary,
+        "status": status,
+        "notes": " | ".join(notes),
+    }
+
+
+def write_flamingo_summary_sheet(ws, worker_rows):
+    ws.sheet_view.rightToLeft = True
+    ws.sheet_view.showGridLines = False
+    ws.title = safe_sheet_title("Payroll Summary", "Payroll Summary")
+
+    successful_rows = [row for row in worker_rows if row["status"] == "OK"]
+    total_workers = len(worker_rows)
+    unresolved_workers = len([row for row in worker_rows if row["status"] != "OK"])
+    total_hours = sum(row["payable_hours"] or 0 for row in successful_rows)
+    total_salary = sum(row["salary"] or 0 for row in successful_rows)
+    average_rate = (sum(row["hourly_rate"] or 0 for row in successful_rows) / len(successful_rows)) if successful_rows else 0
+
+    metrics = [
+        ("Total workers", total_workers),
+        ("Calculated successfully", len(successful_rows)),
+        ("Requires attention", unresolved_workers),
+        ("Total payable hours", format_hours(total_hours)),
+        ("Total payroll", round(total_salary, 2)),
+        ("Average hourly rate", round(average_rate, 2)),
+    ]
+
+    ws["A1"] = "Flamingo Payroll Summary"
+    ws["A1"].font = Font(bold=True, size=16)
+
+    for offset, (label, value) in enumerate(metrics, start=3):
+        ws.cell(row=offset, column=1, value=label).font = Font(bold=True)
+        ws.cell(row=offset, column=2, value=value)
+
+    header_row = 11
+    headers = [
+        "Worker Name",
+        "Department",
+        "Detail Sheet",
+        "Summary Sheet",
+        "Hourly Rate",
+        "Payable Hours",
+        "Calculated Salary",
+        "Status",
+        "Notes",
+    ]
+
+    for col_index, header in enumerate(headers, start=1):
+        cell = ws.cell(row=header_row, column=col_index, value=header)
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = PatternFill(fill_type="solid", fgColor="1E3A8A")
+        cell.alignment = Alignment(horizontal="center")
+
+    for row_index, worker in enumerate(worker_rows, start=header_row + 1):
+        values = [
+            worker["worker_name"],
+            worker["department"],
+            worker["detail_sheet"],
+            worker["summary_sheet"],
+            worker["hourly_rate"],
+            format_hours(worker["payable_hours"]),
+            worker["salary"],
+            worker["status"],
+            worker["notes"],
+        ]
+        for col_index, value in enumerate(values, start=1):
+            ws.cell(row=row_index, column=col_index, value=value)
+        if worker["status"] != "OK":
+            for col_index in range(1, len(headers) + 1):
+                ws.cell(row=row_index, column=col_index).fill = PatternFill(fill_type="solid", fgColor="FEF2F2")
+
+    widths = [22, 18, 18, 18, 14, 14, 16, 22, 42]
+    for col_index, width in enumerate(widths, start=1):
+        ws.column_dimensions[get_column_letter(col_index)].width = width
+
+
+def write_flamingo_attention_sheet(ws, worker_rows):
+    ws.sheet_view.rightToLeft = True
+    ws.sheet_view.showGridLines = False
+    ws.title = safe_sheet_title("Requires Attention", "Requires Attention")
+
+    headers = ["Worker Name", "Issue", "Hourly Rate", "Payable Hours", "Recommended Action"]
+    for col_index, header in enumerate(headers, start=1):
+        cell = ws.cell(row=1, column=col_index, value=header)
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = PatternFill(fill_type="solid", fgColor="B91C1C")
+        cell.alignment = Alignment(horizontal="center")
+
+    issues = [row for row in worker_rows if row["status"] != "OK"]
+    for row_index, worker in enumerate(issues, start=2):
+        if worker["status"] in {"Missing hourly rate", "Invalid hourly rate"}:
+            action = "Update the hourly rate in הערות and export the report again."
+        elif worker["status"] == "Could not match summary sheet":
+            action = "Verify the report structure and confirm that each detail sheet has a following summary sheet."
+        else:
+            action = "Verify payable hour values in the summary sheet."
+
+        values = [
+            worker["worker_name"],
+            worker["status"],
+            worker["hourly_rate_raw"],
+            format_hours(worker["payable_hours"]),
+            action,
+        ]
+        for col_index, value in enumerate(values, start=1):
+            ws.cell(row=row_index, column=col_index, value=value)
+
+    widths = [22, 24, 14, 14, 60]
+    for col_index, width in enumerate(widths, start=1):
+        ws.column_dimensions[get_column_letter(col_index)].width = width
+
+
+def write_flamingo_department_sheet(ws, worker_rows):
+    ws.sheet_view.rightToLeft = True
+    ws.sheet_view.showGridLines = False
+    ws.title = safe_sheet_title("Department Summary", "Department Summary")
+
+    headers = ["Department", "Workers", "Calculated Workers", "Payable Hours", "Payroll"]
+    for col_index, header in enumerate(headers, start=1):
+        cell = ws.cell(row=1, column=col_index, value=header)
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = PatternFill(fill_type="solid", fgColor="0F766E")
+        cell.alignment = Alignment(horizontal="center")
+
+    department_totals = defaultdict(lambda: {"workers": 0, "calculated": 0, "hours": 0.0, "salary": 0.0})
+    for worker in worker_rows:
+        department = worker["department"] or "Unassigned"
+        bucket = department_totals[department]
+        bucket["workers"] += 1
+        if worker["status"] == "OK":
+            bucket["calculated"] += 1
+            bucket["hours"] += worker["payable_hours"] or 0
+            bucket["salary"] += worker["salary"] or 0
+
+    for row_index, (department, totals) in enumerate(sorted(department_totals.items()), start=2):
+        values = [
+            department,
+            totals["workers"],
+            totals["calculated"],
+            format_hours(totals["hours"]),
+            round(totals["salary"], 2),
+        ]
+        for col_index, value in enumerate(values, start=1):
+            ws.cell(row=row_index, column=col_index, value=value)
+
+    widths = [24, 12, 18, 16, 16]
+    for col_index, width in enumerate(widths, start=1):
+        ws.column_dimensions[get_column_letter(col_index)].width = width
+
+
+def run_flamingo_payroll(input_path, output_path, extension):
+    if extension != "xls":
+        raise ValueError("Flamingo payroll currently supports original XLS exports only")
+
+    workbook = xlrd.open_workbook(input_path)
+    worker_rows = []
+    for sheet_index in range(0, workbook.nsheets, 2):
+        detail_sheet = workbook.sheet_by_index(sheet_index)
+        summary_sheet = workbook.sheet_by_index(sheet_index + 1) if sheet_index + 1 < workbook.nsheets else None
+        worker_rows.append(extract_flamingo_worker_pair(detail_sheet, summary_sheet))
+
+    output_wb = Workbook()
+    summary_ws = output_wb.active
+    write_flamingo_summary_sheet(summary_ws, worker_rows)
+    write_flamingo_attention_sheet(output_wb.create_sheet(), worker_rows)
+    write_flamingo_department_sheet(output_wb.create_sheet(), worker_rows)
+    output_wb.save(output_path)
+
+
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "zman_emet_secret_2024")
 app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_SIZE
@@ -279,6 +572,34 @@ SCRIPT_REGISTRY = {
         "processing_note": "Preparing the clean report can take a few minutes. Please keep this page open until the download is ready.",
         "file_picker_label": "Select file",
     }
+}
+
+SCRIPTS["flamingo_payroll"] = {
+    "id": "flamingo_payroll",
+    "name": "Flamingo Payroll",
+    "desc": "Calculate salary by payable hours and hourly rate",
+    "accept": ".xls",
+    "icon": "$",
+}
+
+SCRIPT_REGISTRY["flamingo_payroll"] = {
+    **SCRIPTS["flamingo_payroll"],
+    "processor": run_flamingo_payroll,
+    "output_suffix": "flamingo_payroll",
+    "success_title": "Payroll file is ready!",
+    "success_action": "Download payroll summary",
+    "retry_action": "Process another payroll file",
+    "submit_label": "Create payroll summary",
+    "back_label": "Back to tools",
+    "empty_error": "No file selected",
+    "unsupported_error": "Please upload the original Flamingo XLS export",
+    "invalid_error": "The uploaded file is not a valid Excel file",
+    "empty_file_error": "The uploaded file is empty",
+    "too_large_error": "The uploaded file is too large",
+    "processing_error": "The payroll file could not be prepared from this export.",
+    "processing_title": "Preparing payroll summary",
+    "processing_note": "The system is calculating payable hours and salary totals for all workers. This can take a few minutes.",
+    "file_picker_label": "Select Flamingo XLS export",
 }
 
 SCRIPTS = SCRIPT_REGISTRY
