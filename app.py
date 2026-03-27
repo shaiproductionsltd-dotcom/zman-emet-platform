@@ -1140,14 +1140,14 @@ def login():
                 }
             )
             return redirect("/admin" if user["is_admin"] else "/dashboard")
-        error = '<div class="flash-err">Wrong username or password</div>'
+        error = '<div class="flash-err">Incorrect username or password</div>'
 
     body = (
         '<div class="card" style="padding:2rem">'
         '<div style="text-align:center;margin-bottom:1.5rem">'
         '<div style="font-size:40px">&#9201;</div>'
         '<h1 style="font-size:20px;font-weight:700;color:#1e3a8a;margin-top:8px">Scriptly</h1>'
-        '<p style="font-size:12px;color:#888;margin-top:3px">Attendance and payroll tools</p>'
+        '<p style="font-size:12px;color:#888;margin-top:3px">Attendance and payroll tools portal</p>'
         "</div>"
         + error
         + '<form method="POST">'
@@ -1155,7 +1155,7 @@ def login():
         '<input type="text" name="username" required autofocus>'
         '<label class="field-label">Password</label>'
         '<input type="password" name="password" required>'
-        '<button type="submit" class="btn btn-blue" style="width:100%;padding:12px;font-size:15px;margin-top:.5rem">Login</button>'
+        '<button type="submit" class="btn btn-blue" style="width:100%;padding:12px;font-size:15px;margin-top:.5rem">Log In</button>'
         "</form>"
         '<p style="text-align:center;margin-top:1.5rem;font-size:11px;color:#bbb">&#169; Scriptly</p>'
         "</div>"
@@ -1193,19 +1193,19 @@ def dashboard():
         cards = (
             '<div style="text-align:center;padding:3rem;color:#94a3b8">'
             '<div style="font-size:48px;margin-bottom:1rem">&#128274;</div>'
-            "<div>No tools are available yet</div>"
+            "<div>No tools are available for your account yet</div>"
             "</div>"
         )
 
     body = (
-        '<h2 style="font-size:22px;font-weight:700;color:#1e3a8a;margin-bottom:.4rem">Hello, '
+        '<h2 style="font-size:22px;font-weight:700;color:#1e3a8a;margin-bottom:.4rem">Welcome, '
         + session["name"]
         + ' &#128075;</h2><p style="font-size:14px;color:#64748b;margin-bottom:2rem">Your available tools:</p>'
         '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:1rem">'
         + cards
         + "</div>"
     )
-    return render("My Tools", body)
+    return render("Your Tools", body)
 
 
 @app.route("/run/<script_id>", methods=["GET", "POST"])
@@ -1256,14 +1256,14 @@ def run_script(script_id):
                     extra_ext = get_extension(extra_file.filename)
                     expected = upload.get("accept", "").lstrip(".").lower()
                     if expected and extra_ext != expected:
-                        error = '<div class="flash-err">׳¡׳•׳’ ׳”׳§׳•׳‘׳¥ ׳”׳ ׳•׳¡׳£ ׳׳™׳ ׳• ׳ ׳×׳׳</div>'
+                        error = '<div class="flash-err">The extra file type is not supported</div>'
                         break
                     extra_path = str(UPLOAD_FOLDER / f"{uid}_{upload['name']}.{extra_ext or 'dat'}")
                     extra_file.save(extra_path)
                     options[f"{upload['name']}_path"] = extra_path
                     extra_paths.append(extra_path)
                 elif upload.get("required"):
-                    error = '<div class="flash-err">׳—׳¡׳¨ ׳§׳•׳‘׳¥ ׳ ׳•׳¡׳£ ׳ ׳“׳¨׳©</div>'
+                    error = '<div class="flash-err">A required extra file is missing</div>'
                     break
             if error:
                 for path in extra_paths:
@@ -1279,7 +1279,7 @@ def run_script(script_id):
                 except (xlrd.biffh.XLRDError, BadZipFile, OSError, ValueError):
                     error = '<div class="flash-err">' + scr["processing_error"] + '</div>'
                 except Exception as e:
-                    error = '<div class="flash-err">Processing error: ' + str(e) + "</div>"
+                    error = '<div class="flash-err">Unexpected processing error: ' + str(e) + "</div>"
                 finally:
                     try:
                         os.remove(inp)
