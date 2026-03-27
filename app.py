@@ -184,6 +184,10 @@ def process_spreadsheet(input_path, output_path, extension):
     raise ValueError("Unsupported file type")
 
 
+def run_attendance_cleanup(input_path, output_path, extension):
+    process_spreadsheet(input_path, output_path, extension)
+
+
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "zman_emet_secret_2024")
 app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_SIZE
@@ -254,6 +258,47 @@ SCRIPTS = {
         "icon": "🧹",
     }
 }
+
+SCRIPT_REGISTRY = {
+    "nikuy": {
+        **SCRIPTS["nikuy"],
+        "processor": run_attendance_cleanup,
+        "output_suffix": "cleaned",
+        "success_title": "File is ready!",
+        "success_action": "Download clean file",
+        "retry_action": "Process another file",
+        "submit_label": "Run",
+        "back_label": "Back to tools",
+        "empty_error": "No file selected",
+        "unsupported_error": "Unsupported file type",
+        "invalid_error": "The uploaded file is not a valid Excel file",
+        "empty_file_error": "The uploaded file is empty",
+        "too_large_error": "The uploaded file is too large",
+        "processing_error": "The file was uploaded, but it could not be processed.",
+        "processing_title": "Your file is being processed",
+        "processing_note": "Preparing the clean report can take a few minutes. Please keep this page open until the download is ready.",
+        "file_picker_label": "Select file",
+    }
+}
+
+SCRIPTS = SCRIPT_REGISTRY
+
+
+def get_script(script_id):
+    return SCRIPT_REGISTRY.get(script_id)
+
+
+def build_output_filename(script, uid):
+    suffix = script.get("output_suffix", "output")
+    return f"{uid}_{suffix}.xlsx"
+
+
+def execute_script(script, input_path, output_path, extension):
+    processor = script.get("processor")
+    if processor is None:
+        raise ValueError("Script processor is not configured")
+    processor(input_path, output_path, extension)
+
 
 CSS = """
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -485,11 +530,11 @@ def run_script(script_id):
             (session["user_id"], script_id),
         ).fetchone()
 
-    if not perm or script_id not in SCRIPTS:
+    scr = get_script(script_id)
+
+    if not perm or scr is None:
         add_flash("??? ?? ????? ??????? ??")
         return redirect("/dashboard")
-
-    scr = SCRIPTS[script_id]
     result = None
     error = ""
 
@@ -497,26 +542,26 @@ def run_script(script_id):
         file_obj = request.files.get("file")
         validation_error, ext = validate_upload(file_obj)
         if validation_error == "missing":
-            error = '<div class="flash-err">No file selected</div>'
+            error = '<div class="flash-err">' + scr["empty_error"] + '</div>'
         elif validation_error == "unsupported":
-            error = '<div class="flash-err">Unsupported file type</div>'
+            error = '<div class="flash-err">' + scr["unsupported_error"] + '</div>'
         elif validation_error == "invalid_excel":
-            error = '<div class="flash-err">The uploaded file is not a valid Excel file</div>'
+            error = '<div class="flash-err">' + scr["invalid_error"] + '</div>'
         elif validation_error == "empty":
-            error = '<div class="flash-err">The uploaded file is empty</div>'
+            error = '<div class="flash-err">' + scr["empty_file_error"] + '</div>'
         elif validation_error == "too_large":
-            error = '<div class="flash-err">The uploaded file is too large</div>'
+            error = '<div class="flash-err">' + scr["too_large_error"] + '</div>'
         else:
             uid = str(uuid.uuid4())[:8]
             inp = str(UPLOAD_FOLDER / f"{uid}.{ext}")
-            result_name = f"{uid}_cleaned.xlsx"
+            result_name = build_output_filename(scr, uid)
             out = str(OUTPUT_FOLDER / result_name)
             file_obj.save(inp)
             try:
-                process_spreadsheet(inp, out, ext)
+                execute_script(scr, inp, out, ext)
                 result = result_name
             except (xlrd.biffh.XLRDError, BadZipFile, OSError, ValueError):
-                error = '<div class="flash-err">The file was uploaded, but it could not be processed.</div>'
+                error = '<div class="flash-err">' + scr["processing_error"] + '</div>'
             except Exception as e:
                 error = '<div class="flash-err">Processing error: ' + str(e) + "</div>"
             finally:
@@ -529,9 +574,9 @@ def run_script(script_id):
         content = (
             '<div class="success-box">'
             '<div style="font-size:32px;margin-bottom:6px">&#9989;</div>'
-            '<div style="font-size:16px;font-weight:700;color:#15803d;margin-bottom:10px">File is ready!</div>'
-            '<a href="/download/' + result + '" class="dl-btn">&#8681; Download clean file</a>'
-            '<br><br><a href="/run/' + script_id + '" style="font-size:13px;color:#2563eb">Process another file</a>'
+            '<div style="font-size:16px;font-weight:700;color:#15803d;margin-bottom:10px">' + scr["success_title"] + '</div>'
+            '<a href="/download/' + result + '" class="dl-btn">&#8681; ' + scr["success_action"] + '</a>'
+            '<br><br><a href="/run/' + script_id + '" style="font-size:13px;color:#2563eb">' + scr["retry_action"] + '</a>'
             '</div>'
         )
     else:
@@ -540,21 +585,21 @@ def run_script(script_id):
             + '<form method="POST" enctype="multipart/form-data" id="uploadForm">'
             + '<div style="background:#fafcff;border:2px dashed #c7d7f5;border-radius:14px;padding:1.5rem;margin-bottom:1rem;text-align:center">'
             + '<div style="font-size:32px;margin-bottom:8px">&#128194;</div>'
-            + '<div style="font-size:15px;font-weight:600;color:#1e40af;margin-bottom:12px">Select file</div>'
+            + '<div style="font-size:15px;font-weight:600;color:#1e40af;margin-bottom:12px">' + scr["file_picker_label"] + '</div>'
             + '<input type="file" name="file" id="fi" accept="' + scr["accept"] + '" style="width:100%;max-width:420px;margin:0 auto 10px;display:block;font-family:inherit">'
             + '<div style="font-size:12px;color:#94a3b8" id="lbl">' + scr["accept"] + '</div>'
             + '</div>'
-            + '<button type="submit" class="btn btn-blue" id="gb" style="width:100%;padding:13px;font-size:15px;font-weight:700">' + scr["icon"] + ' Run</button>'
+            + '<button type="submit" class="btn btn-blue" id="gb" style="width:100%;padding:13px;font-size:15px;font-weight:700">' + scr["icon"] + ' ' + scr["submit_label"] + '</button>'
             + '<div class="processing-box" id="processingBox">'
-            + '<div class="processing-note">Your file is being processed</div>'
+            + '<div class="processing-note">' + scr["processing_title"] + '</div>'
             + '<div class="progress-track"><div class="progress-bar"></div></div>'
-            + '<div class="processing-subnote">Preparing the clean report can take a few minutes. Please keep this page open until the download is ready.</div>'
+            + '<div class="processing-subnote">' + scr["processing_note"] + '</div>'
             + '</div>'
             + '</form>'
         )
 
     body = (
-        '<a href="/dashboard" style="color:#2563eb;font-size:13px;text-decoration:none;display:block;margin-bottom:1rem">&#8592; Back to tools</a>'
+        '<a href="/dashboard" style="color:#2563eb;font-size:13px;text-decoration:none;display:block;margin-bottom:1rem">&#8592; ' + scr["back_label"] + '</a>'
         + '<div class="card">'
         + '<div style="font-size:40px;margin-bottom:.5rem">' + scr["icon"] + '</div>'
         + '<div style="font-size:20px;font-weight:700;color:#1e3a8a;margin-bottom:4px">' + scr["name"] + '</div>'
@@ -567,7 +612,7 @@ def run_script(script_id):
         + 'var button=document.getElementById("gb");'
         + 'var form=document.getElementById("uploadForm");'
         + 'if(fileInput && label){fileInput.addEventListener("change", function(){if(this.files && this.files.length){label.textContent=this.files[0].name;}});}'
-        + 'if(form){form.addEventListener("submit", function(event){if(!fileInput || !fileInput.files || !fileInput.files.length){event.preventDefault();return false;}button.disabled=true;button.textContent="Processing file...";var box=document.getElementById("processingBox");if(box){box.classList.add("show");}return true;});}'
+        + 'if(form){form.addEventListener("submit", function(event){if(!fileInput || !fileInput.files || !fileInput.files.length){event.preventDefault();return false;}button.disabled=true;button.textContent="' + scr["processing_title"] + '";var box=document.getElementById("processingBox");if(box){box.classList.add("show");}return true;});}'
         + '</script>'
     )
     return render(scr["name"], body)

@@ -9,13 +9,17 @@
 - [x] Add PostgreSQL support with SQLite fallback
 - [x] Configure the Render service to use `DATABASE_URL`
 - [x] Fix PostgreSQL permissions save flow
+- [x] Verify persistence after redeploy
+- [x] Add a loading message on the upload page so users know processing can take a few minutes
+- [x] Add a progress-style loading bar or animated waiting state during report processing
+- [x] Refactor the app so each script can define its own processor and labels
 
 ## Next
 
-- [ ] Verify persistence after redeploy
-- [ ] Add a loading message on the upload page so users know processing can take a few minutes
-- [ ] Add a progress-style loading bar or animated waiting state during report processing
 - [ ] Improve the wording in the waiting UI so it clearly explains that the report is being prepared
+- [ ] Clean the mixed English/Hebrew text on the upload flow and success screen
+- [ ] Add the next customer-specific script using the new script registry
+- [ ] Create the final Render production service with the final public name
 
 ## Later
 
@@ -23,4 +27,4 @@
 - [ ] Add protection against repeated failed login attempts
 - [ ] Optimize processing speed for larger reports
 - [ ] Decide whether to move long-running processing to a background job
-- [ ] Support multiple customer-specific scripts in the platform
+- [ ] Add custom domain instead of relying on the default `onrender.com` address
