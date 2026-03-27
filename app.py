@@ -1,89 +1,157 @@
 from pathlib import Path
+from zipfile import BadZipFile
+import os
+import sqlite3
+import uuid
 
-from flask import Flask, request, redirect, session, send_file
-from werkzeug.security import generate_password_hash, check_password_hash
-import sqlite3, os, uuid
+from flask import Flask, redirect, request, send_file, session
+from werkzeug.security import check_password_hash, generate_password_hash
 
 import xlrd
 from openpyxl import Workbook, load_workbook
-from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
-H_ALIGN = {1:'left',2:'center',3:'right',4:'fill',5:'justify',6:'centerContinuous',7:'distributed'}
-V_ALIGN = {0:'top',1:'center',2:'bottom',3:'justify',4:'distributed'}
-NO_BORDER = Border(left=Side(border_style=None),right=Side(border_style=None),
-                   top=Side(border_style=None),bottom=Side(border_style=None))
+
+H_ALIGN = {1: "left", 2: "center", 3: "right", 4: "fill", 5: "justify", 6: "centerContinuous", 7: "distributed"}
+V_ALIGN = {0: "top", 1: "center", 2: "bottom", 3: "justify", 4: "distributed"}
+NO_BORDER = Border(
+    left=Side(border_style=None),
+    right=Side(border_style=None),
+    top=Side(border_style=None),
+    bottom=Side(border_style=None),
+)
+ALLOWED_EXTENSIONS = {"xls", "xlsx"}
+MAX_UPLOAD_SIZE = 10 * 1024 * 1024
+
 
 def clean(val):
     if isinstance(val, str):
-        return val.replace('*','').replace('?','').strip()
+        return val.replace("*", "").replace("?", "").strip()
     return val
 
+
+def get_extension(filename):
+    if not filename or "." not in filename:
+        return ""
+    return filename.rsplit(".", 1)[-1].lower()
+
+
+def detect_excel_signature(file_storage):
+    pos = file_storage.stream.tell()
+    header = file_storage.stream.read(8)
+    file_storage.stream.seek(pos)
+    if header.startswith(b"PK\x03\x04"):
+        return "xlsx"
+    if header.startswith(b"\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1"):
+        return "xls"
+    return ""
+
+
+def validate_upload(file_storage):
+    if not file_storage or file_storage.filename == "":
+        return "missing", None
+
+    ext = get_extension(file_storage.filename)
+    if ext not in ALLOWED_EXTENSIONS:
+        return "unsupported", None
+
+    detected = detect_excel_signature(file_storage)
+    if detected != ext:
+        return "invalid_excel", None
+
+    file_storage.stream.seek(0, os.SEEK_END)
+    size = file_storage.stream.tell()
+    file_storage.stream.seek(0)
+    if size <= 0:
+        return "empty", None
+    if size > MAX_UPLOAD_SIZE:
+        return "too_large", None
+
+    return None, ext
+
+
 def idx_to_hex(cmap, idx):
-    if idx in (0,64,65,32767,None): return None
+    if idx in (0, 64, 65, 32767, None):
+        return None
     rgb = cmap.get(idx)
     if rgb and None not in rgb:
-        return '{:02X}{:02X}{:02X}'.format(*rgb)
+        return "{:02X}{:02X}{:02X}".format(*rgb)
     return None
 
+
 def widen_known_columns(ws):
-    for col, extra in (('G', 4.5), ('S', 3.0), ('AU', 3.0)):
+    for col, extra in (("G", 4.5), ("S", 3.0), ("AU", 3.0)):
         current = ws.column_dimensions[col].width or 8.43
         ws.column_dimensions[col].width = current + extra
 
+
 def process_legacy_xls(input_path, output_path):
     wb_in = xlrd.open_workbook(input_path, formatting_info=True)
-    cmap  = wb_in.colour_map
+    cmap = wb_in.colour_map
     wb_out = Workbook()
     wb_out.remove(wb_out.active)
+
     for s_idx in range(wb_in.nsheets):
-        ws_in  = wb_in.sheet_by_index(s_idx)
+        ws_in = wb_in.sheet_by_index(s_idx)
         ws_out = wb_out.create_sheet(title=ws_in.name)
         ws_out.sheet_view.rightToLeft = True
         ws_out.sheet_view.showGridLines = False
+
         for c in range(ws_in.ncols):
-            ltr = get_column_letter(c+1)
-            ci  = ws_in.colinfo_map.get(c)
-            w   = (ci.width/256.0) if (ci and ci.width) else 1.0
-            ws_out.column_dimensions[ltr].width = max(w, 0.5)
+            ltr = get_column_letter(c + 1)
+            ci = ws_in.colinfo_map.get(c)
+            width = (ci.width / 256.0) if (ci and ci.width) else 1.0
+            ws_out.column_dimensions[ltr].width = max(width, 0.5)
+
         for r in range(ws_in.nrows):
             ri = ws_in.rowinfo_map.get(r)
-            orig_pts = (ri.height/20.0) if (ri and ri.height) else 12.75
-            has_content = any(v != '' for v in ws_in.row_values(r))
+            orig_pts = (ri.height / 20.0) if (ri and ri.height) else 12.75
+            has_content = any(v != "" for v in ws_in.row_values(r))
             if has_content:
                 new_h = orig_pts if orig_pts >= 25 else (18 if orig_pts >= 15 else 15)
             else:
                 new_h = 2 if orig_pts <= 8 else (orig_pts if orig_pts <= 50 else 12)
-            ws_out.row_dimensions[r+1].height = new_h
+            ws_out.row_dimensions[r + 1].height = new_h
+
         for r in range(ws_in.nrows):
             for c in range(ws_in.ncols):
-                val  = clean(ws_in.cell_value(r, c))
-                xf   = wb_in.xf_list[ws_in.cell_xf_index(r, c)]
-                fi   = wb_in.font_list[xf.font_index]
-                cell = ws_out.cell(row=r+1, column=c+1, value=val)
-                fc   = idx_to_hex(cmap, fi.colour_index)
-                cell.font = Font(bold=bool(fi.bold), italic=bool(fi.italic),
-                                 size=fi.height/20, name=fi.name or 'Arial',
-                                 color=fc or '000000')
+                val = clean(ws_in.cell_value(r, c))
+                xf = wb_in.xf_list[ws_in.cell_xf_index(r, c)]
+                fi = wb_in.font_list[xf.font_index]
+                cell = ws_out.cell(row=r + 1, column=c + 1, value=val)
+                fc = idx_to_hex(cmap, fi.colour_index)
+                cell.font = Font(
+                    bold=bool(fi.bold),
+                    italic=bool(fi.italic),
+                    size=fi.height / 20,
+                    name=fi.name or "Arial",
+                    color=fc or "000000",
+                )
                 bg = idx_to_hex(cmap, xf.background.pattern_colour_index)
                 if bg and xf.background.fill_pattern != 0:
-                    cell.fill = PatternFill(fill_type='solid', fgColor=bg)
+                    cell.fill = PatternFill(fill_type="solid", fgColor=bg)
                 cell.alignment = Alignment(
-                    horizontal=H_ALIGN.get(xf.alignment.hor_align,'general'),
-                    vertical=V_ALIGN.get(xf.alignment.vert_align,'bottom'),
+                    horizontal=H_ALIGN.get(xf.alignment.hor_align, "general"),
+                    vertical=V_ALIGN.get(xf.alignment.vert_align, "bottom"),
                     wrapText=bool(xf.alignment.text_wrapped),
                     shrinkToFit=bool(xf.alignment.shrink_to_fit),
-                    readingOrder=2)
+                    readingOrder=2,
+                )
                 cell.border = NO_BORDER
-        for r1,r2,c1,c2 in ws_in.merged_cells:
-            if r2>r1 or c2>c1:
+
+        for r1, r2, c1, c2 in ws_in.merged_cells:
+            if r2 > r1 or c2 > c1:
                 try:
-                    ws_out.merge_cells(start_row=r1+1, start_column=c1+1,
-                                       end_row=r2, end_column=c2)
-                except: pass
+                    ws_out.merge_cells(start_row=r1 + 1, start_column=c1 + 1, end_row=r2, end_column=c2)
+                except Exception:
+                    pass
+
     for ws in wb_out.worksheets:
         widen_known_columns(ws)
+
     wb_out.save(output_path)
+
 
 def process_xlsx(input_path, output_path):
     wb = load_workbook(input_path)
@@ -97,33 +165,35 @@ def process_xlsx(input_path, output_path):
         widen_known_columns(ws)
     wb.save(output_path)
 
+
 def process_spreadsheet(input_path, output_path, extension):
-    if extension == 'xls':
+    if extension == "xls":
         process_legacy_xls(input_path, output_path)
         return
-    if extension == 'xlsx':
+    if extension == "xlsx":
         process_xlsx(input_path, output_path)
         return
-    raise ValueError('Unsupported file type')
+    raise ValueError("Unsupported file type")
 
 
 app = Flask(__name__)
-app.secret_key = os.environ.get('SECRET_KEY', 'zman_emet_secret_2024')
+app.secret_key = os.environ.get("SECRET_KEY", "zman_emet_secret_2024")
+app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_SIZE
 
 BASE_DIR = Path(__file__).resolve().parent
-DB = str(BASE_DIR / 'platform.db')
-UPLOAD_FOLDER = BASE_DIR / 'uploads'
-OUTPUT_FOLDER = BASE_DIR / 'outputs'
+DB = str(BASE_DIR / "platform.db")
+UPLOAD_FOLDER = BASE_DIR / "uploads"
+OUTPUT_FOLDER = BASE_DIR / "outputs"
 UPLOAD_FOLDER.mkdir(exist_ok=True)
 OUTPUT_FOLDER.mkdir(exist_ok=True)
 
 SCRIPTS = {
-    'nikuy': {
-        'id': 'nikuy',
-        'name': 'ניקוי כוכביות',
-        'desc': 'מסיר * ו-? מדוח נוכחות חודשי',
-        'accept': '.xls,.xlsx',
-        'icon': '🧹'
+    "nikuy": {
+        "id": "nikuy",
+        "name": "ניקוי כוכביות",
+        "desc": "מסיר * ו-? מדוח נוכחות חודשי",
+        "accept": ".xls,.xlsx",
+        "icon": "🧹",
     }
 }
 
@@ -161,98 +231,117 @@ td { padding: 12px; border-bottom: 1px solid #f1f5f9; vertical-align: middle; }
 .modal-box { background: white; border-radius: 16px; padding: 1.75rem; width: 320px; }
 """
 
+
 def get_db():
     conn = sqlite3.connect(DB)
     conn.row_factory = sqlite3.Row
     return conn
 
+
 def init_db():
     with get_db() as db:
-        db.execute('''CREATE TABLE IF NOT EXISTS users (
+        db.execute(
+            """CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             username TEXT UNIQUE NOT NULL,
             password TEXT NOT NULL,
             full_name TEXT,
             is_admin INTEGER DEFAULT 0,
-            active INTEGER DEFAULT 1)''')
-        db.execute('''CREATE TABLE IF NOT EXISTS permissions (
+            active INTEGER DEFAULT 1)"""
+        )
+        db.execute(
+            """CREATE TABLE IF NOT EXISTS permissions (
             user_id INTEGER, script_id TEXT,
-            PRIMARY KEY (user_id, script_id))''')
+            PRIMARY KEY (user_id, script_id))"""
+        )
         if not db.execute("SELECT id FROM users WHERE username='admin'").fetchone():
-            db.execute("INSERT INTO users(username,password,full_name,is_admin)VALUES(?,?,?,1)",
-                ('admin', generate_password_hash('admin123'), 'מנהל מערכת'))
+            db.execute(
+                "INSERT INTO users(username,password,full_name,is_admin) VALUES (?,?,?,1)",
+                ("admin", generate_password_hash("admin123"), "מנהל מערכת"),
+            )
         db.commit()
+
 
 init_db()
 
+
 def add_flash(msg):
-    session.setdefault('msgs', []).append(msg)
+    session.setdefault("msgs", []).append(msg)
+
 
 def pop_flashes():
-    msgs = session.pop('msgs', [])
-    return ''.join('<div class="flash">' + m + '</div>' for m in msgs)
+    msgs = session.pop("msgs", [])
+    return "".join('<div class="flash">' + m + "</div>" for m in msgs)
+
 
 def render(title, body, nav=True):
-    topbar = ''
+    topbar = ""
     if nav:
-        name = session.get('name', '')
+        name = session.get("name", "")
         topbar = (
             '<div class="topbar">'
-            '<h1>&#9201; זמן אמת</h1>'
+            "<h1>&#9201; זמן אמת</h1>"
             '<div style="display:flex;gap:16px;align-items:center">'
-            '<span style="font-size:13px;color:#93c5fd">שלום, ' + name + '</span>'
+            '<span style="font-size:13px;color:#93c5fd">שלום, ' + name + "</span>"
             '<a href="/logout">יציאה</a>'
-            '</div></div>'
+            "</div></div>"
         )
-    wrap_cls = 'wrap' if nav else 'login-wrap'
+    wrap_cls = "wrap" if nav else "login-wrap"
     return (
         '<!DOCTYPE html><html dir="rtl" lang="he">'
-        '<head><meta charset="UTF-8">'
+        "<head><meta charset=\"UTF-8\">"
         '<meta name="viewport" content="width=device-width,initial-scale=1">'
-        '<title>' + title + ' | זמן אמת</title>'
-        '<style>' + CSS + '</style></head>'
-        '<body>' + topbar +
-        '<div class="' + wrap_cls + '">' + pop_flashes() + body + '</div>'
-        '</body></html>'
+        "<title>" + title + " | זמן אמת</title>"
+        "<style>" + CSS + "</style></head>"
+        "<body>" + topbar + '<div class="' + wrap_cls + '">' + pop_flashes() + body + "</div></body></html>"
     )
+
 
 def login_required(f):
     from functools import wraps
+
     @wraps(f)
     def decorated(*args, **kwargs):
-        if 'user_id' not in session:
-            return redirect('/')
+        if "user_id" not in session:
+            return redirect("/")
         return f(*args, **kwargs)
+
     return decorated
+
 
 def admin_required(f):
     from functools import wraps
+
     @wraps(f)
     def decorated(*args, **kwargs):
-        if not session.get('is_admin'):
-            return redirect('/dashboard')
+        if not session.get("is_admin"):
+            return redirect("/dashboard")
         return f(*args, **kwargs)
+
     return decorated
 
 
-@app.route('/', methods=['GET', 'POST'])
+@app.route("/", methods=["GET", "POST"])
 def login():
-    if 'user_id' in session:
-        return redirect('/admin' if session.get('is_admin') else '/dashboard')
-    error = ''
-    if request.method == 'POST':
-        u = request.form['username'].strip()
-        p = request.form['password']
+    if "user_id" in session:
+        return redirect("/admin" if session.get("is_admin") else "/dashboard")
+
+    error = ""
+    if request.method == "POST":
+        username = request.form["username"].strip()
+        password = request.form["password"]
         with get_db() as db:
-            user = db.execute("SELECT * FROM users WHERE username=? AND active=1", (u,)).fetchone()
-        if user and check_password_hash(user['password'], p):
-            session.update({
-                'user_id': user['id'],
-                'username': user['username'],
-                'name': user['full_name'],
-                'is_admin': bool(user['is_admin'])
-            })
-            return redirect('/admin' if user['is_admin'] else '/dashboard')
+            user = db.execute("SELECT * FROM users WHERE username=? AND active=1", (username,)).fetchone()
+        if user and check_password_hash(user["password"], password):
+            session.update(
+                {
+                    "user_id": user["id"],
+                    "username": user["username"],
+                    "name": user["full_name"],
+                    "is_admin": bool(user["is_admin"]),
+                }
+            )
+            return redirect("/admin" if user["is_admin"] else "/dashboard")
         error = '<div class="flash-err">שם משתמש או סיסמה שגויים</div>'
 
     body = (
@@ -261,109 +350,117 @@ def login():
         '<div style="font-size:40px">&#9201;</div>'
         '<h1 style="font-size:20px;font-weight:700;color:#1e3a8a;margin-top:8px">זמן אמת</h1>'
         '<p style="font-size:12px;color:#888;margin-top:3px">מערכת לניהול נוכחות ושכר</p>'
-        '</div>' + error +
-        '<form method="POST">'
+        "</div>"
+        + error
+        + '<form method="POST">'
         '<label class="field-label">שם משתמש</label>'
         '<input type="text" name="username" required autofocus>'
         '<label class="field-label">סיסמה</label>'
         '<input type="password" name="password" required>'
         '<button type="submit" class="btn btn-blue" style="width:100%;padding:12px;font-size:15px;margin-top:.5rem">כניסה למערכת</button>'
-        '</form>'
+        "</form>"
         '<p style="text-align:center;margin-top:1.5rem;font-size:11px;color:#bbb">&#169; זמן אמת</p>'
-        '</div>'
+        "</div>"
     )
-    return render('כניסה', body, nav=False)
+    return render("כניסה", body, nav=False)
 
 
-@app.route('/logout')
+@app.route("/logout")
 def logout():
     session.clear()
-    return redirect('/')
+    return redirect("/")
 
 
-@app.route('/dashboard')
+@app.route("/dashboard")
 @login_required
 def dashboard():
-    if session.get('is_admin'):
-        return redirect('/admin')
-    with get_db() as db:
-        perms = db.execute(
-            "SELECT script_id FROM permissions WHERE user_id=?",
-            (session['user_id'],)
-        ).fetchall()
-    allowed = [SCRIPTS[p['script_id']] for p in perms if p['script_id'] in SCRIPTS]
+    if session.get("is_admin"):
+        return redirect("/admin")
 
-    cards = ''
-    for s in allowed:
+    with get_db() as db:
+        perms = db.execute("SELECT script_id FROM permissions WHERE user_id=?", (session["user_id"],)).fetchall()
+
+    allowed = [SCRIPTS[p["script_id"]] for p in perms if p["script_id"] in SCRIPTS]
+    cards = ""
+    for script in allowed:
         cards += (
-            '<a href="/run/' + s['id'] + '" style="background:white;border-radius:16px;'
-            'box-shadow:0 2px 16px rgba(0,0,0,.06);padding:1.5rem;text-decoration:none;display:block">'
-            '<div style="font-size:36px;margin-bottom:.75rem">' + s['icon'] + '</div>'
-            '<div style="font-size:15px;font-weight:700;color:#1e3a8a;margin-bottom:4px">' + s['name'] + '</div>'
-            '<div style="font-size:12px;color:#64748b">' + s['desc'] + '</div>'
-            '</a>'
+            '<a href="/run/' + script["id"] + '" style="background:white;border-radius:16px;box-shadow:0 2px 16px rgba(0,0,0,.06);padding:1.5rem;text-decoration:none;display:block">'
+            '<div style="font-size:36px;margin-bottom:.75rem">' + script["icon"] + "</div>"
+            '<div style="font-size:15px;font-weight:700;color:#1e3a8a;margin-bottom:4px">' + script["name"] + "</div>"
+            '<div style="font-size:12px;color:#64748b">' + script["desc"] + "</div>"
+            "</a>"
         )
 
     if not allowed:
         cards = (
             '<div style="text-align:center;padding:3rem;color:#94a3b8">'
             '<div style="font-size:48px;margin-bottom:1rem">&#128274;</div>'
-            '<div>אין כלים זמינים עדיין</div>'
-            '</div>'
+            "<div>אין כלים זמינים עדיין</div>"
+            "</div>"
         )
 
     body = (
-        '<h2 style="font-size:22px;font-weight:700;color:#1e3a8a;margin-bottom:.4rem">'
-        'שלום, ' + session['name'] + ' &#128075;</h2>'
-        '<p style="font-size:14px;color:#64748b;margin-bottom:2rem">הכלים הזמינים עבורך:</p>'
+        '<h2 style="font-size:22px;font-weight:700;color:#1e3a8a;margin-bottom:.4rem">שלום, '
+        + session["name"]
+        + ' &#128075;</h2><p style="font-size:14px;color:#64748b;margin-bottom:2rem">הכלים הזמינים עבורך:</p>'
         '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:1rem">'
-        + cards + '</div>'
+        + cards
+        + "</div>"
     )
-    return render('הכלים שלי', body)
+    return render("הכלים שלי", body)
 
 
-@app.route('/run/<script_id>', methods=['GET', 'POST'])
+@app.route("/run/<script_id>", methods=["GET", "POST"])
 @login_required
 def run_script(script_id):
-    if session.get('is_admin'):
-        return redirect('/admin')
+    if session.get("is_admin"):
+        return redirect("/admin")
+
     with get_db() as db:
         perm = db.execute(
             "SELECT 1 FROM permissions WHERE user_id=? AND script_id=?",
-            (session['user_id'], script_id)
+            (session["user_id"], script_id),
         ).fetchone()
+
     if not perm or script_id not in SCRIPTS:
-        add_flash('אין לך הרשאה לסקריפט זה')
-        return redirect('/dashboard')
+        add_flash("אין לך הרשאה לסקריפט זה")
+        return redirect("/dashboard")
 
-    scr    = SCRIPTS[script_id]
+    scr = SCRIPTS[script_id]
     result = None
-    error  = ''
+    error = ""
 
-    if request.method == 'POST':
-        f = request.files.get('file')
-        if not f or f.filename == '':
+    if request.method == "POST":
+        file_obj = request.files.get("file")
+        validation_error, ext = validate_upload(file_obj)
+        if validation_error == "missing":
             error = '<div class="flash-err">לא נבחר קובץ</div>'
+        elif validation_error == "unsupported":
+            error = '<div class="flash-err">סוג קובץ לא נתמך</div>'
+        elif validation_error == "invalid_excel":
+            error = '<div class="flash-err">הקובץ שהועלה אינו קובץ אקסל תקין</div>'
+        elif validation_error == "empty":
+            error = '<div class="flash-err">הקובץ שהועלה ריק</div>'
+        elif validation_error == "too_large":
+            error = '<div class="flash-err">הקובץ גדול מדי</div>'
         else:
             uid = str(uuid.uuid4())[:8]
-            orig = f.filename
-            ext  = orig.rsplit('.', 1)[-1].lower() if '.' in orig else 'xls'
-            if ext not in {'xls', 'xlsx'}:
-                error = '<div class="flash-err">סוג קובץ לא נתמך</div>'
-            else:
-                inp = str(UPLOAD_FOLDER / f'{uid}.{ext}')
-                result_name = f'{uid}_cleaned.xlsx'
-                out = str(OUTPUT_FOLDER / result_name)
-                f.save(inp)
+            inp = str(UPLOAD_FOLDER / f"{uid}.{ext}")
+            result_name = f"{uid}_cleaned.xlsx"
+            out = str(OUTPUT_FOLDER / result_name)
+            file_obj.save(inp)
+            try:
+                process_spreadsheet(inp, out, ext)
+                result = result_name
+            except (xlrd.biffh.XLRDError, BadZipFile, OSError, ValueError):
+                error = '<div class="flash-err">הקובץ הועלה, אך לא ניתן לעבד אותו. בדוק שזהו דוח אקסל תקין ממערכת זמן אמת</div>'
+            except Exception as e:
+                error = '<div class="flash-err">שגיאה בעיבוד: ' + str(e) + "</div>"
+            finally:
                 try:
-                    process_spreadsheet(inp, out, ext)
-                    result = result_name
-                except Exception as e:
-                    error = '<div class="flash-err">שגיאה בעיבוד: ' + str(e) + '</div>'
-                finally:
-                    try:
-                        os.remove(inp)
-                    except: pass
+                    os.remove(inp)
+                except OSError:
+                    pass
 
     if result:
         content = (
@@ -372,168 +469,139 @@ def run_script(script_id):
             '<div style="font-size:16px;font-weight:700;color:#15803d;margin-bottom:10px">הקובץ מוכן!</div>'
             '<a href="/download/' + result + '" class="dl-btn">&#8681; הורד קובץ נקי</a>'
             '<br><br><a href="/run/' + script_id + '" style="font-size:13px;color:#2563eb">עבד קובץ נוסף</a>'
-            '</div>'
+            "</div>"
         )
     else:
         content = (
-            error +
-            '<form method="POST" enctype="multipart/form-data">'
+            error
+            + '<form method="POST" enctype="multipart/form-data">'
             '<div class="drop-zone" onclick="document.getElementById(\'fi\').click()">'
-            '<input type="file" name="file" id="fi" accept="' + scr['accept'] + '" style="display:none"'
-            ' onchange="document.getElementById(\'lbl\').textContent=this.files[0].name;'
-            'document.getElementById(\'gb\').disabled=false">'
+            '<input type="file" name="file" id="fi" accept="'
+            + scr["accept"]
+            + '" style="display:none" onchange="document.getElementById(\'lbl\').textContent=this.files[0].name;document.getElementById(\'gb\').disabled=false">'
             '<div style="font-size:32px;margin-bottom:8px">&#128194;</div>'
             '<div style="font-size:15px;font-weight:600;color:#1e40af;margin-bottom:4px">לחץ לבחירת קובץ</div>'
-            '<div style="font-size:12px;color:#94a3b8" id="lbl">' + scr['accept'] + '</div>'
-            '</div>'
-            '<button type="submit" class="btn btn-blue" id="gb" disabled'
-            ' style="width:100%;padding:13px;font-size:15px;font-weight:700">'
-            + scr['icon'] + ' הפעל</button>'
-            '</form>'
+            '<div style="font-size:12px;color:#94a3b8" id="lbl">'
+            + scr["accept"]
+            + "</div></div>"
+            '<button type="submit" class="btn btn-blue" id="gb" disabled style="width:100%;padding:13px;font-size:15px;font-weight:700">'
+            + scr["icon"]
+            + " הפעל</button></form>"
         )
 
     body = (
         '<a href="/dashboard" style="color:#2563eb;font-size:13px;text-decoration:none;display:block;margin-bottom:1rem">&#8592; חזרה לכלים</a>'
-        '<div class="card">'
-        '<div style="font-size:40px;margin-bottom:.5rem">' + scr['icon'] + '</div>'
-        '<div style="font-size:20px;font-weight:700;color:#1e3a8a;margin-bottom:4px">' + scr['name'] + '</div>'
-        '<div style="font-size:13px;color:#64748b;margin-bottom:1.75rem">' + scr['desc'] + '</div>'
-        + content +
-        '</div>'
+        '<div class="card"><div style="font-size:40px;margin-bottom:.5rem">'
+        + scr["icon"]
+        + '</div><div style="font-size:20px;font-weight:700;color:#1e3a8a;margin-bottom:4px">'
+        + scr["name"]
+        + '</div><div style="font-size:13px;color:#64748b;margin-bottom:1.75rem">'
+        + scr["desc"]
+        + "</div>"
+        + content
+        + "</div>"
     )
-    return render(scr['name'], body)
+    return render(scr["name"], body)
 
 
-@app.route('/download/<filename>')
+@app.route("/download/<filename>")
 @login_required
 def download(filename):
     path = OUTPUT_FOLDER / filename
     if not path.exists():
-        add_flash('הקובץ לא נמצא')
-        return redirect('/dashboard')
-    dn = filename.split('_', 1)[-1] if '_' in filename else filename
-    return send_file(path, as_attachment=True, download_name=dn)
+        add_flash("הקובץ לא נמצא")
+        return redirect("/dashboard")
+    download_name = filename.split("_", 1)[-1] if "_" in filename else filename
+    return send_file(path, as_attachment=True, download_name=download_name)
 
 
-@app.route('/admin')
+@app.route("/admin")
 @login_required
 @admin_required
 def admin():
     with get_db() as db:
         users = db.execute("SELECT * FROM users WHERE is_admin=0").fetchall()
         perms = db.execute("SELECT * FROM permissions").fetchall()
-    up = {}
-    for p in perms:
-        up.setdefault(p['user_id'], set()).add(p['script_id'])
 
-    rows = ''
-    for u in users:
-        uid  = u['id']
-        uname = u['username']
-        uname_full = u['full_name']
+    user_perms = {}
+    for perm in perms:
+        user_perms.setdefault(perm["user_id"], set()).add(perm["script_id"])
 
-        checks = ''
-        for sid, s in SCRIPTS.items():
-            checked = 'checked' if (uid in up and sid in up[uid]) else ''
+    rows = ""
+    for user in users:
+        uid = user["id"]
+        checks = ""
+        for sid, script in SCRIPTS.items():
+            checked = "checked" if (uid in user_perms and sid in user_perms[uid]) else ""
             checks += (
                 '<label style="display:flex;align-items:center;gap:5px;font-size:13px;margin-left:10px">'
-                '<input type="checkbox" name="scripts" value="' + sid + '" ' + checked + '>'
-                + s['icon'] + ' ' + s['name'] +
-                '</label>'
+                '<input type="checkbox" name="scripts" value="' + sid + '" ' + checked + ">"
+                + script["icon"]
+                + " "
+                + script["name"]
+                + "</label>"
             )
 
-        perm_form = (
-            '<form method="POST" action="/admin/permissions/' + str(uid) + '" style="display:inline">'
-            '<div style="display:flex;flex-wrap:wrap">' + checks + '</div>'
-            '<button type="submit" class="btn btn-gray" style="margin-top:6px;font-size:12px;padding:5px 12px">שמור</button>'
-            '</form>'
-        )
-
-        pass_btn = (
-            '<button class="btn btn-gray" style="font-size:12px;padding:5px 12px"'
-            ' onclick="openPass(' + str(uid) + ',\'' + uname_full + '\')">'
-            'שנה סיסמה</button>'
-        )
-
-        del_link = (
-            '<a href="/admin/delete/' + str(uid) + '" '
-            'onclick="return confirm(\'למחוק?\');" '
-            'class="btn btn-red" style="text-decoration:none;font-size:12px;padding:5px 12px">מחק</a>'
-        )
-
         rows += (
-            '<tr>'
-            '<td><strong>' + uname_full + '</strong></td>'
-            '<td><span class="badge">' + uname + '</span></td>'
-            '<td>' + perm_form + '</td>'
-            '<td>' + pass_btn + '</td>'
-            '<td>' + del_link + '</td>'
-            '</tr>'
+            "<tr>"
+            "<td><strong>" + user["full_name"] + "</strong></td>"
+            '<td><span class="badge">' + user["username"] + "</span></td>"
+            '<td><form method="POST" action="/admin/permissions/' + str(uid) + '" style="display:inline"><div style="display:flex;flex-wrap:wrap">'
+            + checks
+            + '</div><button type="submit" class="btn btn-gray" style="margin-top:6px;font-size:12px;padding:5px 12px">שמור</button></form></td>'
+            '<td><button class="btn btn-gray" style="font-size:12px;padding:5px 12px" onclick="openPass('
+            + str(uid)
+            + ", '"
+            + user["full_name"]
+            + "')\">שנה סיסמה</button></td>"
+            '<td><a href="/admin/delete/' + str(uid) + '" onclick="return confirm(\'למחוק?\');" class="btn btn-red" style="text-decoration:none;font-size:12px;padding:5px 12px">מחק</a></td>'
+            "</tr>"
         )
 
     table = (
-        '<table><thead><tr>'
-        '<th>שם</th><th>משתמש</th><th>הרשאות</th><th>סיסמה</th><th>מחק</th>'
-        '</tr></thead><tbody>' + rows + '</tbody></table>'
+        "<table><thead><tr><th>שם</th><th>משתמש</th><th>הרשאות</th><th>סיסמה</th><th>מחק</th></tr></thead><tbody>"
+        + rows
+        + "</tbody></table>"
     ) if users else '<p style="color:#94a3b8;text-align:center;padding:2rem">אין לקוחות עדיין</p>'
 
     body = (
-        '<div class="card">'
-        '<h2>&#10133; הוספת לקוח חדש</h2>'
-        '<form method="POST" action="/admin/add_user">'
-        '<div class="form-row">'
-        '<div class="form-group"><label class="field-label">שם מלא</label>'
-        '<input type="text" name="full_name" placeholder="שם הלקוח" required style="margin-bottom:0"></div>'
-        '<div class="form-group"><label class="field-label">שם משתמש</label>'
-        '<input type="text" name="username" placeholder="לכניסה למערכת" required style="margin-bottom:0"></div>'
-        '<div class="form-group"><label class="field-label">סיסמה</label>'
-        '<input type="password" name="password" placeholder="סיסמה ראשונית" required style="margin-bottom:0"></div>'
-        '<button type="submit" class="btn btn-blue" style="height:40px;align-self:flex-end">הוסף</button>'
-        '</div></form></div>'
-        '<div class="card"><h2>&#128101; לקוחות במערכת</h2>' + table + '</div>'
-        '<div class="modal-bg" id="passModal">'
-        '<div class="modal-box">'
-        '<h3 style="font-size:15px;font-weight:700;margin-bottom:1rem;color:#1e3a8a">'
-        'שינוי סיסמה &#8212; <span id="pname"></span></h3>'
-        '<form method="POST" id="pform">'
-        '<input type="password" name="new_password" placeholder="סיסמה חדשה" required>'
-        '<div style="display:flex;gap:8px;margin-top:.5rem;justify-content:flex-end">'
-        '<button type="button" class="btn btn-gray" onclick="closePass()">ביטול</button>'
-        '<button type="submit" class="btn btn-blue">עדכן</button>'
-        '</div></form></div></div>'
-        '<script>'
-        'function openPass(id,name){'
-        'document.getElementById("pname").textContent=name;'
-        'document.getElementById("pform").action="/admin/setpass/"+id;'
-        'document.getElementById("passModal").style.display="flex";}'
-        'function closePass(){'
-        'document.getElementById("passModal").style.display="none";}'
-        '</script>'
+        '<div class="card"><h2>&#10133; הוספת לקוח חדש</h2><form method="POST" action="/admin/add_user"><div class="form-row">'
+        '<div class="form-group"><label class="field-label">שם מלא</label><input type="text" name="full_name" placeholder="שם הלקוח" required style="margin-bottom:0"></div>'
+        '<div class="form-group"><label class="field-label">שם משתמש</label><input type="text" name="username" placeholder="לכניסה למערכת" required style="margin-bottom:0"></div>'
+        '<div class="form-group"><label class="field-label">סיסמה</label><input type="password" name="password" placeholder="סיסמה ראשונית" required style="margin-bottom:0"></div>'
+        '<button type="submit" class="btn btn-blue" style="height:40px;align-self:flex-end">הוסף</button></div></form></div>'
+        '<div class="card"><h2>&#128101; לקוחות במערכת</h2>'
+        + table
+        + '</div><div class="modal-bg" id="passModal"><div class="modal-box"><h3 style="font-size:15px;font-weight:700;margin-bottom:1rem;color:#1e3a8a">שינוי סיסמה &#8212; <span id="pname"></span></h3>'
+        '<form method="POST" id="pform"><input type="password" name="new_password" placeholder="סיסמה חדשה" required>'
+        '<div style="display:flex;gap:8px;margin-top:.5rem;justify-content:flex-end"><button type="button" class="btn btn-gray" onclick="closePass()">ביטול</button>'
+        '<button type="submit" class="btn btn-blue">עדכן</button></div></form></div></div>'
+        '<script>function openPass(id,name){document.getElementById("pname").textContent=name;document.getElementById("pform").action="/admin/setpass/"+id;document.getElementById("passModal").style.display="flex";}function closePass(){document.getElementById("passModal").style.display="none";}</script>'
     )
-    return render('ניהול', body)
+    return render("ניהול", body)
 
 
-@app.route('/admin/add_user', methods=['POST'])
+@app.route("/admin/add_user", methods=["POST"])
 @login_required
 @admin_required
 def add_user():
-    u = request.form['username'].strip()
-    p = request.form['password']
-    n = request.form['full_name'].strip()
+    username = request.form["username"].strip()
+    password = request.form["password"]
+    full_name = request.form["full_name"].strip()
     try:
         with get_db() as db:
             db.execute(
-                "INSERT INTO users(username,password,full_name)VALUES(?,?,?)",
-                (u, generate_password_hash(p), n)
+                "INSERT INTO users(username,password,full_name) VALUES (?,?,?)",
+                (username, generate_password_hash(password), full_name),
             )
             db.commit()
-        add_flash('משתמש ' + n + ' נוצר בהצלחה')
+        add_flash("משתמש " + full_name + " נוצר בהצלחה")
     except sqlite3.IntegrityError:
-        add_flash('שם משתמש כבר קיים')
-    return redirect('/admin')
+        add_flash("שם משתמש כבר קיים")
+    return redirect("/admin")
 
 
-@app.route('/admin/delete/<int:uid>')
+@app.route("/admin/delete/<int:uid>")
 @login_required
 @admin_required
 def delete_user(uid):
@@ -541,41 +609,41 @@ def delete_user(uid):
         db.execute("DELETE FROM users WHERE id=?", (uid,))
         db.execute("DELETE FROM permissions WHERE user_id=?", (uid,))
         db.commit()
-    add_flash('משתמש נמחק')
-    return redirect('/admin')
+    add_flash("משתמש נמחק")
+    return redirect("/admin")
 
 
-@app.route('/admin/setpass/<int:uid>', methods=['POST'])
+@app.route("/admin/setpass/<int:uid>", methods=["POST"])
 @login_required
 @admin_required
 def set_password(uid):
     with get_db() as db:
         db.execute(
             "UPDATE users SET password=? WHERE id=?",
-            (generate_password_hash(request.form['new_password']), uid)
+            (generate_password_hash(request.form["new_password"]), uid),
         )
         db.commit()
-    add_flash('סיסמה עודכנה')
-    return redirect('/admin')
+    add_flash("סיסמה עודכנה")
+    return redirect("/admin")
 
 
-@app.route('/admin/permissions/<int:uid>', methods=['POST'])
+@app.route("/admin/permissions/<int:uid>", methods=["POST"])
 @login_required
 @admin_required
 def set_permissions(uid):
-    selected = request.form.getlist('scripts')
+    selected = request.form.getlist("scripts")
     with get_db() as db:
         db.execute("DELETE FROM permissions WHERE user_id=?", (uid,))
-        for s in selected:
-            if s in SCRIPTS:
+        for script_id in selected:
+            if script_id in SCRIPTS:
                 db.execute(
-                    "INSERT OR IGNORE INTO permissions(user_id,script_id)VALUES(?,?)",
-                    (uid, s)
+                    "INSERT OR IGNORE INTO permissions(user_id,script_id) VALUES (?,?)",
+                    (uid, script_id),
                 )
         db.commit()
-    add_flash('הרשאות עודכנו')
-    return redirect('/admin')
+    add_flash("הרשאות עודכנו")
+    return redirect("/admin")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     app.run(debug=True)
