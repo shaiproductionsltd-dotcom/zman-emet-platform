@@ -1,6 +1,7 @@
 ﻿from pathlib import Path
 from zipfile import BadZipFile
 from collections import defaultdict
+import calendar
 import csv
 import html
 import os
@@ -798,6 +799,249 @@ def write_matan_missing_unmatched(ws, unmatched_rows):
         ws.column_dimensions[get_column_letter(col)].width = width
 
 
+def yes_no(value):
+    return "Yes" if value else "No"
+
+
+def parse_excel_date(workbook, value):
+    if value in ("", None):
+        return None
+    if isinstance(value, (int, float)):
+        try:
+            return xlrd.xldate_as_datetime(float(value), workbook.datemode).date()
+        except (ValueError, OverflowError):
+            return None
+    return None
+
+
+def parse_matan_manual_corrections(input_path):
+    workbook = xlrd.open_workbook(input_path)
+    employee_rows = []
+    daily_rows = []
+
+    for sheet in workbook.sheets():
+        employee_name = str(get_sheet_cell(sheet, 5, 5, "")).strip() or sheet.name
+        department = str(get_sheet_cell(sheet, 5, 23, "")).strip()
+        payroll_number = str(get_sheet_cell(sheet, 5, 50, "")).strip()
+        id_number = str(get_sheet_cell(sheet, 7, 5, "")).strip()
+
+        raw_corrections = 0
+        entry_corrections = 0
+        exit_corrections = 0
+        days_with_corrections = 0
+        capped_corrections = 0
+        work_days = 0
+        month_days = 0
+
+        for row_index in range(12, sheet.nrows):
+            entry_value = str(get_sheet_cell(sheet, row_index, 13, "")).strip()
+            exit_value = str(get_sheet_cell(sheet, row_index, 18, "")).strip()
+            event_value = str(get_sheet_cell(sheet, row_index, 22, "")).strip()
+            total_hours = str(get_sheet_cell(sheet, row_index, 30, "")).strip()
+            day_date = parse_excel_date(workbook, get_sheet_cell(sheet, row_index, 0, ""))
+
+            if not any([day_date, entry_value, exit_value, event_value, total_hours]):
+                continue
+
+            if day_date and not month_days:
+                month_days = calendar.monthrange(day_date.year, day_date.month)[1]
+
+            if any([entry_value, exit_value, event_value, total_hours]):
+                work_days += 1
+
+            entry_corrected = "*" in entry_value
+            exit_corrected = "*" in exit_value
+            raw_daily = int(entry_corrected) + int(exit_corrected)
+            capped_daily = min(raw_daily, 2)
+
+            if raw_daily:
+                days_with_corrections += 1
+                raw_corrections += raw_daily
+                entry_corrections += int(entry_corrected)
+                exit_corrections += int(exit_corrected)
+                capped_corrections += capped_daily
+
+            daily_rows.append(
+                {
+                    "employee_name": employee_name,
+                    "payroll_number": payroll_number,
+                    "id_number": id_number,
+                    "department": department,
+                    "date": day_date.isoformat() if day_date else "",
+                    "entry_corrected": entry_corrected,
+                    "exit_corrected": exit_corrected,
+                    "raw_daily_corrections": raw_daily,
+                    "capped_daily_corrections": capped_daily,
+                }
+            )
+
+        employee_rows.append(
+            {
+                "employee_name": employee_name,
+                "payroll_number": payroll_number,
+                "id_number": id_number,
+                "department": department,
+                "raw_correction_count": raw_corrections,
+                "entry_correction_count": entry_corrections,
+                "exit_correction_count": exit_corrections,
+                "days_with_corrections": days_with_corrections,
+                "capped_correction_count": capped_corrections,
+                "average_per_calendar_day": (capped_corrections / month_days) if month_days else 0.0,
+                "average_per_work_day": (capped_corrections / work_days) if work_days else 0.0,
+            }
+        )
+
+    return employee_rows, daily_rows
+
+
+def apply_matan_manual_corrections_filters(rows, options):
+    min_corrections = parse_float_or_none(options.get("min_corrections", ""))
+    max_corrections = parse_float_or_none(options.get("max_corrections", ""))
+    filtered = []
+    for row in rows:
+        correction_count = row["raw_correction_count"]
+        if min_corrections is not None and correction_count < min_corrections:
+            continue
+        if max_corrections is not None and correction_count > max_corrections:
+            continue
+        filtered.append(row)
+    return filtered
+
+
+def write_matan_corrections_summary(ws, employee_rows, filters_used):
+    ws.title = safe_sheet_title("Corrections Summary", "Corrections Summary")
+    ws.sheet_view.rightToLeft = True
+    ws.sheet_view.showGridLines = False
+    ws.freeze_panes = "A8"
+
+    ws["A1"] = "Matan Manual Corrections Summary"
+    ws["A1"].font = Font(bold=True, size=18)
+    ws["A1"].fill = PatternFill(fill_type="solid", fgColor="BFDBFE")
+
+    metrics = [
+        ("Employees in result", len(employee_rows)),
+        ("Total raw corrections", sum(row["raw_correction_count"] for row in employee_rows)),
+        ("Total capped corrections", sum(row["capped_correction_count"] for row in employee_rows)),
+        ("Total days with corrections", sum(row["days_with_corrections"] for row in employee_rows)),
+    ]
+    for idx, (label, value) in enumerate(metrics, start=3):
+        ws.cell(row=idx, column=1, value=label).font = Font(bold=True)
+        ws.cell(row=idx, column=2, value=value)
+
+    ws["D3"] = "Filters used"
+    ws["D3"].font = Font(bold=True)
+    for idx, (label, value) in enumerate(filters_used.items(), start=4):
+        ws.cell(row=idx, column=4, value=label).font = Font(bold=True)
+        ws.cell(row=idx, column=5, value=value or "All")
+
+    header_row = 7
+    headers = [
+        "Employee Name",
+        "Payroll Number",
+        "ID Number",
+        "Department",
+        "Raw Correction Count",
+        "Entry Correction Count",
+        "Exit Correction Count",
+        "Days With Corrections",
+        "Capped Correction Count",
+        "Average Per Calendar Day",
+        "Average Per Work Day",
+    ]
+    for col, header in enumerate(headers, start=1):
+        cell = ws.cell(row=header_row, column=col, value=header)
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = PatternFill(fill_type="solid", fgColor="1E3A8A")
+
+    sorted_rows = sorted(employee_rows, key=lambda row: (-row["raw_correction_count"], row["employee_name"]))
+    for row_idx, row in enumerate(sorted_rows, start=header_row + 1):
+        values = [
+            row["employee_name"],
+            row["payroll_number"],
+            row["id_number"],
+            row["department"],
+            row["raw_correction_count"],
+            row["entry_correction_count"],
+            row["exit_correction_count"],
+            row["days_with_corrections"],
+            row["capped_correction_count"],
+            row["average_per_calendar_day"],
+            row["average_per_work_day"],
+        ]
+        for col, value in enumerate(values, start=1):
+            ws.cell(row=row_idx, column=col, value=value)
+            if row_idx % 2 == 0:
+                ws.cell(row=row_idx, column=col).fill = PatternFill(fill_type="solid", fgColor="F8FAFC")
+        ws.cell(row=row_idx, column=10).number_format = "0.00"
+        ws.cell(row=row_idx, column=11).number_format = "0.00"
+
+    widths = [24, 16, 16, 24, 18, 18, 18, 18, 20, 20, 18]
+    for col, width in enumerate(widths, start=1):
+        ws.column_dimensions[get_column_letter(col)].width = width
+
+
+def write_matan_corrections_daily(ws, daily_rows, allowed_names):
+    ws.title = safe_sheet_title("Daily Corrections", "Daily Corrections")
+    ws.sheet_view.rightToLeft = True
+    ws.sheet_view.showGridLines = False
+    ws.freeze_panes = "A2"
+
+    headers = [
+        "Employee",
+        "Date",
+        "Entry Corrected",
+        "Exit Corrected",
+        "Raw Daily Corrections",
+        "Capped Daily Corrections",
+    ]
+    for col, header in enumerate(headers, start=1):
+        cell = ws.cell(row=1, column=col, value=header)
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = PatternFill(fill_type="solid", fgColor="0F766E")
+
+    row_idx = 2
+    for row in daily_rows:
+        if row["employee_name"] not in allowed_names or row["raw_daily_corrections"] <= 0:
+            continue
+        values = [
+            row["employee_name"],
+            row["date"],
+            yes_no(row["entry_corrected"]),
+            yes_no(row["exit_corrected"]),
+            row["raw_daily_corrections"],
+            row["capped_daily_corrections"],
+        ]
+        for col, value in enumerate(values, start=1):
+            ws.cell(row=row_idx, column=col, value=value)
+            if row_idx % 2 == 0:
+                ws.cell(row=row_idx, column=col).fill = PatternFill(fill_type="solid", fgColor="ECFDF5")
+        row_idx += 1
+
+    widths = [24, 14, 16, 16, 20, 22]
+    for col, width in enumerate(widths, start=1):
+        ws.column_dimensions[get_column_letter(col)].width = width
+
+
+def run_matan_manual_corrections(input_path, output_path, extension, options=None):
+    if extension != "xls":
+        raise ValueError("Matan manual-corrections tool currently supports XLS export only")
+    options = options or {}
+    employee_rows, daily_rows = parse_matan_manual_corrections(input_path)
+    filtered_rows = apply_matan_manual_corrections_filters(employee_rows, options)
+    allowed_names = {row["employee_name"] for row in filtered_rows}
+    wb = Workbook()
+    write_matan_corrections_summary(
+        wb.active,
+        filtered_rows,
+        {
+            "Min corrections": options.get("min_corrections", ""),
+            "Max corrections": options.get("max_corrections", ""),
+        },
+    )
+    write_matan_corrections_daily(wb.create_sheet(), daily_rows, allowed_names)
+    wb.save(output_path)
+
+
 def run_matan_missing_filter(input_path, output_path, extension, options=None):
     if extension != "xls":
         raise ValueError("Matan missing-hours tool currently supports XLS export only")
@@ -1180,6 +1424,14 @@ SCRIPTS["matan_missing"] = {
     "icon": "📊",
 }
 
+SCRIPTS["matan_manual_corrections"] = {
+    "id": "matan_manual_corrections",
+    "name": "Matan Manual Corrections",
+    "desc": "Count manual entry and exit corrections per employee",
+    "accept": ".xls",
+    "icon": "📝",
+}
+
 SCRIPT_REGISTRY["matan_missing"] = {
     **SCRIPTS["matan_missing"],
     "processor": run_matan_missing_filter,
@@ -1201,6 +1453,30 @@ SCRIPT_REGISTRY["matan_missing"] = {
     "filter_fields": [
         {"name": "min_missing_hours", "label": "Minimum missing hours", "placeholder": "For example 4"},
         {"name": "max_missing_hours", "label": "Maximum missing hours", "placeholder": "For example 8"}
+    ],
+}
+
+SCRIPT_REGISTRY["matan_manual_corrections"] = {
+    **SCRIPTS["matan_manual_corrections"],
+    "processor": run_matan_manual_corrections,
+    "output_suffix": "matan_manual_corrections",
+    "success_title": "Manual-corrections report is ready",
+    "success_action": "Download report",
+    "retry_action": "Process another file",
+    "submit_label": "Create corrections report",
+    "back_label": "Back to tools",
+    "empty_error": "No file selected",
+    "unsupported_error": "Please upload the original XLS monthly detailed attendance report",
+    "invalid_error": "The uploaded file is not a valid Excel file",
+    "empty_file_error": "The uploaded file is empty",
+    "too_large_error": "The uploaded file is too large",
+    "processing_error": "Could not generate the manual-corrections report from this file",
+    "processing_title": "Corrections report is being prepared",
+    "processing_note": "The system is counting manual attendance corrections for each employee. This may take a few minutes.",
+    "file_picker_label": "Choose monthly attendance report",
+    "filter_fields": [
+        {"name": "min_corrections", "label": "Minimum corrections", "placeholder": "For example 4"},
+        {"name": "max_corrections", "label": "Maximum corrections", "placeholder": "For example 12"},
     ],
 }
 
