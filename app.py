@@ -567,7 +567,7 @@ def run_script(script_id):
         + 'var button=document.getElementById("gb");'
         + 'var form=document.getElementById("uploadForm");'
         + 'if(fileInput && label){fileInput.addEventListener("change", function(){if(this.files && this.files.length){label.textContent=this.files[0].name;}});}'
-        + 'if(form){form.addEventListener("submit", function(event){if(!fileInput || !fileInput.files || !fileInput.files.length){event.preventDefault();return false;}button.disabled=true;button.textContent="Processing file...";var box=document.getElementById("processingBox");if(box){box.classList.add("show");}fileInput.disabled=true;return true;});}'
+        + 'if(form){form.addEventListener("submit", function(event){if(!fileInput || !fileInput.files || !fileInput.files.length){event.preventDefault();return false;}button.disabled=true;button.textContent="Processing file...";var box=document.getElementById("processingBox");if(box){box.classList.add("show");}return true;});}'
         + '</script>'
     )
     return render(scr["name"], body)
