@@ -16,8 +16,8 @@
 
 ## Next
 
-- [ ] Improve the wording in the waiting UI so it clearly explains that the report is being prepared
-- [ ] Clean the mixed English/Hebrew text on the upload flow and success screen
+- [x] Improve the wording in the waiting UI so it clearly explains that the report is being prepared
+- [x] Clean the mixed English/Hebrew text on the upload flow and success screen
 - [x] Inspect one real Flamingo export and map worker sheet / summary sheet matching rules
 - [x] Add the Flamingo payroll script using the new script registry
 - [x] Generate payroll summary and exceptions sheets for Flamingo
