@@ -285,6 +285,17 @@ td { padding: 12px; border-bottom: 1px solid #f1f5f9; vertical-align: middle; }
 .drop-zone:hover { border-color: #2563eb; background: #eff6ff; }
 .success-box { padding: 1.25rem; background: #f0fdf4; border: 1.5px solid #86efac; border-radius: 13px; text-align: center; margin-top: 1rem; }
 .dl-btn { display: inline-block; padding: 11px 28px; background: #16a34a; color: white; border-radius: 9px; font-size: 14px; font-weight: 700; text-decoration: none; }
+.processing-box { display: none; margin-top: 1rem; padding: 1.1rem 1.25rem; background: #eff6ff; border: 1.5px solid #bfdbfe; border-radius: 13px; }
+.processing-box.show { display: block; }
+.progress-track { width: 100%; height: 12px; border-radius: 999px; background: #dbeafe; overflow: hidden; margin: .9rem 0 .7rem; }
+.progress-bar { width: 45%; height: 100%; border-radius: 999px; background: linear-gradient(90deg, #2563eb 0%, #60a5fa 100%); animation: loadingSlide 1.6s ease-in-out infinite; }
+.processing-note { font-size: 13px; color: #1d4ed8; font-weight: 600; }
+.processing-subnote { font-size: 12px; color: #64748b; line-height: 1.6; }
+@keyframes loadingSlide {
+  0% { transform: translateX(0); }
+  50% { transform: translateX(120%); }
+  100% { transform: translateX(0); }
+}
 .modal-bg { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.4); z-index: 100; align-items: center; justify-content: center; }
 .modal-box { background: white; border-radius: 16px; padding: 1.75rem; width: 320px; }
 """
@@ -475,7 +486,7 @@ def run_script(script_id):
         ).fetchone()
 
     if not perm or script_id not in SCRIPTS:
-        add_flash("אין לך הרשאה לסקריפט זה")
+        add_flash("??? ?? ????? ??????? ??")
         return redirect("/dashboard")
 
     scr = SCRIPTS[script_id]
@@ -486,15 +497,15 @@ def run_script(script_id):
         file_obj = request.files.get("file")
         validation_error, ext = validate_upload(file_obj)
         if validation_error == "missing":
-            error = '<div class="flash-err">לא נבחר קובץ</div>'
+            error = '<div class="flash-err">No file selected</div>'
         elif validation_error == "unsupported":
-            error = '<div class="flash-err">סוג קובץ לא נתמך</div>'
+            error = '<div class="flash-err">Unsupported file type</div>'
         elif validation_error == "invalid_excel":
-            error = '<div class="flash-err">הקובץ שהועלה אינו קובץ אקסל תקין</div>'
+            error = '<div class="flash-err">The uploaded file is not a valid Excel file</div>'
         elif validation_error == "empty":
-            error = '<div class="flash-err">הקובץ שהועלה ריק</div>'
+            error = '<div class="flash-err">The uploaded file is empty</div>'
         elif validation_error == "too_large":
-            error = '<div class="flash-err">הקובץ גדול מדי</div>'
+            error = '<div class="flash-err">The uploaded file is too large</div>'
         else:
             uid = str(uuid.uuid4())[:8]
             inp = str(UPLOAD_FOLDER / f"{uid}.{ext}")
@@ -505,9 +516,9 @@ def run_script(script_id):
                 process_spreadsheet(inp, out, ext)
                 result = result_name
             except (xlrd.biffh.XLRDError, BadZipFile, OSError, ValueError):
-                error = '<div class="flash-err">הקובץ הועלה, אך לא ניתן לעבד אותו. בדוק שזהו דוח אקסל תקין ממערכת זמן אמת</div>'
+                error = '<div class="flash-err">The file was uploaded, but it could not be processed.</div>'
             except Exception as e:
-                error = '<div class="flash-err">שגיאה בעיבוד: ' + str(e) + "</div>"
+                error = '<div class="flash-err">Processing error: ' + str(e) + "</div>"
             finally:
                 try:
                     os.remove(inp)
@@ -518,43 +529,52 @@ def run_script(script_id):
         content = (
             '<div class="success-box">'
             '<div style="font-size:32px;margin-bottom:6px">&#9989;</div>'
-            '<div style="font-size:16px;font-weight:700;color:#15803d;margin-bottom:10px">הקובץ מוכן!</div>'
-            '<a href="/download/' + result + '" class="dl-btn">&#8681; הורד קובץ נקי</a>'
-            '<br><br><a href="/run/' + script_id + '" style="font-size:13px;color:#2563eb">עבד קובץ נוסף</a>'
-            "</div>"
+            '<div style="font-size:16px;font-weight:700;color:#15803d;margin-bottom:10px">File is ready!</div>'
+            '<a href="/download/' + result + '" class="dl-btn">&#8681; Download clean file</a>'
+            '<br><br><a href="/run/' + script_id + '" style="font-size:13px;color:#2563eb">Process another file</a>'
+            '</div>'
         )
     else:
         content = (
             error
-            + '<form method="POST" enctype="multipart/form-data">'
-            '<div class="drop-zone" onclick="document.getElementById(\'fi\').click()">'
-            '<input type="file" name="file" id="fi" accept="'
-            + scr["accept"]
-            + '" style="display:none" onchange="document.getElementById(\'lbl\').textContent=this.files[0].name;document.getElementById(\'gb\').disabled=false">'
-            '<div style="font-size:32px;margin-bottom:8px">&#128194;</div>'
-            '<div style="font-size:15px;font-weight:600;color:#1e40af;margin-bottom:4px">לחץ לבחירת קובץ</div>'
-            '<div style="font-size:12px;color:#94a3b8" id="lbl">'
-            + scr["accept"]
-            + "</div></div>"
-            '<button type="submit" class="btn btn-blue" id="gb" disabled style="width:100%;padding:13px;font-size:15px;font-weight:700">'
-            + scr["icon"]
-            + " הפעל</button></form>"
+            + '<form method="POST" enctype="multipart/form-data" id="uploadForm" onsubmit="return startProcessingState()">'
+            + '<div class="drop-zone" onclick="document.getElementById(&quot;fi&quot;).click()">'
+            + '<input type="file" name="file" id="fi" accept="' + scr["accept"] + '" style="display:none" onchange="document.getElementById(&quot;lbl&quot;).textContent=this.files[0].name;document.getElementById(&quot;gb&quot;).disabled=false">'
+            + '<div style="font-size:32px;margin-bottom:8px">&#128194;</div>'
+            + '<div style="font-size:15px;font-weight:600;color:#1e40af;margin-bottom:4px">Select file</div>'
+            + '<div style="font-size:12px;color:#94a3b8" id="lbl">' + scr["accept"] + '</div>'
+            + '</div>'
+            + '<button type="submit" class="btn btn-blue" id="gb" disabled style="width:100%;padding:13px;font-size:15px;font-weight:700">' + scr["icon"] + ' Run</button>'
+            + '<div class="processing-box" id="processingBox">'
+            + '<div class="processing-note">Your file is being processed</div>'
+            + '<div class="progress-track"><div class="progress-bar"></div></div>'
+            + '<div class="processing-subnote">Preparing the clean report can take a few minutes. Please keep this page open until the download is ready.</div>'
+            + '</div>'
+            + '</form>'
         )
 
     body = (
-        '<a href="/dashboard" style="color:#2563eb;font-size:13px;text-decoration:none;display:block;margin-bottom:1rem">&#8592; חזרה לכלים</a>'
-        '<div class="card"><div style="font-size:40px;margin-bottom:.5rem">'
-        + scr["icon"]
-        + '</div><div style="font-size:20px;font-weight:700;color:#1e3a8a;margin-bottom:4px">'
-        + scr["name"]
-        + '</div><div style="font-size:13px;color:#64748b;margin-bottom:1.75rem">'
-        + scr["desc"]
-        + "</div>"
+        '<a href="/dashboard" style="color:#2563eb;font-size:13px;text-decoration:none;display:block;margin-bottom:1rem">&#8592; Back to tools</a>'
+        + '<div class="card">'
+        + '<div style="font-size:40px;margin-bottom:.5rem">' + scr["icon"] + '</div>'
+        + '<div style="font-size:20px;font-weight:700;color:#1e3a8a;margin-bottom:4px">' + scr["name"] + '</div>'
+        + '<div style="font-size:13px;color:#64748b;margin-bottom:1.75rem">' + scr["desc"] + '</div>'
         + content
-        + "</div>"
+        + '</div>'
+        + '<script>'
+        + 'function startProcessingState(){'
+        + 'var fileInput=document.getElementById("fi");'
+        + 'if(!fileInput || !fileInput.files || !fileInput.files.length){return false;}'
+        + 'document.getElementById("gb").disabled=true;'
+        + 'document.getElementById("gb").textContent="Processing file...";'
+        + 'var box=document.getElementById("processingBox");'
+        + 'if(box){box.classList.add("show");}'
+        + 'fileInput.disabled=true;'
+        + 'return true;'
+        + '}'
+        + '</script>'
     )
     return render(scr["name"], body)
-
 
 @app.route("/download/<filename>")
 @login_required
