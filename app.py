@@ -1,8 +1,11 @@
 from pathlib import Path
 from zipfile import BadZipFile
 from collections import defaultdict
+import html
 import os
+import secrets
 import sqlite3
+import string
 import uuid
 
 from flask import Flask, redirect, request, send_file, session
@@ -807,6 +810,11 @@ def pop_flashes():
     return "".join('<div class="flash">' + m + "</div>" for m in msgs)
 
 
+def generate_temp_password(length=10):
+    alphabet = string.ascii_letters + string.digits
+    return "".join(secrets.choice(alphabet) for _ in range(length))
+
+
 def render(title, body, nav=True):
     topbar = ""
     if nav:
@@ -1087,11 +1095,14 @@ def admin():
             '<td><form method="POST" action="/admin/permissions/' + str(uid) + '" style="display:inline"><div style="display:flex;flex-wrap:wrap">'
             + checks
             + '</div><button type="submit" class="btn btn-gray" style="margin-top:6px;font-size:12px;padding:5px 12px">שמור</button></form></td>'
-            '<td><button class="btn btn-gray" style="font-size:12px;padding:5px 12px" onclick="openPass('
+            + '<td><div style="display:flex;gap:6px;flex-wrap:wrap">'
+            + '<button type="button" class="btn btn-gray" style="font-size:12px;padding:5px 12px" onclick="openPass('
             + str(uid)
-            + ", '"
-            + user["full_name"]
-            + "')\">שנה סיסמה</button></td>"
+            + ')">שנה סיסמה</button>'
+            + '<form method="POST" action="/admin/resetpass/'
+            + str(uid)
+            + '" style="display:inline"><button type="submit" class="btn btn-gray" style="font-size:12px;padding:5px 12px">סיסמה זמנית</button></form>'
+            '</div></td>'
             '<td><a href="/admin/delete/' + str(uid) + '" onclick="return confirm(\'למחוק?\');" class="btn btn-red" style="text-decoration:none;font-size:12px;padding:5px 12px">מחק</a></td>'
             "</tr>"
         )
@@ -1114,7 +1125,7 @@ def admin():
         '<form method="POST" id="pform"><input type="password" name="new_password" placeholder="סיסמה חדשה" required>'
         '<div style="display:flex;gap:8px;margin-top:.5rem;justify-content:flex-end"><button type="button" class="btn btn-gray" onclick="closePass()">ביטול</button>'
         '<button type="submit" class="btn btn-blue">עדכן</button></div></form></div></div>'
-        '<script>function openPass(id,name){document.getElementById("pname").textContent=name;document.getElementById("pform").action="/admin/setpass/"+id;document.getElementById("passModal").style.display="flex";}function closePass(){document.getElementById("passModal").style.display="none";}</script>'
+        '<script>function openPass(id,name){document.getElementById("pname").textContent=name||"";document.getElementById("pform").action="/admin/setpass/"+id;document.getElementById("passModal").style.display="flex";}function closePass(){document.getElementById("passModal").style.display="none";}</script>'
     )
     return render("ניהול", body)
 
@@ -1164,6 +1175,23 @@ def set_password(uid):
         )
         db.commit()
     add_flash("סיסמה עודכנה")
+    return redirect("/admin")
+
+
+@app.route("/admin/resetpass/<int:uid>", methods=["POST"])
+@login_required
+@admin_required
+def reset_password(uid):
+    temp_password = generate_temp_password()
+    with get_db() as db:
+        user = db.execute("SELECT full_name FROM users WHERE id=?", (uid,)).fetchone()
+        db.execute(
+            "UPDATE users SET password=? WHERE id=?",
+            (generate_password_hash(temp_password), uid),
+        )
+        db.commit()
+    name = user["full_name"] if user else str(uid)
+    add_flash("סיסמה זמנית עבור " + name + ": " + temp_password)
     return redirect("/admin")
 
 
