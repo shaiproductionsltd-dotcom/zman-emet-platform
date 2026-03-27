@@ -193,7 +193,8 @@ def run_attendance_cleanup(input_path, output_path, extension, options=None):
     process_spreadsheet(input_path, output_path, extension)
 
 
-PAYABLE_HOUR_LABELS = {"׳¨׳’׳™׳׳•׳×", "100%", "125%", "150%", "175%", "200%"}
+PAYABLE_HOUR_LABELS = {"רגילות", "׳¨׳’׳™׳׳•׳×", "100%", "125%", "150%", "175%", "200%"}
+REGULAR_PAYABLE_HOUR_LABELS = {"רגילות", "׳¨׳’׳™׳׳•׳×"}
 
 
 def parse_numeric_rate(value):
@@ -294,6 +295,9 @@ def extract_payable_hours(summary_sheet):
         label = str(get_sheet_cell(summary_sheet, row_index, 9, "")).strip()
         if label in PAYABLE_HOUR_LABELS:
             totals[label] = parse_hours_value(get_sheet_cell(summary_sheet, row_index, 13, ""))
+    regular_hours = [totals[label] for label in REGULAR_PAYABLE_HOUR_LABELS if totals.get(label) is not None]
+    if regular_hours:
+        return regular_hours[0], totals
     available = [value for value in totals.values() if value is not None]
     if not available:
         return None, totals
@@ -303,12 +307,15 @@ def extract_payable_hours(summary_sheet):
 def extract_flamingo_worker_pair(detail_sheet, summary_sheet):
     worker_name = str(find_row_label_value_with_offsets(detail_sheet, 5, "׳©׳ ׳׳×׳¦׳•׳’׳”", [2, 1])).strip() or detail_sheet.name
     department = str(find_row_label_value(detail_sheet, 5, "׳׳—׳׳§׳”")).strip()
-    rate_raw = find_row_label_value(detail_sheet, 5, "׳”׳¢׳¨׳•׳×")
+    rate_raw = ""
     worker_number = find_row_label_value(detail_sheet, 5, "׳׳¡׳₪׳¨ ׳‘׳©׳›׳¨")
     id_number = find_row_label_value(detail_sheet, 5, "׳×׳¢׳•׳“׳× ׳–׳”׳•׳×")
     start_date = find_row_label_value(detail_sheet, 5, "׳×׳—׳™׳׳× ׳¢׳‘׳•׳“׳”")
     department = str(find_row_label_value_with_offsets(detail_sheet, 5, "׳׳—׳׳§׳”", [3, 2, 1])).strip()
-    rate_raw = find_row_label_value_with_offsets(detail_sheet, 5, "׳”׳¢׳¨׳•׳×", [4, 3, 2, 1])
+    for rate_label in ("הערות", "׳”׳¢׳¨׳•׳×"):
+        rate_raw = find_row_label_value_with_offsets(detail_sheet, 5, rate_label, [4])
+        if rate_raw not in ("", None):
+            break
     worker_number = find_row_label_value_with_offsets(detail_sheet, 5, "׳׳¡׳₪׳¨ ׳‘׳©׳›׳¨", [5, 4, 3, 2, 1])
     id_number = find_row_label_value_with_offsets(detail_sheet, 5, "׳×׳¢׳•׳“׳× ׳–׳”׳•׳×", [2, 1])
     start_date = find_row_label_value_with_offsets(detail_sheet, 5, "׳×׳—׳™׳׳× ׳¢׳‘׳•׳“׳”", [4, 3, 2, 1])
