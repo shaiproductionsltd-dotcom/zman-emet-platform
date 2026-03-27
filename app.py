@@ -1,6 +1,7 @@
-from pathlib import Path
+﻿from pathlib import Path
 from zipfile import BadZipFile
 from collections import defaultdict
+import csv
 import html
 import os
 import secrets
@@ -188,11 +189,11 @@ def process_spreadsheet(input_path, output_path, extension):
     raise ValueError("Unsupported file type")
 
 
-def run_attendance_cleanup(input_path, output_path, extension):
+def run_attendance_cleanup(input_path, output_path, extension, options=None):
     process_spreadsheet(input_path, output_path, extension)
 
 
-PAYABLE_HOUR_LABELS = {"רגילות", "100%", "125%", "150%", "175%", "200%"}
+PAYABLE_HOUR_LABELS = {"׳¨׳’׳™׳׳•׳×", "100%", "125%", "150%", "175%", "200%"}
 
 
 def parse_numeric_rate(value):
@@ -229,6 +230,18 @@ def format_hours(hours_value):
     total_minutes = int(round(float(hours_value) * 60))
     hours, minutes = divmod(total_minutes, 60)
     return f"{hours:02d}:{minutes:02d}"
+
+
+def parse_hours_or_zero(value):
+    parsed = parse_hours_value(value)
+    return 0.0 if parsed is None else parsed
+
+
+def parse_float_or_none(value):
+    text = str(value).strip()
+    if not text:
+        return None
+    return float(text.replace(",", "."))
 
 
 def safe_sheet_title(title, fallback):
@@ -288,17 +301,17 @@ def extract_payable_hours(summary_sheet):
 
 
 def extract_flamingo_worker_pair(detail_sheet, summary_sheet):
-    worker_name = str(find_row_label_value_with_offsets(detail_sheet, 5, "שם לתצוגה", [2, 1])).strip() or detail_sheet.name
-    department = str(find_row_label_value(detail_sheet, 5, "מחלקה")).strip()
-    rate_raw = find_row_label_value(detail_sheet, 5, "הערות")
-    worker_number = find_row_label_value(detail_sheet, 5, "מספר בשכר")
-    id_number = find_row_label_value(detail_sheet, 5, "תעודת זהות")
-    start_date = find_row_label_value(detail_sheet, 5, "תחילת עבודה")
-    department = str(find_row_label_value_with_offsets(detail_sheet, 5, "מחלקה", [3, 2, 1])).strip()
-    rate_raw = find_row_label_value_with_offsets(detail_sheet, 5, "הערות", [4, 3, 2, 1])
-    worker_number = find_row_label_value_with_offsets(detail_sheet, 5, "מספר בשכר", [5, 4, 3, 2, 1])
-    id_number = find_row_label_value_with_offsets(detail_sheet, 5, "תעודת זהות", [2, 1])
-    start_date = find_row_label_value_with_offsets(detail_sheet, 5, "תחילת עבודה", [4, 3, 2, 1])
+    worker_name = str(find_row_label_value_with_offsets(detail_sheet, 5, "׳©׳ ׳׳×׳¦׳•׳’׳”", [2, 1])).strip() or detail_sheet.name
+    department = str(find_row_label_value(detail_sheet, 5, "׳׳—׳׳§׳”")).strip()
+    rate_raw = find_row_label_value(detail_sheet, 5, "׳”׳¢׳¨׳•׳×")
+    worker_number = find_row_label_value(detail_sheet, 5, "׳׳¡׳₪׳¨ ׳‘׳©׳›׳¨")
+    id_number = find_row_label_value(detail_sheet, 5, "׳×׳¢׳•׳“׳× ׳–׳”׳•׳×")
+    start_date = find_row_label_value(detail_sheet, 5, "׳×׳—׳™׳׳× ׳¢׳‘׳•׳“׳”")
+    department = str(find_row_label_value_with_offsets(detail_sheet, 5, "׳׳—׳׳§׳”", [3, 2, 1])).strip()
+    rate_raw = find_row_label_value_with_offsets(detail_sheet, 5, "׳”׳¢׳¨׳•׳×", [4, 3, 2, 1])
+    worker_number = find_row_label_value_with_offsets(detail_sheet, 5, "׳׳¡׳₪׳¨ ׳‘׳©׳›׳¨", [5, 4, 3, 2, 1])
+    id_number = find_row_label_value_with_offsets(detail_sheet, 5, "׳×׳¢׳•׳“׳× ׳–׳”׳•׳×", [2, 1])
+    start_date = find_row_label_value_with_offsets(detail_sheet, 5, "׳×׳—׳™׳׳× ׳¢׳‘׳•׳“׳”", [4, 3, 2, 1])
     notes = []
     status = "OK"
 
@@ -311,7 +324,7 @@ def extract_flamingo_worker_pair(detail_sheet, summary_sheet):
 
     if hourly_rate is None and status == "OK":
         status = "Missing hourly rate"
-        notes.append("Set hourly rate in the הערות field and export the report again.")
+        notes.append("Set hourly rate in the ׳”׳¢׳¨׳•׳× field and export the report again.")
 
     payable_hours = None
     payable_breakdown = {}
@@ -460,7 +473,7 @@ def write_flamingo_attention_sheet(ws, worker_rows):
     issues = [row for row in worker_rows if row["status"] != "OK"]
     for row_index, worker in enumerate(issues, start=2):
         if worker["status"] in {"Missing hourly rate", "Invalid hourly rate"}:
-            action = "Update the hourly rate in הערות and export the report again."
+            action = "Update the hourly rate in ׳”׳¢׳¨׳•׳× and export the report again."
         elif worker["status"] == "Could not match summary sheet":
             action = "Verify the report structure and confirm that each detail sheet has a following summary sheet."
         else:
@@ -568,7 +581,207 @@ def write_flamingo_top_earners_sheet(ws, worker_rows):
         ws.column_dimensions[get_column_letter(col_index)].width = width
 
 
-def run_flamingo_payroll(input_path, output_path, extension):
+def load_org_structure_csv(csv_path):
+    records = {}
+    unmatched = []
+    with open(csv_path, "r", encoding="utf-8-sig", newline="") as handle:
+        reader = csv.DictReader(handle)
+        for row in reader:
+            employee_number = (row.get("׳©׳›׳¨") or "").strip()
+            employee_id = (row.get("׳×.׳–") or "").strip()
+            entry = {
+                "employee_number": employee_number,
+                "id_number": employee_id,
+                "employee_name": (row.get("׳©׳ ׳¢׳•׳‘׳“") or "").strip(),
+                "direct_manager": (row.get("׳׳ ׳”׳ ׳™׳©׳™׳¨") or "").strip(),
+                "department": (row.get("׳׳—׳׳§׳”") or "").strip(),
+                "agreement_name": (row.get("׳©׳ ׳”׳¡׳›׳") or "").strip(),
+                "agreement_number": (row.get("׳׳¡' ׳”׳¡׳›׳") or "").strip(),
+            }
+            if employee_number:
+                records[("number", employee_number)] = entry
+            if employee_id:
+                records[("id", employee_id)] = entry
+            if not employee_number and not employee_id:
+                unmatched.append(entry)
+    return records, unmatched
+
+
+def parse_matan_missing_report(input_path):
+    wb = xlrd.open_workbook(input_path)
+    ws = wb.sheet_by_index(0)
+    header_row = 4
+    headers = [str(ws.cell_value(header_row, c)).strip() for c in range(ws.ncols)]
+    header_index = {header: idx for idx, header in enumerate(headers) if header}
+    rows = []
+    for row_index in range(header_row + 1, ws.nrows):
+        employee_number = str(get_sheet_cell(ws, row_index, header_index.get("׳׳¡׳₪׳¨ ׳¢׳•׳‘׳“", -1), "")).strip()
+        employee_name = str(get_sheet_cell(ws, row_index, header_index.get("׳©׳ ׳¢׳•׳‘׳“", -1), "")).strip()
+        if not employee_number and not employee_name:
+            continue
+        row = {
+            "employee_number": employee_number,
+            "month": str(get_sheet_cell(ws, row_index, header_index.get("׳—׳•׳“׳©", -1), "")).strip(),
+            "employee_name": employee_name,
+            "standard_hours": parse_hours_or_zero(get_sheet_cell(ws, row_index, header_index.get("׳©.׳×׳§׳", -1), "")),
+            "missing_hours": parse_hours_or_zero(get_sheet_cell(ws, row_index, header_index.get("׳—׳•׳¡׳¨", -1), "")),
+            "attendance_hours": parse_hours_or_zero(get_sheet_cell(ws, row_index, header_index.get("׳©.׳ ׳•׳›׳—׳•׳×", -1), "")),
+            "vacation_hours": parse_hours_or_zero(get_sheet_cell(ws, row_index, header_index.get("׳—׳•׳₪׳©׳”", -1), "")),
+            "sick_hours": parse_hours_or_zero(get_sheet_cell(ws, row_index, header_index.get("׳׳—׳׳”", -1), "")),
+            "reserve_hours": parse_hours_or_zero(get_sheet_cell(ws, row_index, header_index.get("׳׳™׳׳•׳׳™׳", -1), "")),
+            "pregnancy_hours": parse_hours_or_zero(get_sheet_cell(ws, row_index, header_index.get("׳©׳¢׳•׳× ׳”׳¨׳™׳•׳", -1), "")),
+            "special_child_hours": parse_hours_or_zero(get_sheet_cell(ws, row_index, header_index.get("׳©׳¢׳•׳× ׳™׳׳“ ׳׳™׳—׳“", -1), "")),
+            "absence_hours": parse_hours_or_zero(get_sheet_cell(ws, row_index, header_index.get("׳”׳™׳¢׳“׳¨׳•׳×", -1), "")),
+        }
+        rows.append(row)
+    return rows
+
+
+def apply_matan_missing_filters(rows, options):
+    min_missing = parse_float_or_none(options.get("min_missing_hours", ""))
+    max_missing = parse_float_or_none(options.get("max_missing_hours", ""))
+
+    filtered = []
+    for row in rows:
+        missing_hours = row["missing_hours"] or 0.0
+        if min_missing is not None and missing_hours < min_missing:
+            continue
+        if max_missing is not None and missing_hours > max_missing:
+            continue
+        filtered.append(row)
+    return filtered
+
+
+def write_matan_missing_summary(ws, filtered_rows, filters_used):
+    ws.title = safe_sheet_title("Missing Hours Summary", "Missing Summary")
+    ws.sheet_view.rightToLeft = True
+    ws.sheet_view.showGridLines = False
+    ws.freeze_panes = "A10"
+
+    total_missing = sum(row["missing_hours"] for row in filtered_rows)
+    total_attendance = sum(row["attendance_hours"] for row in filtered_rows)
+    total_standard = sum(row["standard_hours"] for row in filtered_rows)
+    avg_missing = (total_missing / len(filtered_rows)) if filtered_rows else 0.0
+    over_4 = sum(1 for row in filtered_rows if (row["missing_hours"] or 0.0) > 4.0)
+    over_8 = sum(1 for row in filtered_rows if (row["missing_hours"] or 0.0) > 8.0)
+
+    ws["A1"] = "Matan Missing Hours Summary"
+    ws["A1"].font = Font(bold=True, size=18)
+    ws["A1"].fill = PatternFill(fill_type="solid", fgColor="BFDBFE")
+
+    metrics = [
+        ("Employees in result", len(filtered_rows)),
+        ("Total missing hours", format_hours(total_missing)),
+        ("Average missing hours", format_hours(avg_missing)),
+        ("Total attendance hours", format_hours(total_attendance)),
+        ("Total standard hours", format_hours(total_standard)),
+        ("Employees above 4 missing hours", over_4),
+        ("Employees above 8 missing hours", over_8),
+    ]
+    for idx, (label, value) in enumerate(metrics, start=3):
+        ws.cell(row=idx, column=1, value=label).font = Font(bold=True)
+        ws.cell(row=idx, column=2, value=value)
+
+    ws["D3"] = "Filters used"
+    ws["D3"].font = Font(bold=True)
+    for idx, (label, value) in enumerate(filters_used.items(), start=4):
+        ws.cell(row=idx, column=4, value=label).font = Font(bold=True)
+        ws.cell(row=idx, column=5, value=value or "All")
+
+    header_row = 10
+    headers = ["Employee Number", "Employee Name", "Month", "Missing Hours", "Attendance Hours", "Standard Hours", "Vacation", "Sick", "Reserve", "Absence"]
+    for col, header in enumerate(headers, start=1):
+        cell = ws.cell(row=header_row, column=col, value=header)
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = PatternFill(fill_type="solid", fgColor="1E3A8A")
+
+    for row_idx, row in enumerate(filtered_rows, start=header_row + 1):
+        values = [
+            row["employee_number"],
+            row["employee_name"],
+            row["month"],
+            format_hours(row["missing_hours"]),
+            format_hours(row["attendance_hours"]),
+            format_hours(row["standard_hours"]),
+            format_hours(row["vacation_hours"]),
+            format_hours(row["sick_hours"]),
+            format_hours(row["reserve_hours"]),
+            format_hours(row["absence_hours"]),
+        ]
+        for col, value in enumerate(values, start=1):
+            ws.cell(row=row_idx, column=col, value=value)
+            if row_idx % 2 == 0:
+                ws.cell(row=row_idx, column=col).fill = PatternFill(fill_type="solid", fgColor="F8FAFC")
+    widths = [16, 24, 14, 14, 14, 14, 12, 12, 12, 12]
+    for col, width in enumerate(widths, start=1):
+        ws.column_dimensions[get_column_letter(col)].width = width
+
+
+def write_matan_missing_filtered(ws, filtered_rows):
+    ws.title = safe_sheet_title("Filtered Employees", "Filtered Employees")
+    ws.sheet_view.rightToLeft = True
+    ws.sheet_view.showGridLines = False
+    ws.freeze_panes = "A2"
+    headers = [
+        "Employee Number", "Employee Name", "Month", "Standard Hours", "Missing Hours", "Attendance Hours",
+        "Vacation", "Sick", "Reserve", "Pregnancy", "Special Child", "Absence"
+    ]
+    for col, header in enumerate(headers, start=1):
+        cell = ws.cell(row=1, column=col, value=header)
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = PatternFill(fill_type="solid", fgColor="0F766E")
+    for row_idx, row in enumerate(filtered_rows, start=2):
+        values = [
+            row["employee_number"], row["employee_name"], row["month"], format_hours(row["standard_hours"]), format_hours(row["missing_hours"]),
+            format_hours(row["attendance_hours"]), format_hours(row["vacation_hours"]), format_hours(row["sick_hours"]),
+            format_hours(row["reserve_hours"]), format_hours(row["pregnancy_hours"]), format_hours(row["special_child_hours"]),
+            format_hours(row["absence_hours"]),
+        ]
+        for col, value in enumerate(values, start=1):
+            ws.cell(row=row_idx, column=col, value=value)
+    widths = [16, 24, 14, 14, 14, 14, 12, 12, 12, 12, 14, 12]
+    for col, width in enumerate(widths, start=1):
+        ws.column_dimensions[get_column_letter(col)].width = width
+
+
+def write_matan_missing_unmatched(ws, unmatched_rows):
+    ws.title = safe_sheet_title("Unmatched Employees", "Unmatched Employees")
+    ws.sheet_view.rightToLeft = True
+    ws.sheet_view.showGridLines = False
+    headers = ["Employee Number", "Employee Name", "Note"]
+    for col, header in enumerate(headers, start=1):
+        cell = ws.cell(row=1, column=col, value=header)
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = PatternFill(fill_type="solid", fgColor="B91C1C")
+    for row_idx, row in enumerate(unmatched_rows, start=2):
+        ws.cell(row=row_idx, column=1, value=row["employee_number"])
+        ws.cell(row=row_idx, column=2, value=row["employee_name"])
+        ws.cell(row=row_idx, column=3, value="No matching record was found in the organization CSV")
+    widths = [16, 24, 42]
+    for col, width in enumerate(widths, start=1):
+        ws.column_dimensions[get_column_letter(col)].width = width
+
+
+def run_matan_missing_filter(input_path, output_path, extension, options=None):
+    if extension != "xls":
+        raise ValueError("Matan missing-hours tool currently supports XLS export only")
+    options = options or {}
+    rows = parse_matan_missing_report(input_path)
+    filtered_rows = apply_matan_missing_filters(rows, options)
+    wb = Workbook()
+    write_matan_missing_summary(
+        wb.active,
+        filtered_rows,
+        {
+            "Min missing hours": options.get("min_missing_hours", ""),
+            "Max missing hours": options.get("max_missing_hours", ""),
+        },
+    )
+    write_matan_missing_filtered(wb.create_sheet(), filtered_rows)
+    wb.save(output_path)
+
+
+def run_flamingo_payroll(input_path, output_path, extension, options=None):
     if extension != "xls":
         raise ValueError("Flamingo payroll currently supports original XLS exports only")
 
@@ -652,8 +865,8 @@ def is_integrity_error(exc):
 SCRIPTS = {
     "nikuy": {
         "id": "nikuy",
-        "name": "ניקוי כוכביות",
-        "desc": "מסיר * ו-? מדוח נוכחות חודשי",
+        "name": "Attendance Cleanup",
+        "desc": "Remove * and ? from monthly attendance report",
         "accept": ".xls,.xlsx",
         "icon": "🧹",
     }
@@ -664,27 +877,27 @@ SCRIPT_REGISTRY = {
         **SCRIPTS["nikuy"],
         "processor": run_attendance_cleanup,
         "output_suffix": "cleaned",
-        "success_title": "הקובץ מוכן",
-        "success_action": "הורדת קובץ נקי",
-        "retry_action": "עיבוד קובץ נוסף",
-        "submit_label": "הפעל",
-        "back_label": "חזרה לכלים",
-        "empty_error": "לא נבחר קובץ",
-        "unsupported_error": "סוג הקובץ אינו נתמך",
-        "invalid_error": "הקובץ שהועלה אינו קובץ אקסל תקין",
-        "empty_file_error": "הקובץ שהועלה ריק",
-        "too_large_error": "הקובץ שהועלה גדול מדי",
-        "processing_error": "הקובץ הועלה אך לא ניתן היה לעבד אותו",
-        "processing_title": "הקובץ נמצא בעיבוד",
-        "processing_note": "הכנת הדוח הנקי עשויה להימשך כמה דקות. יש להשאיר את הדף פתוח עד שההורדה תהיה מוכנה.",
-        "file_picker_label": "בחירת קובץ",
+        "success_title": "File is ready",
+        "success_action": "Download cleaned file",
+        "retry_action": "Process another file",
+        "submit_label": "Run",
+        "back_label": "Back to tools",
+        "empty_error": "No file selected",
+        "unsupported_error": "Unsupported file type",
+        "invalid_error": "The uploaded file is not a valid Excel file",
+        "empty_file_error": "The uploaded file is empty",
+        "too_large_error": "The uploaded file is too large",
+        "processing_error": "The uploaded file could not be processed",
+        "processing_title": "File is being processed",
+        "processing_note": "Preparing the cleaned report may take a few minutes. Please keep this page open.",
+        "file_picker_label": "Choose file",
     }
 }
 
 SCRIPTS["flamingo_payroll"] = {
     "id": "flamingo_payroll",
-    "name": "שכר פלמינגו",
-    "desc": "חישוב שכר לפי שעות לתשלום ותעריף שעתי",
+    "name": "Flamingo Payroll",
+    "desc": "Payroll summary based on payable hours and hourly rate",
     "accept": ".xls",
     "icon": "$",
 }
@@ -693,20 +906,52 @@ SCRIPT_REGISTRY["flamingo_payroll"] = {
     **SCRIPTS["flamingo_payroll"],
     "processor": run_flamingo_payroll,
     "output_suffix": "flamingo_payroll",
-    "success_title": "קובץ השכר מוכן",
-    "success_action": "הורדת סיכום שכר",
-    "retry_action": "עיבוד קובץ שכר נוסף",
-    "submit_label": "יצירת סיכום שכר",
-    "back_label": "חזרה לכלים",
-    "empty_error": "לא נבחר קובץ",
-    "unsupported_error": "יש להעלות את קובץ ה־XLS המקורי של פלמינגו",
-    "invalid_error": "הקובץ שהועלה אינו קובץ אקסל תקין",
-    "empty_file_error": "הקובץ שהועלה ריק",
-    "too_large_error": "הקובץ שהועלה גדול מדי",
-    "processing_error": "לא ניתן היה להכין קובץ שכר מהדוח שהועלה",
-    "processing_title": "סיכום השכר נמצא בהכנה",
-    "processing_note": "המערכת מחשבת את שעות התשלום והשכר לכל העובדים. התהליך עשוי להימשך כמה דקות.",
-    "file_picker_label": "בחירת קובץ פלמינגו",
+    "success_title": "Payroll file is ready",
+    "success_action": "Download payroll summary",
+    "retry_action": "Process another payroll file",
+    "submit_label": "Create payroll summary",
+    "back_label": "Back to tools",
+    "empty_error": "No file selected",
+    "unsupported_error": "Please upload the original Flamingo XLS export",
+    "invalid_error": "The uploaded file is not a valid Excel file",
+    "empty_file_error": "The uploaded file is empty",
+    "too_large_error": "The uploaded file is too large",
+    "processing_error": "Could not generate a payroll summary from this file",
+    "processing_title": "Payroll summary is being prepared",
+    "processing_note": "The system is calculating payable hours and salary for all employees. This may take a few minutes.",
+    "file_picker_label": "Choose Flamingo file",
+}
+
+SCRIPTS["matan_missing"] = {
+    "id": "matan_missing",
+    "name": "Matan Missing Hours",
+    "desc": "Filter employees by missing-hours range",
+    "accept": ".xls",
+    "icon": "ג±",
+}
+
+SCRIPT_REGISTRY["matan_missing"] = {
+    **SCRIPTS["matan_missing"],
+    "processor": run_matan_missing_filter,
+    "output_suffix": "matan_missing",
+    "success_title": "Missing-hours report is ready",
+    "success_action": "Download report",
+    "retry_action": "Process another file",
+    "submit_label": "Create report",
+    "back_label": "Back to tools",
+    "empty_error": "No file selected",
+    "unsupported_error": "Please upload the original XLS missing-hours report",
+    "invalid_error": "The uploaded file is not a valid Excel file",
+    "empty_file_error": "The uploaded file is empty",
+    "too_large_error": "The uploaded file is too large",
+    "processing_error": "Could not generate the missing-hours report from this file",
+    "processing_title": "Report is being prepared",
+    "processing_note": "The system is filtering the missing-hours report. This may take a few minutes.",
+    "file_picker_label": "Choose missing-hours report",
+    "filter_fields": [
+        {"name": "min_missing_hours", "label": "Minimum missing hours", "placeholder": "For example 4"},
+        {"name": "max_missing_hours", "label": "Maximum missing hours", "placeholder": "For example 8"}
+    ],
 }
 
 SCRIPTS = SCRIPT_REGISTRY
@@ -721,11 +966,11 @@ def build_output_filename(script, uid):
     return f"{uid}_{suffix}.xlsx"
 
 
-def execute_script(script, input_path, output_path, extension):
+def execute_script(script, input_path, output_path, extension, options=None):
     processor = script.get("processor")
     if processor is None:
         raise ValueError("Script processor is not configured")
-    processor(input_path, output_path, extension)
+    processor(input_path, output_path, extension, options)
 
 
 CSS = """
@@ -793,7 +1038,7 @@ def init_db():
         if not db.execute("SELECT id FROM users WHERE username='admin'").fetchone():
             db.execute(
                 "INSERT INTO users(username,password,full_name,is_admin) VALUES (?,?,?,1)",
-                ("admin", generate_password_hash("admin123"), "מנהל מערכת"),
+                ("admin", generate_password_hash("admin123"), "׳׳ ׳”׳ ׳׳¢׳¨׳›׳×"),
             )
         db.commit()
 
@@ -821,10 +1066,10 @@ def render(title, body, nav=True):
         name = session.get("name", "")
         topbar = (
             '<div class="topbar">'
-            "<h1>&#9201; סקריפטלי</h1>"
+            "<h1>&#9201; Scriptly</h1>"
             '<div style="display:flex;gap:16px;align-items:center">'
-            '<span style="font-size:13px;color:#93c5fd">שלום, ' + name + "</span>"
-            '<a href="/logout">יציאה</a>'
+            '<span style="font-size:13px;color:#93c5fd">Hello, ' + name + "</span>"
+            '<a href="/logout">Logout</a>'
             "</div></div>"
         )
     wrap_cls = "wrap" if nav else "login-wrap"
@@ -832,7 +1077,7 @@ def render(title, body, nav=True):
         '<!DOCTYPE html><html dir="rtl" lang="he">'
         "<head><meta charset=\"UTF-8\">"
         '<meta name="viewport" content="width=device-width,initial-scale=1">'
-        "<title>" + title + " | סקריפטלי</title>"
+        "<title>" + title + " | Scriptly</title>"
         "<style>" + CSS + "</style></head>"
         "<body>" + topbar + '<div class="' + wrap_cls + '">' + pop_flashes() + body + "</div></body></html>"
     )
@@ -883,27 +1128,27 @@ def login():
                 }
             )
             return redirect("/admin" if user["is_admin"] else "/dashboard")
-        error = '<div class="flash-err">שם משתמש או סיסמה שגויים</div>'
+        error = '<div class="flash-err">Wrong username or password</div>'
 
     body = (
         '<div class="card" style="padding:2rem">'
         '<div style="text-align:center;margin-bottom:1.5rem">'
         '<div style="font-size:40px">&#9201;</div>'
-        '<h1 style="font-size:20px;font-weight:700;color:#1e3a8a;margin-top:8px">סקריפטלי</h1>'
-        '<p style="font-size:12px;color:#888;margin-top:3px">מערכת לניהול נוכחות ושכר</p>'
+        '<h1 style="font-size:20px;font-weight:700;color:#1e3a8a;margin-top:8px">Scriptly</h1>'
+        '<p style="font-size:12px;color:#888;margin-top:3px">Attendance and payroll tools</p>'
         "</div>"
         + error
         + '<form method="POST">'
-        '<label class="field-label">שם משתמש</label>'
+        '<label class="field-label">Username</label>'
         '<input type="text" name="username" required autofocus>'
-        '<label class="field-label">סיסמה</label>'
+        '<label class="field-label">Password</label>'
         '<input type="password" name="password" required>'
-        '<button type="submit" class="btn btn-blue" style="width:100%;padding:12px;font-size:15px;margin-top:.5rem">כניסה למערכת</button>'
+        '<button type="submit" class="btn btn-blue" style="width:100%;padding:12px;font-size:15px;margin-top:.5rem">Login</button>'
         "</form>"
-        '<p style="text-align:center;margin-top:1.5rem;font-size:11px;color:#bbb">&#169; סקריפטלי</p>'
+        '<p style="text-align:center;margin-top:1.5rem;font-size:11px;color:#bbb">&#169; Scriptly</p>'
         "</div>"
     )
-    return render("כניסה", body, nav=False)
+    return render("Login", body, nav=False)
 
 
 @app.route("/logout")
@@ -936,19 +1181,19 @@ def dashboard():
         cards = (
             '<div style="text-align:center;padding:3rem;color:#94a3b8">'
             '<div style="font-size:48px;margin-bottom:1rem">&#128274;</div>'
-            "<div>אין כלים זמינים עדיין</div>"
+            "<div>No tools are available yet</div>"
             "</div>"
         )
 
     body = (
-        '<h2 style="font-size:22px;font-weight:700;color:#1e3a8a;margin-bottom:.4rem">שלום, '
+        '<h2 style="font-size:22px;font-weight:700;color:#1e3a8a;margin-bottom:.4rem">Hello, '
         + session["name"]
-        + ' &#128075;</h2><p style="font-size:14px;color:#64748b;margin-bottom:2rem">הכלים הזמינים עבורך:</p>'
+        + ' &#128075;</h2><p style="font-size:14px;color:#64748b;margin-bottom:2rem">Your available tools:</p>'
         '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:1rem">'
         + cards
         + "</div>"
     )
-    return render("הכלים שלי", body)
+    return render("My Tools", body)
 
 
 @app.route("/run/<script_id>", methods=["GET", "POST"])
@@ -966,7 +1211,7 @@ def run_script(script_id):
     scr = get_script(script_id)
 
     if not perm or scr is None:
-        add_flash("??? ?? ????? ??????? ??")
+        add_flash("You do not have access to this tool")
         return redirect("/dashboard")
     result = None
     error = ""
@@ -989,19 +1234,50 @@ def run_script(script_id):
             inp = str(UPLOAD_FOLDER / f"{uid}.{ext}")
             result_name = build_output_filename(scr, uid)
             out = str(OUTPUT_FOLDER / result_name)
-            file_obj.save(inp)
-            try:
-                execute_script(scr, inp, out, ext)
-                result = result_name
-            except (xlrd.biffh.XLRDError, BadZipFile, OSError, ValueError):
-                error = '<div class="flash-err">' + scr["processing_error"] + '</div>'
-            except Exception as e:
-                error = '<div class="flash-err">Processing error: ' + str(e) + "</div>"
-            finally:
+            options = {}
+            extra_paths = []
+            for field in scr.get("filter_fields", []):
+                options[field["name"]] = request.form.get(field["name"], "").strip()
+            for upload in scr.get("extra_uploads", []):
+                extra_file = request.files.get(upload["name"])
+                if extra_file and extra_file.filename:
+                    extra_ext = get_extension(extra_file.filename)
+                    expected = upload.get("accept", "").lstrip(".").lower()
+                    if expected and extra_ext != expected:
+                        error = '<div class="flash-err">׳¡׳•׳’ ׳”׳§׳•׳‘׳¥ ׳”׳ ׳•׳¡׳£ ׳׳™׳ ׳• ׳ ׳×׳׳</div>'
+                        break
+                    extra_path = str(UPLOAD_FOLDER / f"{uid}_{upload['name']}.{extra_ext or 'dat'}")
+                    extra_file.save(extra_path)
+                    options[f"{upload['name']}_path"] = extra_path
+                    extra_paths.append(extra_path)
+                elif upload.get("required"):
+                    error = '<div class="flash-err">׳—׳¡׳¨ ׳§׳•׳‘׳¥ ׳ ׳•׳¡׳£ ׳ ׳“׳¨׳©</div>'
+                    break
+            if error:
+                for path in extra_paths:
+                    try:
+                        os.remove(path)
+                    except OSError:
+                        pass
+            else:
+                file_obj.save(inp)
                 try:
-                    os.remove(inp)
-                except OSError:
-                    pass
+                    execute_script(scr, inp, out, ext, options)
+                    result = result_name
+                except (xlrd.biffh.XLRDError, BadZipFile, OSError, ValueError):
+                    error = '<div class="flash-err">' + scr["processing_error"] + '</div>'
+                except Exception as e:
+                    error = '<div class="flash-err">Processing error: ' + str(e) + "</div>"
+                finally:
+                    try:
+                        os.remove(inp)
+                    except OSError:
+                        pass
+                    for path in extra_paths:
+                        try:
+                            os.remove(path)
+                        except OSError:
+                            pass
 
     if result:
         content = (
@@ -1013,14 +1289,34 @@ def run_script(script_id):
             '</div>'
         )
     else:
+        extra_uploads_html = ""
+        for upload in scr.get("extra_uploads", []):
+            extra_uploads_html += (
+                '<div style="margin-top:1rem;padding-top:1rem;border-top:1px solid #e2e8f0">'
+                + '<div style="font-size:14px;font-weight:600;color:#334155;margin-bottom:8px">' + upload["label"] + '</div>'
+                + '<input type="file" name="' + upload["name"] + '" accept="' + upload.get("accept", "") + '" style="width:100%;max-width:420px;margin:0 auto 8px;display:block;font-family:inherit">'
+                + '<div style="font-size:12px;color:#94a3b8">' + upload.get("help", "") + '</div>'
+                + '</div>'
+            )
+        filter_fields_html = ""
+        if scr.get("filter_fields"):
+            filter_fields_html += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;margin-bottom:1rem">'
+            for field in scr.get("filter_fields", []):
+                filter_fields_html += (
+                    '<div><label class="field-label">' + field["label"] + '</label>'
+                    + '<input type="text" name="' + field["name"] + '" placeholder="' + field.get("placeholder", "") + '" style="margin-bottom:0"></div>'
+                )
+            filter_fields_html += '</div>'
         content = (
             error
             + '<form method="POST" enctype="multipart/form-data" id="uploadForm">'
+            + filter_fields_html
             + '<div style="background:#fafcff;border:2px dashed #c7d7f5;border-radius:14px;padding:1.5rem;margin-bottom:1rem;text-align:center">'
             + '<div style="font-size:32px;margin-bottom:8px">&#128194;</div>'
             + '<div style="font-size:15px;font-weight:600;color:#1e40af;margin-bottom:12px">' + scr["file_picker_label"] + '</div>'
             + '<input type="file" name="file" id="fi" accept="' + scr["accept"] + '" style="width:100%;max-width:420px;margin:0 auto 10px;display:block;font-family:inherit">'
             + '<div style="font-size:12px;color:#94a3b8" id="lbl">' + scr["accept"] + '</div>'
+            + extra_uploads_html
             + '</div>'
             + '<button type="submit" class="btn btn-blue" id="gb" style="width:100%;padding:13px;font-size:15px;font-weight:700">' + scr["icon"] + ' ' + scr["submit_label"] + '</button>'
             + '<div class="processing-box" id="processingBox">'
@@ -1055,7 +1351,7 @@ def run_script(script_id):
 def download(filename):
     path = OUTPUT_FOLDER / filename
     if not path.exists():
-        add_flash("הקובץ לא נמצא")
+        add_flash("File not found")
         return redirect("/dashboard")
     download_name = filename.split("_", 1)[-1] if "_" in filename else filename
     return send_file(path, as_attachment=True, download_name=download_name)
@@ -1094,40 +1390,40 @@ def admin():
             '<td><span class="badge">' + user["username"] + "</span></td>"
             '<td><form method="POST" action="/admin/permissions/' + str(uid) + '" style="display:inline"><div style="display:flex;flex-wrap:wrap">'
             + checks
-            + '</div><button type="submit" class="btn btn-gray" style="margin-top:6px;font-size:12px;padding:5px 12px">שמור</button></form></td>'
+            + '</div><button type="submit" class="btn btn-gray" style="margin-top:6px;font-size:12px;padding:5px 12px">Save</button></form></td>'
             + '<td><div style="display:flex;gap:6px;flex-wrap:wrap">'
             + '<button type="button" class="btn btn-gray" style="font-size:12px;padding:5px 12px" onclick="openPass('
             + str(uid)
-            + ')">שנה סיסמה</button>'
+            + ')">Change password</button>'
             + '<form method="POST" action="/admin/resetpass/'
             + str(uid)
-            + '" style="display:inline"><button type="submit" class="btn btn-gray" style="font-size:12px;padding:5px 12px">סיסמה זמנית</button></form>'
+            + '" style="display:inline"><button type="submit" class="btn btn-gray" style="font-size:12px;padding:5px 12px">Temporary password</button></form>'
             '</div></td>'
-            '<td><a href="/admin/delete/' + str(uid) + '" onclick="return confirm(\'למחוק?\');" class="btn btn-red" style="text-decoration:none;font-size:12px;padding:5px 12px">מחק</a></td>'
+            '<td><a href="/admin/delete/' + str(uid) + '" onclick="return confirm(\'Delete?\');" class="btn btn-red" style="text-decoration:none;font-size:12px;padding:5px 12px">Delete</a></td>'
             "</tr>"
         )
 
     table = (
-        "<table><thead><tr><th>שם</th><th>משתמש</th><th>הרשאות</th><th>סיסמה</th><th>מחק</th></tr></thead><tbody>"
+        "<table><thead><tr><th>Name</th><th>Username</th><th>Permissions</th><th>Password</th><th>Delete</th></tr></thead><tbody>"
         + rows
         + "</tbody></table>"
-    ) if users else '<p style="color:#94a3b8;text-align:center;padding:2rem">אין לקוחות עדיין</p>'
+    ) if users else '<p style="color:#94a3b8;text-align:center;padding:2rem">No users yet</p>'
 
     body = (
-        '<div class="card"><h2>&#10133; הוספת לקוח חדש</h2><form method="POST" action="/admin/add_user"><div class="form-row">'
-        '<div class="form-group"><label class="field-label">שם מלא</label><input type="text" name="full_name" placeholder="שם הלקוח" required style="margin-bottom:0"></div>'
-        '<div class="form-group"><label class="field-label">שם משתמש</label><input type="text" name="username" placeholder="לכניסה למערכת" required style="margin-bottom:0"></div>'
-        '<div class="form-group"><label class="field-label">סיסמה</label><input type="password" name="password" placeholder="סיסמה ראשונית" required style="margin-bottom:0"></div>'
-        '<button type="submit" class="btn btn-blue" style="height:40px;align-self:flex-end">הוסף</button></div></form></div>'
-        '<div class="card"><h2>&#128101; לקוחות במערכת</h2>'
+        '<div class="card"><h2>&#10133; Add New User</h2><form method="POST" action="/admin/add_user"><div class="form-row">'
+        '<div class="form-group"><label class="field-label">Full Name</label><input type="text" name="full_name" placeholder="Customer name" required style="margin-bottom:0"></div>'
+        '<div class="form-group"><label class="field-label">Username</label><input type="text" name="username" placeholder="Login username" required style="margin-bottom:0"></div>'
+        '<div class="form-group"><label class="field-label">Password</label><input type="password" name="password" placeholder="Initial password" required style="margin-bottom:0"></div>'
+        '<button type="submit" class="btn btn-blue" style="height:40px;align-self:flex-end">Add</button></div></form></div>'
+        '<div class="card"><h2>&#128101; Users In System</h2>'
         + table
-        + '</div><div class="modal-bg" id="passModal"><div class="modal-box"><h3 style="font-size:15px;font-weight:700;margin-bottom:1rem;color:#1e3a8a">שינוי סיסמה &#8212; <span id="pname"></span></h3>'
-        '<form method="POST" id="pform"><input type="password" name="new_password" placeholder="סיסמה חדשה" required>'
-        '<div style="display:flex;gap:8px;margin-top:.5rem;justify-content:flex-end"><button type="button" class="btn btn-gray" onclick="closePass()">ביטול</button>'
-        '<button type="submit" class="btn btn-blue">עדכן</button></div></form></div></div>'
+        + '</div><div class="modal-bg" id="passModal"><div class="modal-box"><h3 style="font-size:15px;font-weight:700;margin-bottom:1rem;color:#1e3a8a">Change Password &#8212; <span id="pname"></span></h3>'
+        '<form method="POST" id="pform"><input type="password" name="new_password" placeholder="New password" required>'
+        '<div style="display:flex;gap:8px;margin-top:.5rem;justify-content:flex-end"><button type="button" class="btn btn-gray" onclick="closePass()">Cancel</button>'
+        '<button type="submit" class="btn btn-blue">Update</button></div></form></div></div>'
         '<script>function openPass(id,name){document.getElementById("pname").textContent=name||"";document.getElementById("pform").action="/admin/setpass/"+id;document.getElementById("passModal").style.display="flex";}function closePass(){document.getElementById("passModal").style.display="none";}</script>'
     )
-    return render("ניהול", body)
+    return render("Admin", body)
 
 
 @app.route("/admin/add_user", methods=["POST"])
@@ -1144,11 +1440,11 @@ def add_user():
                 (username, generate_password_hash(password), full_name),
             )
             db.commit()
-        add_flash("משתמש " + full_name + " נוצר בהצלחה")
+        add_flash("User " + full_name + " was created successfully")
     except Exception as exc:
         if not is_integrity_error(exc):
             raise
-        add_flash("שם משתמש כבר קיים")
+        add_flash("Username already exists")
     return redirect("/admin")
 
 
@@ -1160,7 +1456,7 @@ def delete_user(uid):
         db.execute("DELETE FROM users WHERE id=?", (uid,))
         db.execute("DELETE FROM permissions WHERE user_id=?", (uid,))
         db.commit()
-    add_flash("משתמש נמחק")
+    add_flash("User deleted")
     return redirect("/admin")
 
 
@@ -1174,7 +1470,7 @@ def set_password(uid):
             (generate_password_hash(request.form["new_password"]), uid),
         )
         db.commit()
-    add_flash("סיסמה עודכנה")
+    add_flash("Password updated")
     return redirect("/admin")
 
 
@@ -1191,7 +1487,7 @@ def reset_password(uid):
         )
         db.commit()
     name = user["full_name"] if user else str(uid)
-    add_flash("סיסמה זמנית עבור " + name + ": " + temp_password)
+    add_flash("Temporary password for " + name + ": " + temp_password)
     return redirect("/admin")
 
 
@@ -1209,9 +1505,10 @@ def set_permissions(uid):
                     (uid, script_id),
                 )
         db.commit()
-    add_flash("הרשאות עודכנו")
+    add_flash("Permissions updated")
     return redirect("/admin")
 
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    app.run(debug=False, use_reloader=False)
+

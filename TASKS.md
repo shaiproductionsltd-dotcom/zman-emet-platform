@@ -21,6 +21,9 @@
 - [x] Inspect one real Flamingo export and map worker sheet / summary sheet matching rules
 - [x] Add the Flamingo payroll script using the new script registry
 - [x] Generate payroll summary and exceptions sheets for Flamingo
+- [ ] Build Matan missing-hours filter tool
+- [ ] Build Matan manual-edits report from monthly detailed XLS
+- [ ] Build Matan organization-chart PDF from organizational CSV
 - [ ] Create the final Render production service with the final public name
 
 ## Later
@@ -31,3 +34,4 @@
 - [ ] Decide whether to move long-running processing to a background job
 - [ ] Add custom domain instead of relying on the default `onrender.com` address
 - [ ] Add richer payroll analytics such as top earners and payroll distribution for Flamingo
+- [ ] Add more preset management reports for Matan Health Care
