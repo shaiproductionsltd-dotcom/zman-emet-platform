@@ -1,4 +1,4 @@
-from flask import Flask, render_template, request, redirect, url_for, session, send_file, flash
+from flask import Flask, request, redirect, url_for, session, send_file, flash
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
 import sqlite3, os, uuid
@@ -92,14 +92,47 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 
 SCRIPTS = {
-    'nikuy': {
-        'id': 'nikuy',
-        'name': 'ניקוי כוכביות',
-        'desc': 'מסיר * ו-? מדוח נוכחות חודשי',
-        'accept': '.xls,.xlsx',
-        'icon': '🧹'
-    }
+    'nikuy': {'id':'nikuy','name':'ניקוי כוכביות','desc':'מסיר * ו-? מדוח נוכחות חודשי','accept':'.xls,.xlsx','icon':'🧹'}
 }
+
+CSS = """
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Segoe UI',Arial,sans-serif;background:#f0f4ff;min-height:100vh;direction:rtl}
+.topbar{background:#1e3a8a;color:white;padding:0 2rem;height:58px;display:flex;align-items:center;justify-content:space-between}
+.topbar h1{font-size:17px;font-weight:700}
+.topbar a{color:#93c5fd;font-size:13px;text-decoration:none}
+.wrap{max-width:900px;margin:2rem auto;padding:0 1rem}
+.card{background:white;border-radius:16px;box-shadow:0 4px 24px rgba(37,99,235,.1);padding:2rem;margin-bottom:1.5rem}
+.card h2{font-size:16px;font-weight:700;color:#1e3a8a;margin-bottom:1rem;padding-bottom:.75rem;border-bottom:1.5px solid #e0e7ff}
+input[type=text],input[type=password]{padding:9px 12px;border:1.5px solid #e2e8f0;border-radius:8px;font-size:13px;font-family:inherit;outline:none;width:100%;margin-bottom:.75rem}
+input:focus{border-color:#2563eb}
+.btn{padding:10px 20px;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit}
+.btn-blue{background:#2563eb;color:white}.btn-blue:hover{background:#1d4ed8}
+.btn-red{background:#fee2e2;color:#dc2626}
+.btn-gray{background:#f1f5f9;color:#475569}
+.flash{background:#f0fdf4;border:1px solid #86efac;color:#15803d;border-radius:8px;padding:10px 14px;font-size:13px;margin-bottom:1rem}
+.flash-err{background:#fef2f2;border:1px solid #fecaca;color:#dc2626;border-radius:8px;padding:10px 14px;font-size:13px;margin-bottom:1rem}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{text-align:right;padding:10px 12px;background:#f8fafc;color:#64748b;font-weight:600;border-bottom:1.5px solid #e2e8f0}
+td{padding:12px;border-bottom:1px solid #f1f5f9;vertical-align:middle}
+.badge{display:inline-block;padding:3px 10px;border-radius:99px;font-size:11px;font-weight:600;background:#f1f5f9;color:#64748b}
+.form-row{display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end}
+.form-group{flex:1;min-width:130px}
+.script-check{display:flex;align-items:center;gap:5px;font-size:13px;margin-left:10px}
+.drop-zone{border:2px dashed #c7d7f5;border-radius:14px;padding:2rem;text-align:center;cursor:pointer;background:#fafcff;margin-bottom:1rem}
+.drop-zone:hover{border-color:#2563eb;background:#eff6ff}
+.success-box{padding:1.25rem;background:#f0fdf4;border:1.5px solid #86efac;border-radius:13px;text-align:center;margin-top:1rem}
+.dl-btn{display:inline-block;padding:11px 28px;background:#16a34a;color:white;border-radius:9px;font-size:14px;font-weight:700;text-decoration:none}
+.login-wrap{max-width:400px;margin:5rem auto;padding:0 1rem}
+"""
+
+def page(title, body, topbar=True, name=''):
+    nav = f"""<div class="topbar"><h1>&#9201; זמן אמת</h1><div style="display:flex;gap:16px;align-items:center"><span style="font-size:13px;color:#93c5fd">שלום, {name}</span><a href="/logout">יציאה</a></div></div>""" if topbar else ''
+    msgs = ''.join(f'<div class="flash">{m}</div>' for m in session.pop('_flashes', []))
+    return f"""<!DOCTYPE html><html dir="rtl" lang="he"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{title} | זמן אמת</title><style>{CSS}</style></head><body>{nav}<div class="{'wrap' if topbar else 'login-wrap'}">{msgs}{body}</div></body></html>"""
+
+def flash(msg, cat='msg'):
+    session.setdefault('_flashes', []).append(msg)
 
 def get_db():
     conn = sqlite3.connect(DB)
@@ -108,23 +141,11 @@ def get_db():
 
 def init_db():
     with get_db() as db:
-        db.execute('''CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT UNIQUE NOT NULL,
-            password TEXT NOT NULL,
-            full_name TEXT,
-            is_admin INTEGER DEFAULT 0,
-            active INTEGER DEFAULT 1
-        )''')
-        db.execute('''CREATE TABLE IF NOT EXISTS permissions (
-            user_id INTEGER,
-            script_id TEXT,
-            PRIMARY KEY (user_id, script_id)
-        )''')
-        existing = db.execute("SELECT id FROM users WHERE username='admin'").fetchone()
-        if not existing:
-            db.execute("INSERT INTO users (username, password, full_name, is_admin) VALUES (?, ?, ?, 1)",
-                ('admin', generate_password_hash('admin123'), 'מנהל מערכת'))
+        db.execute('''CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY AUTOINCREMENT,username TEXT UNIQUE NOT NULL,password TEXT NOT NULL,full_name TEXT,is_admin INTEGER DEFAULT 0,active INTEGER DEFAULT 1)''')
+        db.execute('''CREATE TABLE IF NOT EXISTS permissions(user_id INTEGER,script_id TEXT,PRIMARY KEY(user_id,script_id))''')
+        if not db.execute("SELECT id FROM users WHERE username='admin'").fetchone():
+            db.execute("INSERT INTO users(username,password,full_name,is_admin)VALUES(?,?,?,1)",
+                ('admin',generate_password_hash('admin123'),'מנהל מערכת'))
         db.commit()
 
 init_db()
@@ -132,90 +153,110 @@ init_db()
 def login_required(f):
     from functools import wraps
     @wraps(f)
-    def decorated(*args, **kwargs):
-        if 'user_id' not in session:
-            return redirect(url_for('login'))
-        return f(*args, **kwargs)
-    return decorated
+    def d(*a,**k):
+        if 'user_id' not in session: return redirect('/')
+        return f(*a,**k)
+    return d
 
 def admin_required(f):
     from functools import wraps
     @wraps(f)
-    def decorated(*args, **kwargs):
-        if not session.get('is_admin'):
-            return redirect(url_for('dashboard'))
-        return f(*args, **kwargs)
-    return decorated
+    def d(*a,**k):
+        if not session.get('is_admin'): return redirect('/dashboard')
+        return f(*a,**k)
+    return d
 
-@app.route('/', methods=['GET', 'POST'])
+@app.route('/', methods=['GET','POST'])
 def login():
     if 'user_id' in session:
-        return redirect(url_for('admin' if session.get('is_admin') else 'dashboard'))
-    error = None
+        return redirect('/admin' if session.get('is_admin') else '/dashboard')
+    error = ''
     if request.method == 'POST':
-        username = request.form['username'].strip()
-        password = request.form['password']
+        u = request.form['username'].strip()
+        p = request.form['password']
         with get_db() as db:
-            user = db.execute("SELECT * FROM users WHERE username=? AND active=1", (username,)).fetchone()
-        if user and check_password_hash(user['password'], password):
-            session['user_id']  = user['id']
-            session['username'] = user['username']
-            session['name']     = user['full_name']
-            session['is_admin'] = bool(user['is_admin'])
-            return redirect(url_for('admin' if user['is_admin'] else 'dashboard'))
-        error = 'שם משתמש או סיסמה שגויים'
-    return render_template('login.html', error=error)
+            user = db.execute("SELECT * FROM users WHERE username=? AND active=1",(u,)).fetchone()
+        if user and check_password_hash(user['password'], p):
+            session.update({'user_id':user['id'],'username':user['username'],'name':user['full_name'],'is_admin':bool(user['is_admin'])})
+            return redirect('/admin' if user['is_admin'] else '/dashboard')
+        error = '<div class="flash-err">שם משתמש או סיסמה שגויים</div>'
+    body = f"""
+    <div style="text-align:center;margin-bottom:1.5rem">
+      <div style="font-size:40px">&#9201;</div>
+      <h1 style="font-size:20px;font-weight:700;color:#1e3a8a;margin-top:8px">זמן אמת</h1>
+      <p style="font-size:12px;color:#888;margin-top:3px">מערכת לניהול נוכחות ושכר</p>
+    </div>
+    {error}
+    <form method="POST">
+      <label style="font-size:13px;font-weight:600;color:#374151;margin-bottom:5px;display:block">שם משתמש</label>
+      <input type="text" name="username" required autofocus>
+      <label style="font-size:13px;font-weight:600;color:#374151;margin-bottom:5px;display:block">סיסמה</label>
+      <input type="password" name="password" required>
+      <button type="submit" class="btn btn-blue" style="width:100%;padding:12px;font-size:15px;margin-top:.5rem">כניסה למערכת</button>
+    </form>
+    <p style="text-align:center;margin-top:1.5rem;font-size:11px;color:#bbb">&#169; זמן אמת &#8211; כל הזכויות שמורות</p>"""
+    return page('כניסה', f'<div class="card" style="padding:2rem">{body}</div>', topbar=False)
 
 @app.route('/logout')
 def logout():
     session.clear()
-    return redirect(url_for('login'))
+    return redirect('/')
 
 @app.route('/dashboard')
 @login_required
 def dashboard():
-    if session.get('is_admin'):
-        return redirect(url_for('admin'))
+    if session.get('is_admin'): return redirect('/admin')
     with get_db() as db:
-        perms = db.execute("SELECT script_id FROM permissions WHERE user_id=?",
-                           (session['user_id'],)).fetchall()
+        perms = db.execute("SELECT script_id FROM permissions WHERE user_id=?",(session['user_id'],)).fetchall()
     allowed = [SCRIPTS[p['script_id']] for p in perms if p['script_id'] in SCRIPTS]
-    return render_template('dashboard.html', scripts=allowed)
+    cards = ''.join(f'<a href="/run/{s["id"]}" style="background:white;border-radius:16px;box-shadow:0 2px 16px rgba(0,0,0,.06);padding:1.5rem;text-decoration:none;display:block"><div style="font-size:36px;margin-bottom:.75rem">{s["icon"]}</div><div style="font-size:15px;font-weight:700;color:#1e3a8a;margin-bottom:4px">{s["name"]}</div><div style="font-size:12px;color:#64748b">{s["desc"]}</div></a>' for s in allowed)
+    empty = '<div style="text-align:center;padding:3rem;color:#94a3b8"><div style="font-size:48px;margin-bottom:1rem">&#128274;</div><div>אין כלים זמינים עדיין</div></div>' if not allowed else ''
+    body = f'<h2 style="font-size:22px;font-weight:700;color:#1e3a8a;margin-bottom:.4rem">שלום, {session["name"]} &#128075;</h2><p style="font-size:14px;color:#64748b;margin-bottom:2rem">הכלים הזמינים עבורך:</p><div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:1rem">{cards}</div>{empty}'
+    return page('הכלים שלי', body, name=session['name'])
 
-@app.route('/run/<script_id>', methods=['GET', 'POST'])
+@app.route('/run/<script_id>', methods=['GET','POST'])
 @login_required
 def run_script(script_id):
-    if session.get('is_admin'):
-        return redirect(url_for('admin'))
+    if session.get('is_admin'): return redirect('/admin')
     with get_db() as db:
-        perm = db.execute("SELECT 1 FROM permissions WHERE user_id=? AND script_id=?",
-                          (session['user_id'], script_id)).fetchone()
+        perm = db.execute("SELECT 1 FROM permissions WHERE user_id=? AND script_id=?",(session['user_id'],script_id)).fetchone()
     if not perm or script_id not in SCRIPTS:
         flash('אין לך הרשאה לסקריפט זה')
-        return redirect(url_for('dashboard'))
-    script = SCRIPTS[script_id]
-    result = None
-    error  = None
+        return redirect('/dashboard')
+    scr = SCRIPTS[script_id]
+    result = error = None
     if request.method == 'POST':
-        file = request.files.get('file')
-        if not file or file.filename == '':
+        f = request.files.get('file')
+        if not f or f.filename == '':
             error = 'לא נבחר קובץ'
         else:
-            uid      = str(uuid.uuid4())[:8]
-            filename = secure_filename(file.filename)
-            in_path  = os.path.join(UPLOAD_FOLDER, f'{uid}_{filename}')
-            out_name = filename.rsplit('.', 1)[0] + '_ללא_כוכביות.xlsx'
-            out_path = os.path.join(OUTPUT_FOLDER, f'{uid}_{out_name}')
-            file.save(in_path)
+            uid = str(uuid.uuid4())[:8]
+            fn  = secure_filename(f.filename)
+            inp = os.path.join(UPLOAD_FOLDER, f'{uid}_{fn}')
+            onm = fn.rsplit('.',1)[0] + '_ללא_כוכביות.xlsx'
+            out = os.path.join(OUTPUT_FOLDER, f'{uid}_{onm}')
+            f.save(inp)
             try:
-                process_xls(in_path, out_path)
-                result = f'{uid}_{out_name}'
+                process_xls(inp, out)
+                result = f'{uid}_{onm}'
             except Exception as e:
-                error = f'שגיאה בעיבוד: {str(e)}'
+                error = f'שגיאה בעיבוד: {e}'
             finally:
-                try: os.remove(in_path)
+                try: os.remove(inp)
                 except: pass
-    return render_template('run.html', script=script, result=result, error=error)
+    ok = f'<div class="success-box"><div style="font-size:32px;margin-bottom:6px">&#9989;</div><div style="font-size:16px;font-weight:700;color:#15803d;margin-bottom:10px">הקובץ מוכן!</div><a href="/download/{result}" class="dl-btn">&#8681;&nbsp; הורד קובץ נקי</a><br><br><a href="/run/{script_id}" style="font-size:13px;color:#2563eb">עבד קובץ נוסף</a></div>' if result else ''
+    err = f'<div class="flash-err">{error}</div>' if error else ''
+    form = '' if result else f'''<form method="POST" enctype="multipart/form-data" id="frm">
+      <div class="drop-zone" onclick="document.getElementById('fi').click()">
+        <input type="file" name="file" id="fi" accept="{scr['accept']}" style="display:none" onchange="document.getElementById('lbl').textContent=this.files[0].name;document.getElementById('gb').disabled=false">
+        <div style="font-size:32px;margin-bottom:8px">&#128194;</div>
+        <div style="font-size:15px;font-weight:600;color:#1e40af;margin-bottom:4px">לחץ לבחירת קובץ</div>
+        <div style="font-size:12px;color:#94a3b8" id="lbl">{scr['accept']}</div>
+      </div>
+      <button type="submit" class="btn btn-blue" id="gb" disabled style="width:100%;padding:13px;font-size:15px;font-weight:700">{scr['icon']} הפעל</button>
+    </form>'''
+    body = f'<a href="/dashboard" style="color:#2563eb;font-size:13px;text-decoration:none;display:block;margin-bottom:1rem">&#8592; חזרה לכלים</a><div class="card"><div style="font-size:40px;margin-bottom:.5rem">{scr["icon"]}</div><div style="font-size:20px;font-weight:700;color:#1e3a8a;margin-bottom:4px">{scr["name"]}</div><div style="font-size:13px;color:#64748b;margin-bottom:1.75rem">{scr["desc"]}</div>{err}{ok}{form}</div>'
+    return page(scr['name'], body, name=session['name'])
 
 @app.route('/download/<filename>')
 @login_required
@@ -223,9 +264,9 @@ def download(filename):
     path = os.path.join(OUTPUT_FOLDER, filename)
     if not os.path.exists(path):
         flash('הקובץ לא נמצא')
-        return redirect(url_for('dashboard'))
-    display_name = filename.split('_', 1)[-1] if '_' in filename else filename
-    return send_file(path, as_attachment=True, download_name=display_name)
+        return redirect('/dashboard')
+    dn = filename.split('_',1)[-1] if '_' in filename else filename
+    return send_file(path, as_attachment=True, download_name=dn)
 
 @app.route('/admin')
 @login_required
@@ -234,64 +275,85 @@ def admin():
     with get_db() as db:
         users = db.execute("SELECT * FROM users WHERE is_admin=0").fetchall()
         perms = db.execute("SELECT * FROM permissions").fetchall()
-    user_perms = {}
-    for p in perms:
-        user_perms.setdefault(p['user_id'], set()).add(p['script_id'])
-    return render_template('admin.html', users=users, scripts=SCRIPTS, user_perms=user_perms)
+    up = {}
+    for p in perms: up.setdefault(p['user_id'], set()).add(p['script_id'])
+    rows = ''
+    for u in users:
+        checks = ''.join(f'<label class="script-check"><input type="checkbox" name="scripts" value="{sid}" {"checked" if u["id"] in up and sid in up[u["id"]] else ""}> {s["icon"]} {s["name"]}</label>' for sid,s in SCRIPTS.items())
+        rows += f'<tr><td><strong>{u["full_name"]}</strong></td><td><span class="badge">{u["username"]}</span></td><td><form method="POST" action="/admin/permissions/{u["id"]}" style="display:inline"><div style="display:flex;flex-wrap:wrap">{checks}</div><button type="submit" class="btn btn-gray" style="margin-top:6px;font-size:12px;padding:5px 12px">שמור</button></form></td><td><button class="btn btn-gray" style="font-size:12px;padding:5px 12px" onclick="openPass({u[\'id\']},\'{u[\'full_name\']}\')">שנה סיסמה</button></td><td><a href="/admin/delete/{u[\'id\']}" onclick="return confirm(\'למחוק?\')" class="btn btn-red" style="text-decoration:none;font-size:12px;padding:5px 12px">מחק</a></td></tr>'
+    table = f'<table><thead><tr><th>שם</th><th>משתמש</th><th>הרשאות</th><th>סיסמה</th><th>מחק</th></tr></thead><tbody>{rows}</tbody></table>' if users else '<p style="color:#94a3b8;text-align:center;padding:2rem">אין לקוחות עדיין</p>'
+    body = f'''<div class="card">
+      <h2>&#10133; הוספת לקוח</h2>
+      <form method="POST" action="/admin/add_user">
+        <div class="form-row">
+          <div class="form-group"><label style="font-size:12px;font-weight:600;color:#374151;display:block;margin-bottom:4px">שם מלא</label><input type="text" name="full_name" placeholder="שם הלקוח" required style="margin-bottom:0"></div>
+          <div class="form-group"><label style="font-size:12px;font-weight:600;color:#374151;display:block;margin-bottom:4px">שם משתמש</label><input type="text" name="username" placeholder="לכניסה למערכת" required style="margin-bottom:0"></div>
+          <div class="form-group"><label style="font-size:12px;font-weight:600;color:#374151;display:block;margin-bottom:4px">סיסמה</label><input type="password" name="password" placeholder="סיסמה ראשונית" required style="margin-bottom:0"></div>
+          <button type="submit" class="btn btn-blue" style="height:40px;align-self:flex-end">הוסף</button>
+        </div>
+      </form>
+    </div>
+    <div class="card"><h2>&#128101; לקוחות</h2>{table}</div>
+    <div id="passModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:100;align-items:center;justify-content:center">
+      <div style="background:white;border-radius:16px;padding:1.75rem;width:320px">
+        <h3 style="font-size:15px;font-weight:700;margin-bottom:1rem;color:#1e3a8a">שינוי סיסמה &#8212; <span id="pname"></span></h3>
+        <form method="POST" id="pform">
+          <input type="password" name="new_password" placeholder="סיסמה חדשה" required>
+          <div style="display:flex;gap:8px;margin-top:.5rem;justify-content:flex-end">
+            <button type="button" class="btn btn-gray" onclick="document.getElementById('passModal').style.display='none'">ביטול</button>
+            <button type="submit" class="btn btn-blue">עדכן</button>
+          </div>
+        </form>
+      </div>
+    </div>
+    <script>
+    function openPass(id,name){{document.getElementById('pname').textContent=name;document.getElementById('pform').action='/admin/setpass/'+id;document.getElementById('passModal').style.display='flex'}}
+    </script>'''
+    return page('ניהול', body, name=session['name'])
 
 @app.route('/admin/add_user', methods=['POST'])
 @login_required
 @admin_required
 def add_user():
-    username  = request.form['username'].strip()
-    password  = request.form['password']
-    full_name = request.form['full_name'].strip()
+    u=request.form['username'].strip(); p=request.form['password']; n=request.form['full_name'].strip()
     try:
         with get_db() as db:
-            db.execute("INSERT INTO users (username, password, full_name) VALUES (?, ?, ?)",
-                       (username, generate_password_hash(password), full_name))
-            db.commit()
-        flash(f'משתמש {full_name} נוצר בהצלחה')
+            db.execute("INSERT INTO users(username,password,full_name)VALUES(?,?,?)",(u,generate_password_hash(p),n)); db.commit()
+        flash(f'משתמש {n} נוצר')
     except sqlite3.IntegrityError:
         flash('שם משתמש כבר קיים')
-    return redirect(url_for('admin'))
+    return redirect('/admin')
 
-@app.route('/admin/delete_user/<int:uid>')
+@app.route('/admin/delete/<int:uid>')
 @login_required
 @admin_required
 def delete_user(uid):
     with get_db() as db:
-        db.execute("DELETE FROM users WHERE id=?", (uid,))
-        db.execute("DELETE FROM permissions WHERE user_id=?", (uid,))
-        db.commit()
+        db.execute("DELETE FROM users WHERE id=?",(uid,)); db.execute("DELETE FROM permissions WHERE user_id=?",(uid,)); db.commit()
     flash('משתמש נמחק')
-    return redirect(url_for('admin'))
+    return redirect('/admin')
 
-@app.route('/admin/set_password/<int:uid>', methods=['POST'])
+@app.route('/admin/setpass/<int:uid>', methods=['POST'])
 @login_required
 @admin_required
 def set_password(uid):
-    new_pass = request.form['new_password']
     with get_db() as db:
-        db.execute("UPDATE users SET password=? WHERE id=?",
-                   (generate_password_hash(new_pass), uid))
-        db.commit()
+        db.execute("UPDATE users SET password=? WHERE id=?",(generate_password_hash(request.form['new_password']),uid)); db.commit()
     flash('סיסמה עודכנה')
-    return redirect(url_for('admin'))
+    return redirect('/admin')
 
 @app.route('/admin/permissions/<int:uid>', methods=['POST'])
 @login_required
 @admin_required
 def set_permissions(uid):
-    selected = request.form.getlist('scripts')
+    sel=request.form.getlist('scripts')
     with get_db() as db:
-        db.execute("DELETE FROM permissions WHERE user_id=?", (uid,))
-        for s in selected:
-            if s in SCRIPTS:
-                db.execute("INSERT OR IGNORE INTO permissions (user_id, script_id) VALUES (?, ?)", (uid, s))
+        db.execute("DELETE FROM permissions WHERE user_id=?",(uid,))
+        for s in sel:
+            if s in SCRIPTS: db.execute("INSERT OR IGNORE INTO permissions(user_id,script_id)VALUES(?,?)",(uid,s))
         db.commit()
     flash('הרשאות עודכנו')
-    return redirect(url_for('admin'))
+    return redirect('/admin')
 
-if __name__ == '__main__':
+if __name__=='__main__':
     app.run(debug=True)
