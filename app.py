@@ -874,6 +874,220 @@ def is_integrity_error(exc):
         return True
     return False
 
+
+FLOW_LANGUAGES = {"en", "he"}
+
+FLOW_TEXTS = {
+    "en": {
+        "topbar_greeting": "Hello, ",
+        "logout": "Logout",
+        "login_page_title": "Login",
+        "login_error": "Incorrect username or password",
+        "login_subtitle": "Attendance and payroll tools portal",
+        "login_username": "Username",
+        "login_password": "Password",
+        "login_submit": "Log In",
+        "dashboard_page_title": "Your Tools",
+        "dashboard_empty": "No tools are available for your account yet",
+        "dashboard_greeting": "Welcome, ",
+        "dashboard_intro": "Your available tools:",
+        "run_access_denied": "You do not have access to this tool",
+        "run_extra_file_type_error": "The extra file type is not supported",
+        "run_missing_extra_file_error": "A required extra file is missing",
+        "run_unexpected_error_prefix": "Unexpected processing error: ",
+        "back_arrow": "&#8592;",
+        "scripts": {
+            "nikuy": {
+                "name": "Attendance Cleanup",
+                "desc": "Remove * and ? from monthly attendance report",
+                "success_title": "File is ready",
+                "success_action": "Download cleaned file",
+                "retry_action": "Process another file",
+                "submit_label": "Run",
+                "back_label": "Back to tools",
+                "empty_error": "No file selected",
+                "unsupported_error": "Unsupported file type",
+                "invalid_error": "The uploaded file is not a valid Excel file",
+                "empty_file_error": "The uploaded file is empty",
+                "too_large_error": "The uploaded file is too large",
+                "processing_error": "The uploaded file could not be processed",
+                "processing_title": "File is being processed",
+                "processing_note": "Preparing the cleaned report may take a few minutes. Please keep this page open.",
+                "file_picker_label": "Choose file",
+            },
+            "flamingo_payroll": {
+                "name": "Flamingo Payroll",
+                "desc": "Payroll summary based on payable hours and hourly rate",
+                "success_title": "Payroll file is ready",
+                "success_action": "Download payroll summary",
+                "retry_action": "Process another payroll file",
+                "submit_label": "Create payroll summary",
+                "back_label": "Back to tools",
+                "empty_error": "No file selected",
+                "unsupported_error": "Please upload the original Flamingo XLS export",
+                "invalid_error": "The uploaded file is not a valid Excel file",
+                "empty_file_error": "The uploaded file is empty",
+                "too_large_error": "The uploaded file is too large",
+                "processing_error": "Could not generate a payroll summary from this file",
+                "processing_title": "Payroll summary is being prepared",
+                "processing_note": "The system is calculating payable hours and salary for all employees. This may take a few minutes.",
+                "file_picker_label": "Choose Flamingo file",
+            },
+            "matan_missing": {
+                "name": "Matan Missing Hours",
+                "desc": "Filter employees by missing-hours range",
+                "success_title": "Missing-hours report is ready",
+                "success_action": "Download report",
+                "retry_action": "Process another file",
+                "submit_label": "Create report",
+                "back_label": "Back to tools",
+                "empty_error": "No file selected",
+                "unsupported_error": "Please upload the original XLS missing-hours report",
+                "invalid_error": "The uploaded file is not a valid Excel file",
+                "empty_file_error": "The uploaded file is empty",
+                "too_large_error": "The uploaded file is too large",
+                "processing_error": "Could not generate the missing-hours report from this file",
+                "processing_title": "Report is being prepared",
+                "processing_note": "The system is filtering the missing-hours report. This may take a few minutes.",
+                "file_picker_label": "Choose missing-hours report",
+                "filter_fields": [
+                    {"label": "Minimum missing hours", "placeholder": "For example 4"},
+                    {"label": "Maximum missing hours", "placeholder": "For example 8"},
+                ],
+            },
+        },
+    },
+    "he": {
+        "topbar_greeting": "שלום, ",
+        "logout": "התנתקות",
+        "login_page_title": "כניסה",
+        "login_error": "שם המשתמש או הסיסמה שגויים",
+        "login_subtitle": "פורטל כלי נוכחות ושכר",
+        "login_username": "שם משתמש",
+        "login_password": "סיסמה",
+        "login_submit": "כניסה",
+        "dashboard_page_title": "הכלים שלך",
+        "dashboard_empty": "עדיין אין כלים זמינים לחשבון שלך",
+        "dashboard_greeting": "ברוך/ה הבא/ה, ",
+        "dashboard_intro": "הכלים הזמינים שלך:",
+        "run_access_denied": "אין לך גישה לכלי הזה",
+        "run_extra_file_type_error": "סוג הקובץ הנוסף אינו נתמך",
+        "run_missing_extra_file_error": "חסר קובץ נוסף נדרש",
+        "run_unexpected_error_prefix": "שגיאת עיבוד לא צפויה: ",
+        "back_arrow": "&#8594;",
+        "scripts": {
+            "nikuy": {
+                "name": "ניקוי נוכחות",
+                "desc": "הסרת * ו-? מדוח הנוכחות החודשי",
+                "success_title": "הקובץ מוכן",
+                "success_action": "הורדת הקובץ הנקי",
+                "retry_action": "עיבוד קובץ נוסף",
+                "submit_label": "הפעל",
+                "back_label": "חזרה לכלים",
+                "empty_error": "לא נבחר קובץ",
+                "unsupported_error": "סוג הקובץ אינו נתמך",
+                "invalid_error": "הקובץ שהועלה אינו קובץ אקסל תקין",
+                "empty_file_error": "הקובץ שהועלה ריק",
+                "too_large_error": "הקובץ שהועלה גדול מדי",
+                "processing_error": "לא ניתן היה לעבד את הקובץ שהועלה",
+                "processing_title": "הקובץ נמצא בעיבוד",
+                "processing_note": "הכנת הדוח הנקי עשויה להימשך כמה דקות. נא להשאיר את הדף פתוח.",
+                "file_picker_label": "בחירת קובץ",
+            },
+            "flamingo_payroll": {
+                "name": "שכר פלמינגו",
+                "desc": "סיכום שכר לפי שעות לתשלום ותעריף לשעה",
+                "success_title": "קובץ השכר מוכן",
+                "success_action": "הורדת סיכום השכר",
+                "retry_action": "עיבוד קובץ שכר נוסף",
+                "submit_label": "יצירת סיכום שכר",
+                "back_label": "חזרה לכלים",
+                "empty_error": "לא נבחר קובץ",
+                "unsupported_error": "יש להעלות את ייצוא ה-XLS המקורי של פלמינגו",
+                "invalid_error": "הקובץ שהועלה אינו קובץ אקסל תקין",
+                "empty_file_error": "הקובץ שהועלה ריק",
+                "too_large_error": "הקובץ שהועלה גדול מדי",
+                "processing_error": "לא ניתן היה ליצור סיכום שכר מהקובץ הזה",
+                "processing_title": "סיכום השכר בהכנה",
+                "processing_note": "המערכת מחשבת את שעות התשלום והשכר לכל העובדים. זה עשוי להימשך כמה דקות.",
+                "file_picker_label": "בחירת קובץ פלמינגו",
+            },
+            "matan_missing": {
+                "name": "שעות חסר מתן",
+                "desc": "סינון עובדים לפי טווח שעות חסר",
+                "success_title": "דוח שעות החסר מוכן",
+                "success_action": "הורדת הדוח",
+                "retry_action": "עיבוד קובץ נוסף",
+                "submit_label": "יצירת דוח",
+                "back_label": "חזרה לכלים",
+                "empty_error": "לא נבחר קובץ",
+                "unsupported_error": "יש להעלות את דוח שעות החסר המקורי מסוג XLS",
+                "invalid_error": "הקובץ שהועלה אינו קובץ אקסל תקין",
+                "empty_file_error": "הקובץ שהועלה ריק",
+                "too_large_error": "הקובץ שהועלה גדול מדי",
+                "processing_error": "לא ניתן היה ליצור את דוח שעות החסר מהקובץ הזה",
+                "processing_title": "הדוח בהכנה",
+                "processing_note": "המערכת מסננת את דוח שעות החסר. זה עשוי להימשך כמה דקות.",
+                "file_picker_label": "בחירת דוח שעות חסר",
+                "filter_fields": [
+                    {"label": "מינימום שעות חסר", "placeholder": "לדוגמה 4"},
+                    {"label": "מקסימום שעות חסר", "placeholder": "לדוגמה 8"},
+                ],
+            },
+        },
+    },
+}
+
+
+def get_flow_lang():
+    requested = request.args.get("lang")
+    if requested in FLOW_LANGUAGES:
+        session["flow_lang"] = requested
+    saved = session.get("flow_lang", "en")
+    return saved if saved in FLOW_LANGUAGES else "en"
+
+
+def get_flow_dir(lang):
+    return "rtl" if lang == "he" else "ltr"
+
+
+def get_flow_text(lang):
+    return FLOW_TEXTS.get(lang, FLOW_TEXTS["en"])
+
+
+def get_localized_script(script, lang):
+    localized = dict(script)
+    script_texts = get_flow_text(lang)["scripts"].get(script["id"], {})
+    localized.update({k: v for k, v in script_texts.items() if k not in {"filter_fields", "extra_uploads"}})
+    if script.get("filter_fields"):
+        localized_fields = []
+        field_overrides = script_texts.get("filter_fields", [])
+        for index, field in enumerate(script.get("filter_fields", [])):
+            merged = dict(field)
+            if index < len(field_overrides):
+                merged.update(field_overrides[index])
+            localized_fields.append(merged)
+        localized["filter_fields"] = localized_fields
+    if script.get("extra_uploads"):
+        localized_uploads = []
+        upload_overrides = script_texts.get("extra_uploads", [])
+        for index, upload in enumerate(script.get("extra_uploads", [])):
+            merged = dict(upload)
+            if index < len(upload_overrides):
+                merged.update(upload_overrides[index])
+            localized_uploads.append(merged)
+        localized["extra_uploads"] = localized_uploads
+    return localized
+
+
+def build_lang_switch(lang):
+    current_path = request.path
+    buttons = []
+    for code, label in (("en", "EN"), ("he", "HE")):
+        cls = "lang-btn active" if code == lang else "lang-btn"
+        buttons.append('<a href="' + current_path + '?lang=' + code + '" class="' + cls + '">' + label + "</a>")
+    return '<div class="lang-switch">' + "".join(buttons) + "</div>"
+
 SCRIPTS = {
     "nikuy": {
         "id": "nikuy",
@@ -987,7 +1201,7 @@ def execute_script(script, input_path, output_path, extension, options=None):
 
 CSS = """
 * { box-sizing: border-box; margin: 0; padding: 0; }
-body { font-family: 'Segoe UI', Arial, sans-serif; background: #f0f4ff; min-height: 100vh; direction: rtl; }
+body { font-family: 'Segoe UI', Arial, sans-serif; background: #f0f4ff; min-height: 100vh; direction: inherit; }
 .topbar { background: #1e3a8a; color: white; padding: 0 2rem; height: 58px; display: flex; align-items: center; justify-content: space-between; }
 .topbar h1 { font-size: 17px; font-weight: 700; }
 .topbar a { color: #93c5fd; font-size: 13px; text-decoration: none; }
@@ -1006,7 +1220,7 @@ input:focus { border-color: #2563eb; }
 .flash { background: #f0fdf4; border: 1px solid #86efac; color: #15803d; border-radius: 8px; padding: 10px 14px; font-size: 13px; margin-bottom: 1rem; }
 .flash-err { background: #fef2f2; border: 1px solid #fecaca; color: #dc2626; border-radius: 8px; padding: 10px 14px; font-size: 13px; margin-bottom: 1rem; }
 table { width: 100%; border-collapse: collapse; font-size: 13px; }
-th { text-align: right; padding: 10px 12px; background: #f8fafc; color: #64748b; font-weight: 600; border-bottom: 1.5px solid #e2e8f0; }
+th { text-align: start; padding: 10px 12px; background: #f8fafc; color: #64748b; font-weight: 600; border-bottom: 1.5px solid #e2e8f0; }
 td { padding: 12px; border-bottom: 1px solid #f1f5f9; vertical-align: middle; }
 .badge { display: inline-block; padding: 3px 10px; border-radius: 99px; font-size: 11px; font-weight: 600; background: #f1f5f9; color: #64748b; }
 .form-row { display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-end; }
@@ -1021,6 +1235,12 @@ td { padding: 12px; border-bottom: 1px solid #f1f5f9; vertical-align: middle; }
 .progress-bar { width: 45%; height: 100%; border-radius: 999px; background: linear-gradient(90deg, #2563eb 0%, #60a5fa 100%); animation: loadingSlide 1.6s ease-in-out infinite; }
 .processing-note { font-size: 13px; color: #1d4ed8; font-weight: 600; }
 .processing-subnote { font-size: 12px; color: #64748b; line-height: 1.6; }
+.lang-switch { display: inline-flex; align-items: center; gap: 6px; background: rgba(255,255,255,.14); border: 1px solid rgba(255,255,255,.2); border-radius: 999px; padding: 4px; }
+.lang-switch.standalone { background: #ffffff; border-color: #dbeafe; box-shadow: 0 4px 16px rgba(37,99,235,.08); margin-bottom: 1rem; }
+.lang-btn { display: inline-block; min-width: 38px; padding: 6px 10px; border-radius: 999px; font-size: 12px; font-weight: 700; text-align: center; text-decoration: none; color: #cbd5e1; }
+.lang-switch.standalone .lang-btn { color: #64748b; }
+.lang-btn.active { background: #ffffff; color: #1e3a8a; }
+.lang-switch.standalone .lang-btn.active { background: #2563eb; color: #ffffff; }
 @keyframes loadingSlide {
   0% { transform: translateX(0); }
   50% { transform: translateX(120%); }
@@ -1072,21 +1292,24 @@ def generate_temp_password(length=10):
     return "".join(secrets.choice(alphabet) for _ in range(length))
 
 
-def render(title, body, nav=True):
+def render(title, body, nav=True, lang="en", topbar_greeting="Hello, ", logout_label="Logout", show_lang_switch=False):
+    direction = get_flow_dir(lang)
     topbar = ""
     if nav:
         name = session.get("name", "")
+        lang_switch = build_lang_switch(lang) if show_lang_switch else ""
         topbar = (
             '<div class="topbar">'
             "<h1>&#9201; Scriptly</h1>"
             '<div style="display:flex;gap:16px;align-items:center">'
-            '<span style="font-size:13px;color:#93c5fd">Hello, ' + name + "</span>"
-            '<a href="/logout">Logout</a>'
+            + lang_switch
+            + '<span style="font-size:13px;color:#93c5fd">' + topbar_greeting + name + "</span>"
+            + '<a href="/logout">' + logout_label + '</a>'
             "</div></div>"
         )
     wrap_cls = "wrap" if nav else "login-wrap"
     return (
-        '<!DOCTYPE html><html dir="rtl" lang="he">'
+        '<!DOCTYPE html><html dir="' + direction + '" lang="' + lang + '">'
         "<head><meta charset=\"UTF-8\">"
         '<meta name="viewport" content="width=device-width,initial-scale=1">'
         "<title>" + title + " | Scriptly</title>"
@@ -1124,6 +1347,8 @@ def login():
     if "user_id" in session:
         return redirect("/admin" if session.get("is_admin") else "/dashboard")
 
+    lang = get_flow_lang()
+    text = get_flow_text(lang)
     error = ""
     if request.method == "POST":
         username = request.form["username"].strip()
@@ -1140,27 +1365,28 @@ def login():
                 }
             )
             return redirect("/admin" if user["is_admin"] else "/dashboard")
-        error = '<div class="flash-err">Incorrect username or password</div>'
+        error = '<div class="flash-err">' + text["login_error"] + "</div>"
 
     body = (
-        '<div class="card" style="padding:2rem">'
+        build_lang_switch(lang).replace('class="lang-switch"', 'class="lang-switch standalone"')
+        + '<div class="card" style="padding:2rem">'
         '<div style="text-align:center;margin-bottom:1.5rem">'
         '<div style="font-size:40px">&#9201;</div>'
         '<h1 style="font-size:20px;font-weight:700;color:#1e3a8a;margin-top:8px">Scriptly</h1>'
-        '<p style="font-size:12px;color:#888;margin-top:3px">Attendance and payroll tools portal</p>'
+        + '<p style="font-size:12px;color:#888;margin-top:3px">' + text["login_subtitle"] + '</p>'
         "</div>"
         + error
         + '<form method="POST">'
-        '<label class="field-label">Username</label>'
+        + '<label class="field-label">' + text["login_username"] + '</label>'
         '<input type="text" name="username" required autofocus>'
-        '<label class="field-label">Password</label>'
+        + '<label class="field-label">' + text["login_password"] + '</label>'
         '<input type="password" name="password" required>'
-        '<button type="submit" class="btn btn-blue" style="width:100%;padding:12px;font-size:15px;margin-top:.5rem">Log In</button>'
+        + '<button type="submit" class="btn btn-blue" style="width:100%;padding:12px;font-size:15px;margin-top:.5rem">' + text["login_submit"] + '</button>'
         "</form>"
         '<p style="text-align:center;margin-top:1.5rem;font-size:11px;color:#bbb">&#169; Scriptly</p>'
         "</div>"
     )
-    return render("Login", body, nav=False)
+    return render(text["login_page_title"], body, nav=False, lang=lang)
 
 
 @app.route("/logout")
@@ -1175,10 +1401,12 @@ def dashboard():
     if session.get("is_admin"):
         return redirect("/admin")
 
+    lang = get_flow_lang()
+    text = get_flow_text(lang)
     with get_db() as db:
         perms = db.execute("SELECT script_id FROM permissions WHERE user_id=?", (session["user_id"],)).fetchall()
 
-    allowed = [SCRIPTS[p["script_id"]] for p in perms if p["script_id"] in SCRIPTS]
+    allowed = [get_localized_script(SCRIPTS[p["script_id"]], lang) for p in perms if p["script_id"] in SCRIPTS]
     cards = ""
     for script in allowed:
         cards += (
@@ -1193,19 +1421,26 @@ def dashboard():
         cards = (
             '<div style="text-align:center;padding:3rem;color:#94a3b8">'
             '<div style="font-size:48px;margin-bottom:1rem">&#128274;</div>'
-            "<div>No tools are available for your account yet</div>"
+            "<div>" + text["dashboard_empty"] + "</div>"
             "</div>"
         )
 
     body = (
-        '<h2 style="font-size:22px;font-weight:700;color:#1e3a8a;margin-bottom:.4rem">Welcome, '
+        '<h2 style="font-size:22px;font-weight:700;color:#1e3a8a;margin-bottom:.4rem">' + text["dashboard_greeting"]
         + session["name"]
-        + ' &#128075;</h2><p style="font-size:14px;color:#64748b;margin-bottom:2rem">Your available tools:</p>'
+        + ' &#128075;</h2><p style="font-size:14px;color:#64748b;margin-bottom:2rem">' + text["dashboard_intro"] + "</p>"
         '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:1rem">'
         + cards
         + "</div>"
     )
-    return render("Your Tools", body)
+    return render(
+        text["dashboard_page_title"],
+        body,
+        lang=lang,
+        topbar_greeting=text["topbar_greeting"],
+        logout_label=text["logout"],
+        show_lang_switch=True,
+    )
 
 
 @app.route("/run/<script_id>", methods=["GET", "POST"])
@@ -1214,16 +1449,19 @@ def run_script(script_id):
     if session.get("is_admin"):
         return redirect("/admin")
 
+    lang = get_flow_lang()
+    text = get_flow_text(lang)
     with get_db() as db:
         perm = db.execute(
             "SELECT 1 FROM permissions WHERE user_id=? AND script_id=?",
             (session["user_id"], script_id),
         ).fetchone()
 
-    scr = get_script(script_id)
+    base_script = get_script(script_id)
+    scr = get_localized_script(base_script, lang) if base_script else None
 
     if not perm or scr is None:
-        add_flash("You do not have access to this tool")
+        add_flash(text["run_access_denied"])
         return redirect("/dashboard")
     result = None
     error = ""
@@ -1256,14 +1494,14 @@ def run_script(script_id):
                     extra_ext = get_extension(extra_file.filename)
                     expected = upload.get("accept", "").lstrip(".").lower()
                     if expected and extra_ext != expected:
-                        error = '<div class="flash-err">The extra file type is not supported</div>'
+                        error = '<div class="flash-err">' + text["run_extra_file_type_error"] + "</div>"
                         break
                     extra_path = str(UPLOAD_FOLDER / f"{uid}_{upload['name']}.{extra_ext or 'dat'}")
                     extra_file.save(extra_path)
                     options[f"{upload['name']}_path"] = extra_path
                     extra_paths.append(extra_path)
                 elif upload.get("required"):
-                    error = '<div class="flash-err">A required extra file is missing</div>'
+                    error = '<div class="flash-err">' + text["run_missing_extra_file_error"] + "</div>"
                     break
             if error:
                 for path in extra_paths:
@@ -1279,7 +1517,7 @@ def run_script(script_id):
                 except (xlrd.biffh.XLRDError, BadZipFile, OSError, ValueError):
                     error = '<div class="flash-err">' + scr["processing_error"] + '</div>'
                 except Exception as e:
-                    error = '<div class="flash-err">Unexpected processing error: ' + str(e) + "</div>"
+                    error = '<div class="flash-err">' + text["run_unexpected_error_prefix"] + str(e) + "</div>"
                 finally:
                     try:
                         os.remove(inp)
@@ -1340,7 +1578,7 @@ def run_script(script_id):
         )
 
     body = (
-        '<a href="/dashboard" style="color:#2563eb;font-size:13px;text-decoration:none;display:block;margin-bottom:1rem">&#8592; ' + scr["back_label"] + '</a>'
+        '<a href="/dashboard" style="color:#2563eb;font-size:13px;text-decoration:none;display:block;margin-bottom:1rem">' + text["back_arrow"] + ' ' + scr["back_label"] + '</a>'
         + '<div class="card">'
         + '<div style="font-size:40px;margin-bottom:.5rem">' + scr["icon"] + '</div>'
         + '<div style="font-size:20px;font-weight:700;color:#1e3a8a;margin-bottom:4px">' + scr["name"] + '</div>'
@@ -1356,7 +1594,14 @@ def run_script(script_id):
         + 'if(form){form.addEventListener("submit", function(event){if(!fileInput || !fileInput.files || !fileInput.files.length){event.preventDefault();return false;}button.disabled=true;button.textContent="' + scr["processing_title"] + '";var box=document.getElementById("processingBox");if(box){box.classList.add("show");}return true;});}'
         + '</script>'
     )
-    return render(scr["name"], body)
+    return render(
+        scr["name"],
+        body,
+        lang=lang,
+        topbar_greeting=text["topbar_greeting"],
+        logout_label=text["logout"],
+        show_lang_switch=True,
+    )
 
 @app.route("/download/<filename>")
 @login_required
