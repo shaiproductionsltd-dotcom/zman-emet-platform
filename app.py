@@ -343,7 +343,7 @@ def render(title, body, nav=True):
         name = session.get("name", "")
         topbar = (
             '<div class="topbar">'
-            "<h1>&#9201; זמן אמת</h1>"
+            "<h1>&#9201; סקריפטלי</h1>"
             '<div style="display:flex;gap:16px;align-items:center">'
             '<span style="font-size:13px;color:#93c5fd">שלום, ' + name + "</span>"
             '<a href="/logout">יציאה</a>'
@@ -354,7 +354,7 @@ def render(title, body, nav=True):
         '<!DOCTYPE html><html dir="rtl" lang="he">'
         "<head><meta charset=\"UTF-8\">"
         '<meta name="viewport" content="width=device-width,initial-scale=1">'
-        "<title>" + title + " | זמן אמת</title>"
+        "<title>" + title + " | סקריפטלי</title>"
         "<style>" + CSS + "</style></head>"
         "<body>" + topbar + '<div class="' + wrap_cls + '">' + pop_flashes() + body + "</div></body></html>"
     )
@@ -411,7 +411,7 @@ def login():
         '<div class="card" style="padding:2rem">'
         '<div style="text-align:center;margin-bottom:1.5rem">'
         '<div style="font-size:40px">&#9201;</div>'
-        '<h1 style="font-size:20px;font-weight:700;color:#1e3a8a;margin-top:8px">זמן אמת</h1>'
+        '<h1 style="font-size:20px;font-weight:700;color:#1e3a8a;margin-top:8px">סקריפטלי</h1>'
         '<p style="font-size:12px;color:#888;margin-top:3px">מערכת לניהול נוכחות ושכר</p>'
         "</div>"
         + error
@@ -422,7 +422,7 @@ def login():
         '<input type="password" name="password" required>'
         '<button type="submit" class="btn btn-blue" style="width:100%;padding:12px;font-size:15px;margin-top:.5rem">כניסה למערכת</button>'
         "</form>"
-        '<p style="text-align:center;margin-top:1.5rem;font-size:11px;color:#bbb">&#169; זמן אמת</p>'
+        '<p style="text-align:center;margin-top:1.5rem;font-size:11px;color:#bbb">&#169; סקריפטלי</p>'
         "</div>"
     )
     return render("כניסה", body, nav=False)
