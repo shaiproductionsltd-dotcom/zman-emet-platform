@@ -800,7 +800,7 @@ def write_matan_missing_unmatched(ws, unmatched_rows):
 
 
 def yes_no(value):
-    return "Yes" if value else "No"
+    return "כן" if value else "לא"
 
 
 def parse_excel_date(workbook, value):
@@ -909,44 +909,48 @@ def apply_matan_manual_corrections_filters(rows, options):
 
 
 def write_matan_corrections_summary(ws, employee_rows, filters_used):
-    ws.title = safe_sheet_title("Corrections Summary", "Corrections Summary")
+    ws.title = safe_sheet_title("סיכום תיקונים", "Corrections Summary")
     ws.sheet_view.rightToLeft = True
     ws.sheet_view.showGridLines = False
     ws.freeze_panes = "A8"
 
-    ws["A1"] = "Matan Manual Corrections Summary"
-    ws["A1"].font = Font(bold=True, size=18)
+    ws["A1"] = "דוח תיקונים ידניים - מתן"
+    ws["A1"].font = Font(bold=True, size=18, color="0F172A")
     ws["A1"].fill = PatternFill(fill_type="solid", fgColor="BFDBFE")
 
     metrics = [
-        ("Employees in result", len(employee_rows)),
-        ("Total raw corrections", sum(row["raw_correction_count"] for row in employee_rows)),
-        ("Total capped corrections", sum(row["capped_correction_count"] for row in employee_rows)),
-        ("Total days with corrections", sum(row["days_with_corrections"] for row in employee_rows)),
+        ("עובדים בתוצאה", len(employee_rows), "DBEAFE"),
+        ("סה\"כ תיקונים גולמיים", sum(row["raw_correction_count"] for row in employee_rows), "FEE2E2"),
+        ("סה\"כ תיקונים לאחר תקרה", sum(row["capped_correction_count"] for row in employee_rows), "DCFCE7"),
+        ("סה\"כ ימים עם תיקונים", sum(row["days_with_corrections"] for row in employee_rows), "FEF3C7"),
     ]
-    for idx, (label, value) in enumerate(metrics, start=3):
-        ws.cell(row=idx, column=1, value=label).font = Font(bold=True)
-        ws.cell(row=idx, column=2, value=value)
+    for idx, (label, value, fill_color) in enumerate(metrics, start=3):
+        label_cell = ws.cell(row=idx, column=1, value=label)
+        value_cell = ws.cell(row=idx, column=2, value=value)
+        label_cell.font = Font(bold=True, color="334155")
+        value_cell.font = Font(bold=True, color="0F172A")
+        label_cell.fill = PatternFill(fill_type="solid", fgColor=fill_color)
+        value_cell.fill = PatternFill(fill_type="solid", fgColor=fill_color)
 
-    ws["D3"] = "Filters used"
+    ws["D3"] = "סינונים"
     ws["D3"].font = Font(bold=True)
     for idx, (label, value) in enumerate(filters_used.items(), start=4):
         ws.cell(row=idx, column=4, value=label).font = Font(bold=True)
-        ws.cell(row=idx, column=5, value=value or "All")
+        ws.cell(row=idx, column=5, value=value or "ללא")
 
     header_row = 7
     headers = [
-        "Employee Name",
-        "Payroll Number",
-        "ID Number",
-        "Department",
-        "Raw Correction Count",
-        "Entry Correction Count",
-        "Exit Correction Count",
-        "Days With Corrections",
-        "Capped Correction Count",
-        "Average Per Calendar Day",
-        "Average Per Work Day",
+        "שם עובד",
+        "מספר שכר",
+        "תעודת זהות",
+        "מחלקה",
+        "כמות תיקונים גולמית",
+        "תיקוני כניסה",
+        "תיקוני יציאה",
+        "ימים עם תיקונים",
+        "כמות תיקונים לאחר תקרה",
+        "ממוצע ליום קלנדרי",
+        "ממוצע ליום עבודה",
     ]
     for col, header in enumerate(headers, start=1):
         cell = ws.cell(row=header_row, column=col, value=header)
@@ -972,6 +976,10 @@ def write_matan_corrections_summary(ws, employee_rows, filters_used):
             ws.cell(row=row_idx, column=col, value=value)
             if row_idx % 2 == 0:
                 ws.cell(row=row_idx, column=col).fill = PatternFill(fill_type="solid", fgColor="F8FAFC")
+        ws.cell(row=row_idx, column=5).fill = PatternFill(fill_type="solid", fgColor="FEE2E2")
+        ws.cell(row=row_idx, column=9).fill = PatternFill(fill_type="solid", fgColor="DCFCE7")
+        ws.cell(row=row_idx, column=5).font = Font(bold=True, color="991B1B")
+        ws.cell(row=row_idx, column=9).font = Font(bold=True, color="166534")
         ws.cell(row=row_idx, column=10).number_format = "0.00"
         ws.cell(row=row_idx, column=11).number_format = "0.00"
 
@@ -981,18 +989,18 @@ def write_matan_corrections_summary(ws, employee_rows, filters_used):
 
 
 def write_matan_corrections_daily(ws, daily_rows, allowed_names):
-    ws.title = safe_sheet_title("Daily Corrections", "Daily Corrections")
+    ws.title = safe_sheet_title("פירוט יומי", "Daily Corrections")
     ws.sheet_view.rightToLeft = True
     ws.sheet_view.showGridLines = False
     ws.freeze_panes = "A2"
 
     headers = [
-        "Employee",
-        "Date",
-        "Entry Corrected",
-        "Exit Corrected",
-        "Raw Daily Corrections",
-        "Capped Daily Corrections",
+        "עובד",
+        "תאריך",
+        "כניסה תוקנה",
+        "יציאה תוקנה",
+        "תיקונים יומיים גולמיים",
+        "תיקונים יומיים לאחר תקרה",
     ]
     for col, header in enumerate(headers, start=1):
         cell = ws.cell(row=1, column=col, value=header)
@@ -1015,6 +1023,8 @@ def write_matan_corrections_daily(ws, daily_rows, allowed_names):
             ws.cell(row=row_idx, column=col, value=value)
             if row_idx % 2 == 0:
                 ws.cell(row=row_idx, column=col).fill = PatternFill(fill_type="solid", fgColor="ECFDF5")
+        ws.cell(row=row_idx, column=5).fill = PatternFill(fill_type="solid", fgColor="FEF2F2")
+        ws.cell(row=row_idx, column=6).fill = PatternFill(fill_type="solid", fgColor="ECFDF5")
         row_idx += 1
 
     widths = [24, 14, 16, 16, 20, 22]
@@ -1034,8 +1044,8 @@ def run_matan_manual_corrections(input_path, output_path, extension, options=Non
         wb.active,
         filtered_rows,
         {
-            "Min corrections": options.get("min_corrections", ""),
-            "Max corrections": options.get("max_corrections", ""),
+            "מינימום תיקונים": options.get("min_corrections", ""),
+            "מקסימום תיקונים": options.get("max_corrections", ""),
         },
     )
     write_matan_corrections_daily(wb.create_sheet(), daily_rows, allowed_names)
@@ -1426,8 +1436,8 @@ SCRIPTS["matan_missing"] = {
 
 SCRIPTS["matan_manual_corrections"] = {
     "id": "matan_manual_corrections",
-    "name": "Matan Manual Corrections",
-    "desc": "Count manual entry and exit corrections per employee",
+    "name": "תיקונים ידניים מתן",
+    "desc": "ספירת תיקוני כניסה ויציאה ידניים לכל עובד",
     "accept": ".xls",
     "icon": "📝",
 }
@@ -1460,23 +1470,23 @@ SCRIPT_REGISTRY["matan_manual_corrections"] = {
     **SCRIPTS["matan_manual_corrections"],
     "processor": run_matan_manual_corrections,
     "output_suffix": "matan_manual_corrections",
-    "success_title": "Manual-corrections report is ready",
-    "success_action": "Download report",
-    "retry_action": "Process another file",
-    "submit_label": "Create corrections report",
-    "back_label": "Back to tools",
-    "empty_error": "No file selected",
-    "unsupported_error": "Please upload the original XLS monthly detailed attendance report",
-    "invalid_error": "The uploaded file is not a valid Excel file",
-    "empty_file_error": "The uploaded file is empty",
-    "too_large_error": "The uploaded file is too large",
-    "processing_error": "Could not generate the manual-corrections report from this file",
-    "processing_title": "Corrections report is being prepared",
-    "processing_note": "The system is counting manual attendance corrections for each employee. This may take a few minutes.",
-    "file_picker_label": "Choose monthly attendance report",
+    "success_title": "דוח התיקונים מוכן",
+    "success_action": "הורדת הדוח",
+    "retry_action": "עיבוד קובץ נוסף",
+    "submit_label": "יצירת דוח תיקונים",
+    "back_label": "חזרה לכלים",
+    "empty_error": "לא נבחר קובץ",
+    "unsupported_error": "יש להעלות את דוח הנוכחות החודשי המפורט המקורי מסוג XLS",
+    "invalid_error": "הקובץ שהועלה אינו קובץ אקסל תקין",
+    "empty_file_error": "הקובץ שהועלה ריק",
+    "too_large_error": "הקובץ שהועלה גדול מדי",
+    "processing_error": "לא ניתן היה להפיק את דוח התיקונים מהקובץ הזה",
+    "processing_title": "דוח התיקונים בהכנה",
+    "processing_note": "המערכת סופרת תיקוני נוכחות ידניים לכל עובד. הפעולה עשויה להימשך כמה דקות.",
+    "file_picker_label": "בחירת דוח נוכחות חודשי",
     "filter_fields": [
-        {"name": "min_corrections", "label": "Minimum corrections", "placeholder": "For example 4"},
-        {"name": "max_corrections", "label": "Maximum corrections", "placeholder": "For example 12"},
+        {"name": "min_corrections", "label": "מינימום תיקונים", "placeholder": "לדוגמה 4"},
+        {"name": "max_corrections", "label": "מקסימום תיקונים", "placeholder": "לדוגמה 12"},
     ],
 }
 
