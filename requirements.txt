@@ -1,0 +1,6 @@
+uploads/
+outputs/
+platform.db
+__pycache__/
+*.pyc
+.env

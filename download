@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html dir="rtl" lang="he">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{{ script.name }} | זמן אמת</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', Arial, sans-serif; background: #f0f4ff; min-height: 100vh; }
+  .topbar { background: #1e3a8a; color: white; padding: 0 2rem; height: 58px; display: flex; align-items: center; justify-content: space-between; }
+  .topbar h1 { font-size: 17px; font-weight: 700; }
+  .topbar a { color: #93c5fd; font-size: 13px; text-decoration: none; }
+  .wrap { max-width: 520px; margin: 2.5rem auto; padding: 0 1rem; }
+  .back { display: inline-flex; align-items: center; gap: 6px; color: #2563eb; font-size: 13px; text-decoration: none; margin-bottom: 1.25rem; }
+  .back:hover { text-decoration: underline; }
+  .card { background: white; border-radius: 20px; box-shadow: 0 4px 24px rgba(37,99,235,0.09); padding: 2rem; }
+  .icon { font-size: 40px; margin-bottom: 0.5rem; }
+  .title { font-size: 20px; font-weight: 700; color: #1e3a8a; margin-bottom: 4px; }
+  .desc { font-size: 13px; color: #64748b; margin-bottom: 1.75rem; }
+  .drop-zone { border: 2px dashed #c7d7f5; border-radius: 14px; padding: 2rem 1.5rem; text-align: center; cursor: pointer; background: #fafcff; transition: all 0.2s; margin-bottom: 1rem; }
+  .drop-zone:hover, .drop-zone.over { border-color: #2563eb; background: #eff6ff; }
+  .drop-zone input { display: none; }
+  .drop-label { font-size: 14px; font-weight: 600; color: #1e40af; margin-bottom: 4px; }
+  .drop-sub { font-size: 12px; color: #94a3b8; }
+  .file-info { display: none; padding: 9px 14px; background: #f1f5f9; border-radius: 9px; font-size: 13px; color: #334155; margin-bottom: 1rem; }
+  .btn { display: block; width: 100%; padding: 13px; font-size: 15px; font-weight: 700; background: #2563eb; color: white; border: none; border-radius: 11px; cursor: pointer; font-family: inherit; transition: background 0.15s; }
+  .btn:hover:not(:disabled) { background: #1d4ed8; }
+  .btn:disabled { background: #94a3b8; cursor: default; }
+  .success-box { margin-top: 1.25rem; padding: 1.25rem; background: #f0fdf4; border: 1.5px solid #86efac; border-radius: 13px; text-align: center; }
+  .success-title { font-size: 16px; font-weight: 700; color: #15803d; margin-bottom: 10px; }
+  .dl-btn { display: inline-block; padding: 11px 28px; background: #16a34a; color: white; border-radius: 9px; font-size: 14px; font-weight: 700; text-decoration: none; }
+  .dl-btn:hover { background: #15803d; }
+  .error-box { margin-top: 1rem; padding: 1rem; background: #fef2f2; border: 1px solid #fecaca; border-radius: 10px; color: #dc2626; font-size: 13px; }
+  .spinner { display: none; text-align: center; padding: 1rem; color: #2563eb; font-size: 14px; }
+</style>
+</head>
+<body>
+<div class="topbar">
+  <h1>⏱ זמן אמת</h1>
+  <div style="display:flex;gap:16px;align-items:center">
+    <span style="font-size:13px;color:#93c5fd">{{ session.name }}</span>
+    <a href="/logout">יציאה</a>
+  </div>
+</div>
+<div class="wrap">
+  <a href="/dashboard" class="back">← חזרה לכלים</a>
+  <div class="card">
+    <div class="icon">{{ script.icon }}</div>
+    <div class="title">{{ script.name }}</div>
+    <div class="desc">{{ script.desc }}</div>
+
+    {% if error %}
+    <div class="error-box">{{ error }}</div>
+    {% endif %}
+
+    {% if result %}
+    <div class="success-box">
+      <div class="success-title">✅ הקובץ מוכן!</div>
+      <a href="/download/{{ result }}" class="dl-btn">⬇ הורד קובץ נקי</a>
+      <br><br>
+      <a href="/run/{{ script.id }}" style="font-size:13px;color:#2563eb">עבד קובץ נוסף</a>
+    </div>
+    {% else %}
+    <form method="POST" enctype="multipart/form-data" id="uploadForm">
+      <div class="drop-zone" id="dz" onclick="document.getElementById('fi').click()">
+        <input type="file" name="file" id="fi" accept="{{ script.accept }}">
+        <div style="font-size:32px;margin-bottom:6px">📂</div>
+        <div class="drop-label">לחץ לבחירת קובץ</div>
+        <div class="drop-sub">{{ script.accept }} — ניתן גם לגרור לכאן</div>
+      </div>
+      <div class="file-info" id="fi-info"></div>
+      <div class="spinner" id="spinner">⏳ מעבד קובץ, אנא המתן...</div>
+      <button type="submit" class="btn" id="goBtn" disabled>{{ script.icon }} הפעל</button>
+    </form>
+    {% endif %}
+  </div>
+</div>
+<script>
+var fi = document.getElementById('fi');
+var dz = document.getElementById('dz');
+var fiInfo = document.getElementById('fi-info');
+var goBtn = document.getElementById('goBtn');
+var form = document.getElementById('uploadForm');
+var spinner = document.getElementById('spinner');
+
+if (fi) {
+  fi.onchange = function(e) { pick(e.target.files[0]); };
+  dz.ondragover = function(e) { e.preventDefault(); dz.classList.add('over'); };
+  dz.ondragleave = function() { dz.classList.remove('over'); };
+  dz.ondrop = function(e) {
+    e.preventDefault(); dz.classList.remove('over');
+    fi.files = e.dataTransfer.files;
+    pick(e.dataTransfer.files[0]);
+  };
+  form.onsubmit = function() {
+    goBtn.disabled = true;
+    spinner.style.display = 'block';
+  };
+}
+
+function pick(f) {
+  if (!f) return;
+  fiInfo.textContent = '📄 ' + f.name;
+  fiInfo.style.display = 'block';
+  goBtn.disabled = false;
+}
+</script>
+</body>
+</html>

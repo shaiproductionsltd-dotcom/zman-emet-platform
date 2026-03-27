@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html dir="rtl" lang="he">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ניהול | זמן אמת</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', Arial, sans-serif; background: #f0f4ff; min-height: 100vh; }
+  .topbar { background: #1e3a8a; color: white; padding: 0 2rem; height: 58px; display: flex; align-items: center; justify-content: space-between; }
+  .topbar h1 { font-size: 17px; font-weight: 700; }
+  .topbar a { color: #93c5fd; font-size: 13px; text-decoration: none; }
+  .topbar a:hover { color: white; }
+  .wrap { max-width: 900px; margin: 2rem auto; padding: 0 1rem; }
+  .section { background: white; border-radius: 16px; box-shadow: 0 2px 16px rgba(0,0,0,0.06); padding: 1.75rem; margin-bottom: 1.5rem; }
+  .section h2 { font-size: 16px; font-weight: 700; color: #1e3a8a; margin-bottom: 1.25rem; padding-bottom: 0.75rem; border-bottom: 1.5px solid #e0e7ff; }
+  .flash { background: #f0fdf4; border: 1px solid #86efac; color: #15803d; border-radius: 8px; padding: 10px 14px; font-size: 13px; margin-bottom: 1rem; }
+  .form-row { display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-end; }
+  .form-group { display: flex; flex-direction: column; gap: 4px; flex: 1; min-width: 140px; }
+  label { font-size: 12px; font-weight: 600; color: #374151; }
+  input[type=text], input[type=password] { padding: 9px 12px; border: 1.5px solid #e2e8f0; border-radius: 8px; font-size: 13px; font-family: inherit; outline: none; }
+  input:focus { border-color: #2563eb; }
+  .btn { padding: 9px 18px; border: none; border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer; font-family: inherit; }
+  .btn-blue { background: #2563eb; color: white; }
+  .btn-blue:hover { background: #1d4ed8; }
+  .btn-red { background: #fee2e2; color: #dc2626; }
+  .btn-red:hover { background: #fecaca; }
+  .btn-gray { background: #f1f5f9; color: #475569; }
+  .btn-gray:hover { background: #e2e8f0; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th { text-align: right; padding: 10px 12px; background: #f8fafc; color: #64748b; font-weight: 600; border-bottom: 1.5px solid #e2e8f0; }
+  td { padding: 12px; border-bottom: 1px solid #f1f5f9; vertical-align: middle; }
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: #f8fafc; }
+  .badge { display: inline-block; padding: 3px 10px; border-radius: 99px; font-size: 11px; font-weight: 600; }
+  .badge-green { background: #dcfce7; color: #15803d; }
+  .badge-gray  { background: #f1f5f9; color: #64748b; }
+  .script-checks { display: flex; gap: 10px; flex-wrap: wrap; }
+  .script-check { display: flex; align-items: center; gap: 5px; font-size: 13px; }
+  .actions { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  .modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.4); z-index: 100; align-items: center; justify-content: center; }
+  .modal-overlay.open { display: flex; }
+  .modal { background: white; border-radius: 16px; padding: 1.75rem; width: 340px; }
+  .modal h3 { font-size: 15px; font-weight: 700; margin-bottom: 1rem; color: #1e3a8a; }
+  .modal-actions { display: flex; gap: 8px; margin-top: 1rem; justify-content: flex-end; }
+</style>
+</head>
+<body>
+<div class="topbar">
+  <h1>⏱ זמן אמת — לוח ניהול</h1>
+  <div style="display:flex;gap:16px;align-items:center">
+    <span style="font-size:13px;color:#93c5fd">שלום, {{ session.name }}</span>
+    <a href="/logout">יציאה</a>
+  </div>
+</div>
+
+<div class="wrap">
+  {% with messages = get_flashed_messages() %}
+    {% if messages %}
+      {% for m in messages %}
+        <div class="flash">{{ m }}</div>
+      {% endfor %}
+    {% endif %}
+  {% endwith %}
+
+  <!-- Add user -->
+  <div class="section">
+    <h2>➕ הוספת לקוח חדש</h2>
+    <form method="POST" action="/admin/add_user">
+      <div class="form-row">
+        <div class="form-group">
+          <label>שם מלא</label>
+          <input type="text" name="full_name" placeholder="שם הלקוח" required>
+        </div>
+        <div class="form-group">
+          <label>שם משתמש</label>
+          <input type="text" name="username" placeholder="לכניסה למערכת" required>
+        </div>
+        <div class="form-group">
+          <label>סיסמה</label>
+          <input type="password" name="password" placeholder="סיסמה ראשונית" required>
+        </div>
+        <button type="submit" class="btn btn-blue" style="height:38px;align-self:flex-end">הוסף לקוח</button>
+      </div>
+    </form>
+  </div>
+
+  <!-- Users table -->
+  <div class="section">
+    <h2>👥 לקוחות במערכת</h2>
+    {% if users %}
+    <table>
+      <thead>
+        <tr>
+          <th>שם לקוח</th>
+          <th>שם משתמש</th>
+          <th>הרשאות סקריפטים</th>
+          <th>שינוי סיסמה</th>
+          <th>פעולות</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for user in users %}
+        <tr>
+          <td><strong>{{ user.full_name }}</strong></td>
+          <td><span class="badge badge-gray">{{ user.username }}</span></td>
+          <td>
+            <form method="POST" action="/admin/permissions/{{ user.id }}" style="display:inline">
+              <div class="script-checks">
+                {% for sid, scr in scripts.items() %}
+                <label class="script-check">
+                  <input type="checkbox" name="scripts" value="{{ sid }}"
+                    {% if user.id in user_perms and sid in user_perms[user.id] %}checked{% endif %}>
+                  {{ scr.icon }} {{ scr.name }}
+                </label>
+                {% endfor %}
+              </div>
+              <button type="submit" class="btn btn-gray" style="margin-top:8px;font-size:12px;padding:5px 12px">שמור הרשאות</button>
+            </form>
+          </td>
+          <td>
+            <button class="btn btn-gray" style="font-size:12px;padding:5px 12px"
+              onclick="openPassModal({{ user.id }}, '{{ user.full_name }}')">שנה סיסמה</button>
+          </td>
+          <td>
+            <a href="/admin/delete_user/{{ user.id }}"
+               onclick="return confirm('למחוק את {{ user.full_name }}?')"
+               class="btn btn-red" style="text-decoration:none;padding:5px 12px;font-size:12px">מחק</a>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p style="color:#94a3b8;font-size:14px;text-align:center;padding:2rem">אין לקוחות עדיין. הוסף לקוח ראשון למעלה.</p>
+    {% endif %}
+  </div>
+</div>
+
+<!-- Password modal -->
+<div class="modal-overlay" id="passModal">
+  <div class="modal">
+    <h3>שינוי סיסמה — <span id="modalName"></span></h3>
+    <form method="POST" id="passForm">
+      <label>סיסמה חדשה</label>
+      <input type="password" name="new_password" required style="width:100%;margin-top:6px">
+      <div class="modal-actions">
+        <button type="button" class="btn btn-gray" onclick="closePassModal()">ביטול</button>
+        <button type="submit" class="btn btn-blue">עדכן</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script>
+function openPassModal(uid, name) {
+  document.getElementById('modalName').textContent = name;
+  document.getElementById('passForm').action = '/admin/set_password/' + uid;
+  document.getElementById('passModal').classList.add('open');
+}
+function closePassModal() {
+  document.getElementById('passModal').classList.remove('open');
+}
+</script>
+</body>
+</html>

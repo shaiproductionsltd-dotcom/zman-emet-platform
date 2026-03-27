@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html dir="rtl" lang="he">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>הכלים שלי | זמן אמת</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', Arial, sans-serif; background: #f0f4ff; min-height: 100vh; }
+  .topbar { background: #1e3a8a; color: white; padding: 0 2rem; height: 58px; display: flex; align-items: center; justify-content: space-between; }
+  .topbar h1 { font-size: 17px; font-weight: 700; }
+  .topbar a { color: #93c5fd; font-size: 13px; text-decoration: none; }
+  .wrap { max-width: 700px; margin: 2.5rem auto; padding: 0 1rem; }
+  .welcome { font-size: 22px; font-weight: 700; color: #1e3a8a; margin-bottom: 0.4rem; }
+  .sub { font-size: 14px; color: #64748b; margin-bottom: 2rem; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 1rem; }
+  .script-card { background: white; border-radius: 16px; box-shadow: 0 2px 16px rgba(0,0,0,0.06); padding: 1.5rem; cursor: pointer; transition: transform 0.15s, box-shadow 0.15s; text-decoration: none; display: block; }
+  .script-card:hover { transform: translateY(-3px); box-shadow: 0 6px 24px rgba(37,99,235,0.12); }
+  .script-icon { font-size: 36px; margin-bottom: 0.75rem; }
+  .script-name { font-size: 15px; font-weight: 700; color: #1e3a8a; margin-bottom: 4px; }
+  .script-desc { font-size: 12px; color: #64748b; }
+  .empty { text-align: center; padding: 3rem; color: #94a3b8; }
+  .flash { background: #f0fdf4; border: 1px solid #86efac; color: #15803d; border-radius: 8px; padding: 10px 14px; font-size: 13px; margin-bottom: 1rem; }
+</style>
+</head>
+<body>
+<div class="topbar">
+  <h1>⏱ זמן אמת</h1>
+  <div style="display:flex;gap:16px;align-items:center">
+    <span style="font-size:13px;color:#93c5fd">שלום, {{ session.name }}</span>
+    <a href="/logout">יציאה</a>
+  </div>
+</div>
+<div class="wrap">
+  {% with messages = get_flashed_messages() %}
+    {% if messages %}{% for m in messages %}<div class="flash">{{ m }}</div>{% endfor %}{% endif %}
+  {% endwith %}
+  <div class="welcome">שלום, {{ session.name }} 👋</div>
+  <div class="sub">הכלים הזמינים עבורך:</div>
+  {% if scripts %}
+  <div class="grid">
+    {% for scr in scripts %}
+    <a href="/run/{{ scr.id }}" class="script-card">
+      <div class="script-icon">{{ scr.icon }}</div>
+      <div class="script-name">{{ scr.name }}</div>
+      <div class="script-desc">{{ scr.desc }}</div>
+    </a>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="empty">
+    <div style="font-size:48px;margin-bottom:1rem">🔒</div>
+    <div style="font-size:16px;font-weight:600;color:#475569">אין כלים זמינים עדיין</div>
+    <div style="font-size:13px;margin-top:6px">צור קשר עם זמן אמת לקבלת גישה</div>
+  </div>
+  {% endif %}
+</div>
+</body>
+</html>
