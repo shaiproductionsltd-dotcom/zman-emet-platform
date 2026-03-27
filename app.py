@@ -613,25 +613,37 @@ def parse_matan_missing_report(input_path):
     header_row = 4
     headers = [str(ws.cell_value(header_row, c)).strip() for c in range(ws.ncols)]
     header_index = {header: idx for idx, header in enumerate(headers) if header}
+    employee_number_col = header_index.get("מספר עובד", -1)
+    month_col = header_index.get("חודש", -1)
+    employee_name_col = header_index.get("שם עובד", -1)
+    standard_hours_col = header_index.get("ש.תקן", -1)
+    missing_hours_col = header_index.get("חוסר", -1)
+    attendance_hours_col = header_index.get("ש.נוכחות", -1)
+    vacation_hours_col = header_index.get("חופשה", -1)
+    sick_hours_col = header_index.get("מחלה", -1)
+    reserve_hours_col = header_index.get("מילואים", -1)
+    pregnancy_hours_col = header_index.get("שעות הריון", -1)
+    special_child_hours_col = header_index.get("שעות ילד מיחד", -1)
+    absence_hours_col = header_index.get("היעדרות", -1)
     rows = []
     for row_index in range(header_row + 1, ws.nrows):
-        employee_number = str(get_sheet_cell(ws, row_index, header_index.get("׳׳¡׳₪׳¨ ׳¢׳•׳‘׳“", -1), "")).strip()
-        employee_name = str(get_sheet_cell(ws, row_index, header_index.get("׳©׳ ׳¢׳•׳‘׳“", -1), "")).strip()
+        employee_number = str(get_sheet_cell(ws, row_index, employee_number_col, "")).strip()
+        employee_name = str(get_sheet_cell(ws, row_index, employee_name_col, "")).strip()
         if not employee_number and not employee_name:
             continue
         row = {
             "employee_number": employee_number,
-            "month": str(get_sheet_cell(ws, row_index, header_index.get("׳—׳•׳“׳©", -1), "")).strip(),
+            "month": str(get_sheet_cell(ws, row_index, month_col, "")).strip(),
             "employee_name": employee_name,
-            "standard_hours": parse_hours_or_zero(get_sheet_cell(ws, row_index, header_index.get("׳©.׳×׳§׳", -1), "")),
-            "missing_hours": parse_hours_or_zero(get_sheet_cell(ws, row_index, header_index.get("׳—׳•׳¡׳¨", -1), "")),
-            "attendance_hours": parse_hours_or_zero(get_sheet_cell(ws, row_index, header_index.get("׳©.׳ ׳•׳›׳—׳•׳×", -1), "")),
-            "vacation_hours": parse_hours_or_zero(get_sheet_cell(ws, row_index, header_index.get("׳—׳•׳₪׳©׳”", -1), "")),
-            "sick_hours": parse_hours_or_zero(get_sheet_cell(ws, row_index, header_index.get("׳׳—׳׳”", -1), "")),
-            "reserve_hours": parse_hours_or_zero(get_sheet_cell(ws, row_index, header_index.get("׳׳™׳׳•׳׳™׳", -1), "")),
-            "pregnancy_hours": parse_hours_or_zero(get_sheet_cell(ws, row_index, header_index.get("׳©׳¢׳•׳× ׳”׳¨׳™׳•׳", -1), "")),
-            "special_child_hours": parse_hours_or_zero(get_sheet_cell(ws, row_index, header_index.get("׳©׳¢׳•׳× ׳™׳׳“ ׳׳™׳—׳“", -1), "")),
-            "absence_hours": parse_hours_or_zero(get_sheet_cell(ws, row_index, header_index.get("׳”׳™׳¢׳“׳¨׳•׳×", -1), "")),
+            "standard_hours": parse_hours_or_zero(get_sheet_cell(ws, row_index, standard_hours_col, "")),
+            "missing_hours": parse_hours_or_zero(get_sheet_cell(ws, row_index, missing_hours_col, "")),
+            "attendance_hours": parse_hours_or_zero(get_sheet_cell(ws, row_index, attendance_hours_col, "")),
+            "vacation_hours": parse_hours_or_zero(get_sheet_cell(ws, row_index, vacation_hours_col, "")),
+            "sick_hours": parse_hours_or_zero(get_sheet_cell(ws, row_index, sick_hours_col, "")),
+            "reserve_hours": parse_hours_or_zero(get_sheet_cell(ws, row_index, reserve_hours_col, "")),
+            "pregnancy_hours": parse_hours_or_zero(get_sheet_cell(ws, row_index, pregnancy_hours_col, "")),
+            "special_child_hours": parse_hours_or_zero(get_sheet_cell(ws, row_index, special_child_hours_col, "")),
+            "absence_hours": parse_hours_or_zero(get_sheet_cell(ws, row_index, absence_hours_col, "")),
         }
         rows.append(row)
     return rows
