@@ -538,13 +538,13 @@ def run_script(script_id):
         content = (
             error
             + '<form method="POST" enctype="multipart/form-data" id="uploadForm">'
-            + '<label class="drop-zone" for="fi">'
-            + '<input type="file" name="file" id="fi" accept="' + scr["accept"] + '" style="display:none">'
+            + '<div style="background:#fafcff;border:2px dashed #c7d7f5;border-radius:14px;padding:1.5rem;margin-bottom:1rem;text-align:center">'
             + '<div style="font-size:32px;margin-bottom:8px">&#128194;</div>'
-            + '<div style="font-size:15px;font-weight:600;color:#1e40af;margin-bottom:4px">Select file</div>'
+            + '<div style="font-size:15px;font-weight:600;color:#1e40af;margin-bottom:12px">Select file</div>'
+            + '<input type="file" name="file" id="fi" accept="' + scr["accept"] + '" style="width:100%;max-width:420px;margin:0 auto 10px;display:block;font-family:inherit">'
             + '<div style="font-size:12px;color:#94a3b8" id="lbl">' + scr["accept"] + '</div>'
-            + '</label>'
-            + '<button type="submit" class="btn btn-blue" id="gb" disabled style="width:100%;padding:13px;font-size:15px;font-weight:700">' + scr["icon"] + ' Run</button>'
+            + '</div>'
+            + '<button type="submit" class="btn btn-blue" id="gb" style="width:100%;padding:13px;font-size:15px;font-weight:700">' + scr["icon"] + ' Run</button>'
             + '<div class="processing-box" id="processingBox">'
             + '<div class="processing-note">Your file is being processed</div>'
             + '<div class="progress-track"><div class="progress-bar"></div></div>'
@@ -566,7 +566,7 @@ def run_script(script_id):
         + 'var label=document.getElementById("lbl");'
         + 'var button=document.getElementById("gb");'
         + 'var form=document.getElementById("uploadForm");'
-        + 'if(fileInput && label && button){fileInput.addEventListener("change", function(){if(this.files && this.files.length){label.textContent=this.files[0].name;button.disabled=false;}});}'
+        + 'if(fileInput && label){fileInput.addEventListener("change", function(){if(this.files && this.files.length){label.textContent=this.files[0].name;}});}'
         + 'if(form){form.addEventListener("submit", function(event){if(!fileInput || !fileInput.files || !fileInput.files.length){event.preventDefault();return false;}button.disabled=true;button.textContent="Processing file...";var box=document.getElementById("processingBox");if(box){box.classList.add("show");}fileInput.disabled=true;return true;});}'
         + '</script>'
     )
