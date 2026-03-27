@@ -320,14 +320,18 @@ def run_script(script_id):
             error = '<div class="flash-err">לא נבחר קובץ</div>'
         else:
             uid = str(uuid.uuid4())[:8]
-            fn  = secure_filename(f.filename)
-            inp = os.path.join(UPLOAD_FOLDER, uid + '_' + fn)
-            onm = fn.rsplit('.', 1)[0] + '_ללא_כוכביות.xlsx'
-            out = os.path.join(OUTPUT_FOLDER, uid + '_' + onm)
+            # secure_filename strips Hebrew — keep extension only
+            orig = f.filename
+            ext  = orig.rsplit('.', 1)[-1].lower() if '.' in orig else 'xls'
+            fn   = uid + '.' + ext
+            base = orig.rsplit('.', 1)[0] if '.' in orig else orig
+            inp  = os.path.join(UPLOAD_FOLDER, fn)
+            onm  = base + '_ללא_כוכביות.xlsx'
+            out = os.path.join(OUTPUT_FOLDER, uid + '_ללא_כוכביות.xlsx')
             f.save(inp)
             try:
                 process_xls(inp, out)
-                result = uid + '_' + onm
+                result = uid + '_ללא_כוכביות.xlsx'
             except Exception as e:
                 error = '<div class="flash-err">שגיאה בעיבוד: ' + str(e) + '</div>'
             finally:
