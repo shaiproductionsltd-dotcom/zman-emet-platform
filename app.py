@@ -12,6 +12,13 @@ from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
+try:
+    import psycopg
+    from psycopg.rows import dict_row
+except ImportError:
+    psycopg = None
+    dict_row = None
+
 
 H_ALIGN = {1: "left", 2: "center", 3: "right", 4: "fill", 5: "justify", 6: "centerContinuous", 7: "distributed"}
 V_ALIGN = {0: "top", 1: "center", 2: "bottom", 3: "justify", 4: "distributed"}
@@ -23,6 +30,7 @@ NO_BORDER = Border(
 )
 ALLOWED_EXTENSIONS = {"xls", "xlsx"}
 MAX_UPLOAD_SIZE = 10 * 1024 * 1024
+DATABASE_URL = os.environ.get("DATABASE_URL")
 
 
 def clean(val):
@@ -187,6 +195,55 @@ OUTPUT_FOLDER = BASE_DIR / "outputs"
 UPLOAD_FOLDER.mkdir(exist_ok=True)
 OUTPUT_FOLDER.mkdir(exist_ok=True)
 
+
+class DatabaseConnection:
+    def __init__(self):
+        self.conn = None
+        self.is_postgres = bool(DATABASE_URL)
+
+    def __enter__(self):
+        if self.is_postgres:
+            if psycopg is None:
+                raise RuntimeError("PostgreSQL driver is not installed")
+            self.conn = psycopg.connect(DATABASE_URL, row_factory=dict_row)
+        else:
+            self.conn = sqlite3.connect(DB)
+            self.conn.row_factory = sqlite3.Row
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        if self.conn is None:
+            return False
+        try:
+            if exc_type is not None:
+                self.conn.rollback()
+        finally:
+            self.conn.close()
+        return False
+
+    def execute(self, sql, params=()):
+        if self.conn is None:
+            raise RuntimeError("Database connection is not open")
+        if self.is_postgres:
+            sql = sql.replace("?", "%s").replace("AUTOINCREMENT", "").replace("INTEGER PRIMARY KEY", "SERIAL PRIMARY KEY")
+        return self.conn.execute(sql, params)
+
+    def commit(self):
+        if self.conn is not None:
+            self.conn.commit()
+
+
+def get_db():
+    return DatabaseConnection()
+
+
+def is_integrity_error(exc):
+    if isinstance(exc, sqlite3.IntegrityError):
+        return True
+    if psycopg is not None and isinstance(exc, psycopg.IntegrityError):
+        return True
+    return False
+
 SCRIPTS = {
     "nikuy": {
         "id": "nikuy",
@@ -230,12 +287,6 @@ td { padding: 12px; border-bottom: 1px solid #f1f5f9; vertical-align: middle; }
 .modal-bg { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.4); z-index: 100; align-items: center; justify-content: center; }
 .modal-box { background: white; border-radius: 16px; padding: 1.75rem; width: 320px; }
 """
-
-
-def get_db():
-    conn = sqlite3.connect(DB)
-    conn.row_factory = sqlite3.Row
-    return conn
 
 
 def init_db():
@@ -596,7 +647,9 @@ def add_user():
             )
             db.commit()
         add_flash("משתמש " + full_name + " נוצר בהצלחה")
-    except sqlite3.IntegrityError:
+    except Exception as exc:
+        if not is_integrity_error(exc):
+            raise
         add_flash("שם משתמש כבר קיים")
     return redirect("/admin")
 
