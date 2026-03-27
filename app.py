@@ -537,13 +537,13 @@ def run_script(script_id):
     else:
         content = (
             error
-            + '<form method="POST" enctype="multipart/form-data" id="uploadForm" onsubmit="return startProcessingState()">'
-            + '<div class="drop-zone" onclick="document.getElementById(&quot;fi&quot;).click()">'
-            + '<input type="file" name="file" id="fi" accept="' + scr["accept"] + '" style="display:none" onchange="document.getElementById(&quot;lbl&quot;).textContent=this.files[0].name;document.getElementById(&quot;gb&quot;).disabled=false">'
+            + '<form method="POST" enctype="multipart/form-data" id="uploadForm">'
+            + '<label class="drop-zone" for="fi">'
+            + '<input type="file" name="file" id="fi" accept="' + scr["accept"] + '" style="display:none">'
             + '<div style="font-size:32px;margin-bottom:8px">&#128194;</div>'
             + '<div style="font-size:15px;font-weight:600;color:#1e40af;margin-bottom:4px">Select file</div>'
             + '<div style="font-size:12px;color:#94a3b8" id="lbl">' + scr["accept"] + '</div>'
-            + '</div>'
+            + '</label>'
             + '<button type="submit" class="btn btn-blue" id="gb" disabled style="width:100%;padding:13px;font-size:15px;font-weight:700">' + scr["icon"] + ' Run</button>'
             + '<div class="processing-box" id="processingBox">'
             + '<div class="processing-note">Your file is being processed</div>'
@@ -562,16 +562,12 @@ def run_script(script_id):
         + content
         + '</div>'
         + '<script>'
-        + 'function startProcessingState(){'
         + 'var fileInput=document.getElementById("fi");'
-        + 'if(!fileInput || !fileInput.files || !fileInput.files.length){return false;}'
-        + 'document.getElementById("gb").disabled=true;'
-        + 'document.getElementById("gb").textContent="Processing file...";'
-        + 'var box=document.getElementById("processingBox");'
-        + 'if(box){box.classList.add("show");}'
-        + 'fileInput.disabled=true;'
-        + 'return true;'
-        + '}'
+        + 'var label=document.getElementById("lbl");'
+        + 'var button=document.getElementById("gb");'
+        + 'var form=document.getElementById("uploadForm");'
+        + 'if(fileInput && label && button){fileInput.addEventListener("change", function(){if(this.files && this.files.length){label.textContent=this.files[0].name;button.disabled=false;}});}'
+        + 'if(form){form.addEventListener("submit", function(event){if(!fileInput || !fileInput.files || !fileInput.files.length){event.preventDefault();return false;}button.disabled=true;button.textContent="Processing file...";var box=document.getElementById("processingBox");if(box){box.classList.add("show");}fileInput.disabled=true;return true;});}'
         + '</script>'
     )
     return render(scr["name"], body)
