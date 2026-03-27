@@ -305,20 +305,37 @@ def extract_payable_hours(summary_sheet):
 
 
 def extract_flamingo_worker_pair(detail_sheet, summary_sheet):
-    worker_name = str(find_row_label_value_with_offsets(detail_sheet, 5, "׳©׳ ׳׳×׳¦׳•׳’׳”", [2, 1])).strip() or detail_sheet.name
-    department = str(find_row_label_value(detail_sheet, 5, "׳׳—׳׳§׳”")).strip()
+    worker_name = ""
+    for label in ("שם לתצוגה", "׳©׳ ׳׳×׳¦׳•׳’׳”"):
+        worker_name = str(find_row_label_value_with_offsets(detail_sheet, 5, label, [2, 1])).strip()
+        if worker_name:
+            break
+    worker_name = worker_name or detail_sheet.name
+    department = ""
     rate_raw = ""
-    worker_number = find_row_label_value(detail_sheet, 5, "׳׳¡׳₪׳¨ ׳‘׳©׳›׳¨")
-    id_number = find_row_label_value(detail_sheet, 5, "׳×׳¢׳•׳“׳× ׳–׳”׳•׳×")
-    start_date = find_row_label_value(detail_sheet, 5, "׳×׳—׳™׳׳× ׳¢׳‘׳•׳“׳”")
-    department = str(find_row_label_value_with_offsets(detail_sheet, 5, "׳׳—׳׳§׳”", [3, 2, 1])).strip()
+    worker_number = ""
+    id_number = ""
+    start_date = ""
+    for label in ("מחלקה", "׳׳—׳׳§׳”"):
+        department = str(find_row_label_value_with_offsets(detail_sheet, 5, label, [3, 2, 1])).strip()
+        if department:
+            break
     for rate_label in ("הערות", "׳”׳¢׳¨׳•׳×"):
         rate_raw = find_row_label_value_with_offsets(detail_sheet, 5, rate_label, [4])
         if rate_raw not in ("", None):
             break
-    worker_number = find_row_label_value_with_offsets(detail_sheet, 5, "׳׳¡׳₪׳¨ ׳‘׳©׳›׳¨", [5, 4, 3, 2, 1])
-    id_number = find_row_label_value_with_offsets(detail_sheet, 5, "׳×׳¢׳•׳“׳× ׳–׳”׳•׳×", [2, 1])
-    start_date = find_row_label_value_with_offsets(detail_sheet, 5, "׳×׳—׳™׳׳× ׳¢׳‘׳•׳“׳”", [4, 3, 2, 1])
+    for label in ("מספר בשכר", "מס' מפעל בשכר", "׳׳¡׳₪׳¨ ׳‘׳©׳›׳¨"):
+        worker_number = find_row_label_value_with_offsets(detail_sheet, 5, label, [5, 4, 3, 2, 1])
+        if worker_number not in ("", None):
+            break
+    for label in ("תעודת זהות", "׳×׳¢׳•׳“׳× ׳–׳”׳•׳×"):
+        id_number = find_row_label_value_with_offsets(detail_sheet, 5, label, [2, 1])
+        if id_number not in ("", None):
+            break
+    for label in ("תחילת עבודה", "׳×׳—׳™׳׳× ׳¢׳‘׳•׳“׳”"):
+        start_date = find_row_label_value_with_offsets(detail_sheet, 5, label, [4, 3, 2, 1])
+        if start_date not in ("", None):
+            break
     notes = []
     status = "OK"
 
@@ -331,7 +348,7 @@ def extract_flamingo_worker_pair(detail_sheet, summary_sheet):
 
     if hourly_rate is None and status == "OK":
         status = "Missing hourly rate"
-        notes.append("Set hourly rate in the ׳”׳¢׳¨׳•׳× field and export the report again.")
+        notes.append("יש לעדכן את התעריף בשדה הערות ולייצא את הדוח מחדש.")
 
     payable_hours = None
     payable_breakdown = {}
@@ -480,7 +497,7 @@ def write_flamingo_attention_sheet(ws, worker_rows):
     issues = [row for row in worker_rows if row["status"] != "OK"]
     for row_index, worker in enumerate(issues, start=2):
         if worker["status"] in {"Missing hourly rate", "Invalid hourly rate"}:
-            action = "Update the hourly rate in ׳”׳¢׳¨׳•׳× and export the report again."
+            action = "יש לעדכן את התעריף בשדה הערות ולייצא את הדוח מחדש."
         elif worker["status"] == "Could not match summary sheet":
             action = "Verify the report structure and confirm that each detail sheet has a following summary sheet."
         else:
@@ -594,16 +611,16 @@ def load_org_structure_csv(csv_path):
     with open(csv_path, "r", encoding="utf-8-sig", newline="") as handle:
         reader = csv.DictReader(handle)
         for row in reader:
-            employee_number = (row.get("׳©׳›׳¨") or "").strip()
-            employee_id = (row.get("׳×.׳–") or "").strip()
+            employee_number = (row.get("שכר") or row.get("׳©׳›׳¨") or "").strip()
+            employee_id = (row.get("ת.ז") or row.get("׳×.׳–") or "").strip()
             entry = {
                 "employee_number": employee_number,
                 "id_number": employee_id,
-                "employee_name": (row.get("׳©׳ ׳¢׳•׳‘׳“") or "").strip(),
-                "direct_manager": (row.get("׳׳ ׳”׳ ׳™׳©׳™׳¨") or "").strip(),
-                "department": (row.get("׳׳—׳׳§׳”") or "").strip(),
-                "agreement_name": (row.get("׳©׳ ׳”׳¡׳›׳") or "").strip(),
-                "agreement_number": (row.get("׳׳¡' ׳”׳¡׳›׳") or "").strip(),
+                "employee_name": (row.get("שם עובד") or row.get("׳©׳ ׳¢׳•׳‘׳“") or "").strip(),
+                "direct_manager": (row.get("מנהל ישיר") or row.get("׳׳ ׳”׳ ׳™׳©׳™׳¨") or "").strip(),
+                "department": (row.get("מחלקה") or row.get("׳׳—׳׳§׳”") or "").strip(),
+                "agreement_name": (row.get("שם הסכם") or row.get("׳©׳ ׳”׳¡׳›׳") or "").strip(),
+                "agreement_number": (row.get("מס' הסכם") or row.get("׳׳¡' ׳”׳¡׳›׳") or "").strip(),
             }
             if employee_number:
                 records[("number", employee_number)] = entry
@@ -1160,7 +1177,7 @@ SCRIPTS["matan_missing"] = {
     "name": "Matan Missing Hours",
     "desc": "Filter employees by missing-hours range",
     "accept": ".xls",
-    "icon": "ג±",
+    "icon": "📊",
 }
 
 SCRIPT_REGISTRY["matan_missing"] = {
@@ -1277,7 +1294,7 @@ def init_db():
         if not db.execute("SELECT id FROM users WHERE username='admin'").fetchone():
             db.execute(
                 "INSERT INTO users(username,password,full_name,is_admin) VALUES (?,?,?,1)",
-                ("admin", generate_password_hash("admin123"), "׳׳ ׳”׳ ׳׳¢׳¨׳›׳×"),
+                ("admin", generate_password_hash("admin123"), "מנהל מערכת"),
             )
         db.commit()
 
