@@ -1,10 +1,11 @@
+from pathlib import Path
+
 from flask import Flask, request, redirect, session, send_file
 from werkzeug.security import generate_password_hash, check_password_hash
-from werkzeug.utils import secure_filename
 import sqlite3, os, uuid
 
 import xlrd
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
@@ -25,7 +26,12 @@ def idx_to_hex(cmap, idx):
         return '{:02X}{:02X}{:02X}'.format(*rgb)
     return None
 
-def process_xls(input_path, output_path):
+def widen_known_columns(ws):
+    for col, extra in (('G', 4.5), ('S', 3.0), ('AU', 3.0)):
+        current = ws.column_dimensions[col].width or 8.43
+        ws.column_dimensions[col].width = current + extra
+
+def process_legacy_xls(input_path, output_path):
     wb_in = xlrd.open_workbook(input_path, formatting_info=True)
     cmap  = wb_in.colour_map
     wb_out = Workbook()
@@ -76,20 +82,40 @@ def process_xls(input_path, output_path):
                                        end_row=r2, end_column=c2)
                 except: pass
     for ws in wb_out.worksheets:
-        ws.column_dimensions['G'].width  += 4.5
-        ws.column_dimensions['S'].width  += 3.0
-        ws.column_dimensions['AU'].width += 3.0
+        widen_known_columns(ws)
     wb_out.save(output_path)
+
+def process_xlsx(input_path, output_path):
+    wb = load_workbook(input_path)
+    for ws in wb.worksheets:
+        ws.sheet_view.rightToLeft = True
+        ws.sheet_view.showGridLines = False
+        for row in ws.iter_rows():
+            for cell in row:
+                if isinstance(cell.value, str):
+                    cell.value = clean(cell.value)
+        widen_known_columns(ws)
+    wb.save(output_path)
+
+def process_spreadsheet(input_path, output_path, extension):
+    if extension == 'xls':
+        process_legacy_xls(input_path, output_path)
+        return
+    if extension == 'xlsx':
+        process_xlsx(input_path, output_path)
+        return
+    raise ValueError('Unsupported file type')
 
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'zman_emet_secret_2024')
 
-DB = 'platform.db'
-UPLOAD_FOLDER = 'uploads'
-OUTPUT_FOLDER = 'outputs'
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-os.makedirs(OUTPUT_FOLDER, exist_ok=True)
+BASE_DIR = Path(__file__).resolve().parent
+DB = str(BASE_DIR / 'platform.db')
+UPLOAD_FOLDER = BASE_DIR / 'uploads'
+OUTPUT_FOLDER = BASE_DIR / 'outputs'
+UPLOAD_FOLDER.mkdir(exist_ok=True)
+OUTPUT_FOLDER.mkdir(exist_ok=True)
 
 SCRIPTS = {
     'nikuy': {
@@ -320,24 +346,24 @@ def run_script(script_id):
             error = '<div class="flash-err">לא נבחר קובץ</div>'
         else:
             uid = str(uuid.uuid4())[:8]
-            # secure_filename strips Hebrew — keep extension only
             orig = f.filename
             ext  = orig.rsplit('.', 1)[-1].lower() if '.' in orig else 'xls'
-            fn   = uid + '.' + ext
-            base = orig.rsplit('.', 1)[0] if '.' in orig else orig
-            inp  = os.path.join(UPLOAD_FOLDER, fn)
-            onm  = base + '_ללא_כוכביות.xlsx'
-            out = os.path.join(OUTPUT_FOLDER, uid + '_ללא_כוכביות.xlsx')
-            f.save(inp)
-            try:
-                process_xls(inp, out)
-                result = uid + '_ללא_כוכביות.xlsx'
-            except Exception as e:
-                error = '<div class="flash-err">שגיאה בעיבוד: ' + str(e) + '</div>'
-            finally:
+            if ext not in {'xls', 'xlsx'}:
+                error = '<div class="flash-err">סוג קובץ לא נתמך</div>'
+            else:
+                inp = str(UPLOAD_FOLDER / f'{uid}.{ext}')
+                result_name = f'{uid}_cleaned.xlsx'
+                out = str(OUTPUT_FOLDER / result_name)
+                f.save(inp)
                 try:
-                    os.remove(inp)
-                except: pass
+                    process_spreadsheet(inp, out, ext)
+                    result = result_name
+                except Exception as e:
+                    error = '<div class="flash-err">שגיאה בעיבוד: ' + str(e) + '</div>'
+                finally:
+                    try:
+                        os.remove(inp)
+                    except: pass
 
     if result:
         content = (
@@ -381,8 +407,8 @@ def run_script(script_id):
 @app.route('/download/<filename>')
 @login_required
 def download(filename):
-    path = os.path.join(OUTPUT_FOLDER, filename)
-    if not os.path.exists(path):
+    path = OUTPUT_FOLDER / filename
+    if not path.exists():
         add_flash('הקובץ לא נמצא')
         return redirect('/dashboard')
     dn = filename.split('_', 1)[-1] if '_' in filename else filename
