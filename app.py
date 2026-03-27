@@ -226,6 +226,7 @@ class DatabaseConnection:
             raise RuntimeError("Database connection is not open")
         if self.is_postgres:
             sql = sql.replace("?", "%s").replace("AUTOINCREMENT", "").replace("INTEGER PRIMARY KEY", "SERIAL PRIMARY KEY")
+            sql = sql.replace("INSERT OR IGNORE INTO permissions(user_id,script_id) VALUES (%s,%s)", "INSERT INTO permissions(user_id,script_id) VALUES (%s,%s) ON CONFLICT DO NOTHING")
         return self.conn.execute(sql, params)
 
     def commit(self):
