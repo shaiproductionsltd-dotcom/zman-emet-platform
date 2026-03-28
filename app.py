@@ -34,7 +34,7 @@ NO_BORDER = Border(
     top=Side(border_style=None),
     bottom=Side(border_style=None),
 )
-ALLOWED_EXTENSIONS = {"xls", "xlsx"}
+ALLOWED_EXTENSIONS = {"xls", "xlsx", "csv"}
 MAX_UPLOAD_SIZE = 10 * 1024 * 1024
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
@@ -70,10 +70,6 @@ def validate_upload(file_storage):
     if ext not in ALLOWED_EXTENSIONS:
         return "unsupported", None
 
-    detected = detect_excel_signature(file_storage)
-    if detected != ext:
-        return "invalid_excel", None
-
     file_storage.stream.seek(0, os.SEEK_END)
     size = file_storage.stream.tell()
     file_storage.stream.seek(0)
@@ -81,6 +77,13 @@ def validate_upload(file_storage):
         return "empty", None
     if size > MAX_UPLOAD_SIZE:
         return "too_large", None
+
+    if ext == "csv":
+        return None, ext
+
+    detected = detect_excel_signature(file_storage)
+    if detected != ext:
+        return "invalid_excel", None
 
     return None, ext
 
@@ -630,6 +633,314 @@ def load_org_structure_csv(csv_path):
             if not employee_number and not employee_id:
                 unmatched.append(entry)
     return records, unmatched
+
+
+def parse_org_hierarchy_csv(csv_path):
+    rows = []
+    with open(csv_path, "r", encoding="utf-8-sig", newline="") as handle:
+        reader = csv.DictReader(handle)
+        for raw in reader:
+            employee_name = (raw.get("שם עובד") or raw.get("׳©׳ ׳¢׳•׳‘׳“") or "").strip()
+            employee_number = (raw.get("שכר") or raw.get("׳©׳›׳¨") or "").strip()
+            id_number = (raw.get("ת.ז") or raw.get("׳×.׳–") or "").strip()
+            direct_manager = (raw.get("מנהל ישיר") or raw.get("׳׳ ׳”׳ ׳™׳©׳™׳¨") or "").strip()
+            manager_flag = (raw.get("מנהל") or "").strip()
+            department = (raw.get("מחלקה") or raw.get("׳׳—׳׳§׳”") or "").strip()
+            email = (raw.get("אימייל") or "").strip()
+            if not any([employee_name, employee_number, id_number, direct_manager, department, email]):
+                continue
+            rows.append(
+                {
+                    "employee_name": employee_name,
+                    "employee_number": employee_number,
+                    "id_number": id_number,
+                    "direct_manager": direct_manager,
+                    "is_manager": manager_flag == "[+]",
+                    "department": department,
+                    "email": email,
+                }
+            )
+
+    name_counts = defaultdict(int)
+    id_counts = defaultdict(int)
+    for row in rows:
+        if row["employee_name"]:
+            name_counts[row["employee_name"]] += 1
+        if row["id_number"]:
+            id_counts[row["id_number"]] += 1
+
+    unique_name_map = {row["employee_name"]: row for row in rows if row["employee_name"] and name_counts[row["employee_name"]] == 1}
+    children_map = defaultdict(list)
+    exception_rows = []
+    roots = []
+
+    for row in rows:
+        if not row["direct_manager"]:
+            roots.append(row)
+            exception_rows.append(
+                {
+                    "category": "צומת שורש",
+                    "employee_name": row["employee_name"],
+                    "employee_number": row["employee_number"],
+                    "detail": "מנהל ישיר ריק",
+                }
+            )
+            continue
+        if row["direct_manager"] not in unique_name_map:
+            roots.append(row)
+            exception_rows.append(
+                {
+                    "category": "מנהל לא נמצא",
+                    "employee_name": row["employee_name"],
+                    "employee_number": row["employee_number"],
+                    "detail": row["direct_manager"],
+                }
+            )
+            continue
+        children_map[row["direct_manager"]].append(row)
+
+    for name, count in sorted(name_counts.items()):
+        if count > 1:
+            exception_rows.append(
+                {
+                    "category": "שם כפול",
+                    "employee_name": name,
+                    "employee_number": "",
+                    "detail": f"נמצאו {count} שורות עם אותו שם עובד",
+                }
+            )
+    for id_number, count in sorted(id_counts.items()):
+        if id_number and count > 1:
+            exception_rows.append(
+                {
+                    "category": "תעודת זהות כפולה",
+                    "employee_name": "",
+                    "employee_number": "",
+                    "detail": f"תעודת הזהות {id_number} מופיעה {count} פעמים",
+                }
+            )
+
+    visited = set()
+    summary_rows = []
+    tree_rows = []
+
+    def walk(node, depth, root_name, stack):
+        node_key = (node["employee_number"], node["id_number"], node["employee_name"])
+        if node_key in stack:
+            exception_rows.append(
+                {
+                    "category": "זוהתה לולאה",
+                    "employee_name": node["employee_name"],
+                    "employee_number": node["employee_number"],
+                    "detail": "זוהתה לולאה בהיררכיה במהלך מעבר על מנהלים",
+                }
+            )
+            return
+
+        visited.add(node_key)
+        summary_rows.append(
+            {
+                "employee_name": node["employee_name"],
+                "employee_number": node["employee_number"],
+                "id_number": node["id_number"],
+                "direct_manager": node["direct_manager"],
+                "is_manager": "כן" if node["is_manager"] else "לא",
+                "department": node["department"],
+                "email": node["email"],
+                "depth": depth,
+                "root_name": root_name,
+            }
+        )
+        tree_rows.append(
+            {
+                "root_name": root_name,
+                "depth": depth,
+                "display_name": ("    " * depth) + node["employee_name"],
+                "employee_number": node["employee_number"],
+                "department": node["department"],
+                "direct_manager": node["direct_manager"],
+            }
+        )
+        next_stack = stack | {node_key}
+        for child in sorted(children_map.get(node["employee_name"], []), key=lambda item: (item["employee_name"], item["employee_number"])):
+            walk(child, depth + 1, root_name, next_stack)
+
+    unique_roots = []
+    seen_root_keys = set()
+    for row in roots:
+        root_key = (row["employee_number"], row["id_number"], row["employee_name"])
+        if root_key not in seen_root_keys:
+            unique_roots.append(row)
+            seen_root_keys.add(root_key)
+
+    for root in sorted(unique_roots, key=lambda item: (item["employee_name"], item["employee_number"])):
+        walk(root, 0, root["employee_name"], set())
+
+    for row in rows:
+        node_key = (row["employee_number"], row["id_number"], row["employee_name"])
+        if node_key not in visited:
+            exception_rows.append(
+                {
+                    "category": "צומת לא מקושר",
+                    "employee_name": row["employee_name"],
+                    "employee_number": row["employee_number"],
+                    "detail": "השורה לא קושרה לאף צומת שורש",
+                }
+            )
+            walk(row, 0, row["employee_name"], set())
+
+    stats = {
+        "employee_count": len(rows),
+        "root_count": len(unique_roots),
+        "exception_count": len(exception_rows),
+    }
+    return summary_rows, tree_rows, exception_rows, stats
+
+
+def write_org_hierarchy_summary(ws, summary_rows, stats):
+    ws.title = safe_sheet_title("סיכום מבנה ארגוני", "Org Summary")
+    ws.sheet_view.rightToLeft = True
+    ws.sheet_view.showGridLines = False
+    ws.freeze_panes = "A6"
+
+    ws["A1"] = "דוח מבנה ארגוני"
+    ws["A1"].font = Font(bold=True, size=18, color="0F172A")
+    ws["A1"].fill = PatternFill(fill_type="solid", fgColor="BFDBFE")
+
+    metrics = [
+        ("סה\"כ עובדים", stats["employee_count"], "DBEAFE"),
+        ("סה\"כ שורשים", stats["root_count"], "DCFCE7"),
+        ("סה\"כ חריגים", stats["exception_count"], "FEE2E2"),
+    ]
+    for idx, (label, value, fill_color) in enumerate(metrics, start=3):
+        ws.cell(row=idx, column=1, value=label).font = Font(bold=True, color="334155")
+        ws.cell(row=idx, column=2, value=value).font = Font(bold=True, color="0F172A")
+        ws.cell(row=idx, column=1).fill = PatternFill(fill_type="solid", fgColor=fill_color)
+        ws.cell(row=idx, column=2).fill = PatternFill(fill_type="solid", fgColor=fill_color)
+
+    headers = [
+        "שם עובד",
+        "מספר שכר",
+        "תעודת זהות",
+        "מנהל ישיר",
+        "האם מנהל",
+        "מחלקה",
+        "אימייל",
+        "עומק בעץ",
+        "שם שורש",
+    ]
+    for col, header in enumerate(headers, start=1):
+        cell = ws.cell(row=5, column=col, value=header)
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = PatternFill(fill_type="solid", fgColor="1E3A8A")
+
+    for row_idx, row in enumerate(sorted(summary_rows, key=lambda item: (item["root_name"], item["depth"], item["employee_name"])), start=6):
+        values = [
+            row["employee_name"],
+            row["employee_number"],
+            row["id_number"],
+            row["direct_manager"],
+            row["is_manager"],
+            row["department"],
+            row["email"],
+            row["depth"],
+            row["root_name"],
+        ]
+        for col, value in enumerate(values, start=1):
+            ws.cell(row=row_idx, column=col, value=value)
+            if row_idx % 2 == 0:
+                ws.cell(row=row_idx, column=col).fill = PatternFill(fill_type="solid", fgColor="F8FAFC")
+
+    widths = [24, 14, 16, 22, 12, 24, 26, 10, 20]
+    for col, width in enumerate(widths, start=1):
+        ws.column_dimensions[get_column_letter(col)].width = width
+
+
+def write_org_hierarchy_tree(ws, tree_rows):
+    ws.title = safe_sheet_title("עץ ארגוני", "Org Tree")
+    ws.sheet_view.rightToLeft = True
+    ws.sheet_view.showGridLines = False
+    ws.freeze_panes = "A2"
+
+    headers = ["עץ ארגוני", "רמה", "מספר שכר", "מחלקה", "מנהל ישיר"]
+    for col, header in enumerate(headers, start=1):
+        cell = ws.cell(row=1, column=col, value=header)
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = PatternFill(fill_type="solid", fgColor="0F766E")
+
+    row_idx = 2
+    current_root = None
+    for row in sorted(tree_rows, key=lambda item: (item["root_name"], item["depth"], item["display_name"])):
+        if row["root_name"] != current_root:
+            if current_root is not None:
+                row_idx += 1
+            ws.cell(row=row_idx, column=1, value=f"צומת שורש: {row['root_name']}")
+            ws.cell(row=row_idx, column=1).font = Font(bold=True, color="1E3A8A")
+            ws.cell(row=row_idx, column=1).fill = PatternFill(fill_type="solid", fgColor="DBEAFE")
+            current_root = row["root_name"]
+            row_idx += 1
+        values = [row["display_name"], row["depth"], row["employee_number"], row["department"], row["direct_manager"]]
+        for col, value in enumerate(values, start=1):
+            ws.cell(row=row_idx, column=col, value=value)
+            if row_idx % 2 == 0:
+                ws.cell(row=row_idx, column=col).fill = PatternFill(fill_type="solid", fgColor="ECFDF5")
+        row_idx += 1
+
+    widths = [40, 10, 14, 24, 22]
+    for col, width in enumerate(widths, start=1):
+        ws.column_dimensions[get_column_letter(col)].width = width
+
+
+def write_org_hierarchy_exceptions(ws, exception_rows, root_rows):
+    ws.title = safe_sheet_title("חריגים", "Exceptions")
+    ws.sheet_view.rightToLeft = True
+    ws.sheet_view.showGridLines = False
+    ws.freeze_panes = "A2"
+
+    headers = ["סוג חריג", "שם עובד", "מספר שכר", "פירוט"]
+    for col, header in enumerate(headers, start=1):
+        cell = ws.cell(row=1, column=col, value=header)
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = PatternFill(fill_type="solid", fgColor="B91C1C")
+
+    row_idx = 2
+    for row in exception_rows:
+        values = [row["category"], row["employee_name"], row["employee_number"], row["detail"]]
+        for col, value in enumerate(values, start=1):
+            ws.cell(row=row_idx, column=col, value=value)
+            if row_idx % 2 == 0:
+                ws.cell(row=row_idx, column=col).fill = PatternFill(fill_type="solid", fgColor="FEF2F2")
+        row_idx += 1
+
+    if row_idx == 2:
+        ws.cell(row=row_idx, column=1, value="אין חריגים")
+        row_idx += 1
+
+    row_idx += 1
+    ws.cell(row=row_idx, column=1, value="רשימת שורשים").font = Font(bold=True, color="1E3A8A")
+    ws.cell(row=row_idx, column=1).fill = PatternFill(fill_type="solid", fgColor="DBEAFE")
+    row_idx += 1
+    for root in sorted(root_rows, key=lambda item: (item["employee_name"], item["employee_number"])):
+        ws.cell(row=row_idx, column=1, value=root["employee_name"])
+        ws.cell(row=row_idx, column=2, value=root["employee_number"])
+        ws.cell(row=row_idx, column=3, value=root["department"])
+        row_idx += 1
+
+    widths = [20, 24, 14, 36]
+    for col, width in enumerate(widths, start=1):
+        ws.column_dimensions[get_column_letter(col)].width = width
+
+
+def run_org_hierarchy_report(input_path, output_path, extension, options=None):
+    if extension != "csv":
+        raise ValueError("Organizational hierarchy report currently supports CSV input only")
+    summary_rows, tree_rows, exception_rows, stats = parse_org_hierarchy_csv(input_path)
+    root_rows = [row for row in summary_rows if row["depth"] == 0]
+    wb = Workbook()
+    write_org_hierarchy_summary(wb.active, summary_rows, stats)
+    write_org_hierarchy_tree(wb.create_sheet(), tree_rows)
+    write_org_hierarchy_exceptions(wb.create_sheet(), exception_rows, root_rows)
+    wb.save(output_path)
 
 
 def parse_matan_missing_report(input_path):
@@ -1709,6 +2020,14 @@ SCRIPTS["rimon_home_office_summary"] = {
     "icon": "🏠",
 }
 
+SCRIPTS["org_hierarchy_report"] = {
+    "id": "org_hierarchy_report",
+    "name": "דוח מבנה ארגוני",
+    "desc": "בניית היררכיה ארגונית ודוח חריגים מקובץ מבנה ארגוני",
+    "accept": ".csv",
+    "icon": "🌳",
+}
+
 SCRIPT_REGISTRY["matan_missing"] = {
     **SCRIPTS["matan_missing"],
     "processor": run_matan_missing_filter,
@@ -1775,6 +2094,26 @@ SCRIPT_REGISTRY["rimon_home_office_summary"] = {
     "processing_title": "דוח הסיכום בהכנה",
     "processing_note": "המערכת מקבצת תאריכים וסופרת ימי משרד, עבודה מהבית, היעדרות ושגיאות. הפעולה עשויה להימשך כמה דקות.",
     "file_picker_label": "בחירת דוח רימון חודשי",
+}
+
+SCRIPT_REGISTRY["org_hierarchy_report"] = {
+    **SCRIPTS["org_hierarchy_report"],
+    "processor": run_org_hierarchy_report,
+    "output_suffix": "org_hierarchy_report",
+    "success_title": "דוח המבנה הארגוני מוכן",
+    "success_action": "הורדת הדוח",
+    "retry_action": "עיבוד קובץ נוסף",
+    "submit_label": "יצירת דוח מבנה ארגוני",
+    "back_label": "חזרה לכלים",
+    "empty_error": "לא נבחר קובץ",
+    "unsupported_error": "יש להעלות את קובץ המבנה הארגוני המקורי מסוג CSV",
+    "invalid_error": "הקובץ שהועלה אינו קובץ תקין",
+    "empty_file_error": "הקובץ שהועלה ריק",
+    "too_large_error": "הקובץ שהועלה גדול מדי",
+    "processing_error": "לא ניתן היה להפיק את דוח המבנה הארגוני מהקובץ הזה",
+    "processing_title": "דוח המבנה הארגוני בהכנה",
+    "processing_note": "המערכת בונה היררכיה ארגונית, עץ ארגוני ודוח חריגים. הפעולה עשויה להימשך כמה דקות.",
+    "file_picker_label": "בחירת קובץ מבנה ארגוני",
 }
 
 SCRIPTS = SCRIPT_REGISTRY
