@@ -797,19 +797,31 @@ def parse_org_hierarchy_csv(csv_path):
     return summary_rows, tree_rows, exception_rows, stats
 
 
-def write_org_hierarchy_summary(ws, summary_rows, stats):
+def write_org_hierarchy_summary(ws, summary_rows, stats, root_rows):
     ws.title = safe_sheet_title("סיכום מבנה ארגוני", "Org Summary")
     ws.sheet_view.rightToLeft = True
     ws.sheet_view.showGridLines = False
-    ws.freeze_panes = "A6"
+    ws.freeze_panes = "A11"
 
     ws["A1"] = "דוח מבנה ארגוני"
     ws["A1"].font = Font(bold=True, size=18, color="0F172A")
     ws["A1"].fill = PatternFill(fill_type="solid", fgColor="BFDBFE")
 
+    direct_reports = defaultdict(int)
+    department_counts = defaultdict(int)
+    manager_rows = []
+    for row in summary_rows:
+        if row["direct_manager"]:
+            direct_reports[row["direct_manager"]] += 1
+        if row["department"]:
+            department_counts[row["department"]] += 1
+        if row["is_manager"] == "כן":
+            manager_rows.append(row)
+
     metrics = [
         ("סה\"כ עובדים", stats["employee_count"], "DBEAFE"),
-        ("סה\"כ שורשים", stats["root_count"], "DCFCE7"),
+        ("סה\"כ שורשים (ללא מנהל ישיר או עם מנהל לא מזוהה)", stats["root_count"], "DCFCE7"),
+        ("סה\"כ מנהלים", len(manager_rows), "EDE9FE"),
         ("סה\"כ חריגים", stats["exception_count"], "FEE2E2"),
     ]
     for idx, (label, value, fill_color) in enumerate(metrics, start=3):
@@ -817,6 +829,42 @@ def write_org_hierarchy_summary(ws, summary_rows, stats):
         ws.cell(row=idx, column=2, value=value).font = Font(bold=True, color="0F172A")
         ws.cell(row=idx, column=1).fill = PatternFill(fill_type="solid", fgColor=fill_color)
         ws.cell(row=idx, column=2).fill = PatternFill(fill_type="solid", fgColor=fill_color)
+
+    ws["D3"] = "שורשים שזוהו"
+    ws["D3"].font = Font(bold=True, color="1E3A8A")
+    ws["D3"].fill = PatternFill(fill_type="solid", fgColor="DBEAFE")
+    ws["D4"] = ", ".join(root["employee_name"] for root in sorted(root_rows, key=lambda item: (item["employee_name"], item["employee_number"]))) or "אין"
+
+    ws["D6"] = "רשימת מנהלים ומספר כפיפים ישירים"
+    ws["D6"].font = Font(bold=True, color="1E3A8A")
+    ws["D6"].fill = PatternFill(fill_type="solid", fgColor="EDE9FE")
+    ws["D7"] = "מנהל"
+    ws["E7"] = "כפיפים ישירים"
+    for cell_ref in ("D7", "E7"):
+        ws[cell_ref].font = Font(bold=True, color="FFFFFF")
+        ws[cell_ref].fill = PatternFill(fill_type="solid", fgColor="7C3AED")
+    for row_idx, row in enumerate(sorted(manager_rows, key=lambda item: (-direct_reports.get(item["employee_name"], 0), item["employee_name"])), start=8):
+        ws.cell(row=row_idx, column=4, value=row["employee_name"])
+        ws.cell(row=row_idx, column=5, value=direct_reports.get(row["employee_name"], 0))
+        if row_idx % 2 == 0:
+            ws.cell(row=row_idx, column=4).fill = PatternFill(fill_type="solid", fgColor="F5F3FF")
+            ws.cell(row=row_idx, column=5).fill = PatternFill(fill_type="solid", fgColor="F5F3FF")
+
+    dept_start_row = 8
+    ws["G6"] = "רשימת מחלקות וכמות עובדים"
+    ws["G6"].font = Font(bold=True, color="0F766E")
+    ws["G6"].fill = PatternFill(fill_type="solid", fgColor="CCFBF1")
+    ws["G7"] = "מחלקה"
+    ws["H7"] = "כמות עובדים"
+    for cell_ref in ("G7", "H7"):
+        ws[cell_ref].font = Font(bold=True, color="FFFFFF")
+        ws[cell_ref].fill = PatternFill(fill_type="solid", fgColor="0F766E")
+    for row_idx, (department, count) in enumerate(sorted(department_counts.items(), key=lambda item: (-item[1], item[0])), start=dept_start_row):
+        ws.cell(row=row_idx, column=7, value=department)
+        ws.cell(row=row_idx, column=8, value=count)
+        if row_idx % 2 == 0:
+            ws.cell(row=row_idx, column=7).fill = PatternFill(fill_type="solid", fgColor="ECFDF5")
+            ws.cell(row=row_idx, column=8).fill = PatternFill(fill_type="solid", fgColor="ECFDF5")
 
     headers = [
         "שם עובד",
@@ -829,12 +877,13 @@ def write_org_hierarchy_summary(ws, summary_rows, stats):
         "עומק בעץ",
         "שם שורש",
     ]
+    header_row = 10
     for col, header in enumerate(headers, start=1):
-        cell = ws.cell(row=5, column=col, value=header)
+        cell = ws.cell(row=header_row, column=col, value=header)
         cell.font = Font(bold=True, color="FFFFFF")
         cell.fill = PatternFill(fill_type="solid", fgColor="1E3A8A")
 
-    for row_idx, row in enumerate(sorted(summary_rows, key=lambda item: (item["root_name"], item["depth"], item["employee_name"])), start=6):
+    for row_idx, row in enumerate(sorted(summary_rows, key=lambda item: (item["root_name"], item["depth"], item["employee_name"])), start=header_row + 1):
         values = [
             row["employee_name"],
             row["employee_number"],
@@ -854,27 +903,37 @@ def write_org_hierarchy_summary(ws, summary_rows, stats):
     widths = [24, 14, 16, 22, 12, 24, 26, 10, 20]
     for col, width in enumerate(widths, start=1):
         ws.column_dimensions[get_column_letter(col)].width = width
+    ws.column_dimensions["D"].width = 28
+    ws.column_dimensions["E"].width = 14
+    ws.column_dimensions["G"].width = 28
+    ws.column_dimensions["H"].width = 14
 
 
 def write_org_hierarchy_tree(ws, tree_rows):
-    ws.title = safe_sheet_title("עץ ארגוני", "Org Tree")
+    ws.title = safe_sheet_title("טבלת היררכיה", "Hierarchy Table")
     ws.sheet_view.rightToLeft = True
     ws.sheet_view.showGridLines = False
-    ws.freeze_panes = "A2"
+    ws.freeze_panes = "A5"
 
-    headers = ["עץ ארגוני", "רמה", "מספר שכר", "מחלקה", "מנהל ישיר"]
+    ws["A1"] = "טבלת היררכיה ארגונית"
+    ws["A1"].font = Font(bold=True, size=18, color="0F172A")
+    ws["A1"].fill = PatternFill(fill_type="solid", fgColor="CCFBF1")
+    ws["A2"] = "הטבלה מציגה נתיב דיווח ורמת עומק. ההזחה מסייעת לקריאה, אך אינה תרשים חזותי מלא."
+    ws["A2"].font = Font(bold=True, color="0F766E")
+
+    headers = ["שם עובד בהזחה לפי רמה", "רמה", "מספר שכר", "מחלקה", "מנהל ישיר"]
     for col, header in enumerate(headers, start=1):
-        cell = ws.cell(row=1, column=col, value=header)
+        cell = ws.cell(row=4, column=col, value=header)
         cell.font = Font(bold=True, color="FFFFFF")
         cell.fill = PatternFill(fill_type="solid", fgColor="0F766E")
 
-    row_idx = 2
+    row_idx = 5
     current_root = None
     for row in sorted(tree_rows, key=lambda item: (item["root_name"], item["depth"], item["display_name"])):
         if row["root_name"] != current_root:
             if current_root is not None:
                 row_idx += 1
-            ws.cell(row=row_idx, column=1, value=f"צומת שורש: {row['root_name']}")
+            ws.cell(row=row_idx, column=1, value=f"מקטע שורש: {row['root_name']}")
             ws.cell(row=row_idx, column=1).font = Font(bold=True, color="1E3A8A")
             ws.cell(row=row_idx, column=1).fill = PatternFill(fill_type="solid", fgColor="DBEAFE")
             current_root = row["root_name"]
@@ -937,7 +996,7 @@ def run_org_hierarchy_report(input_path, output_path, extension, options=None):
     summary_rows, tree_rows, exception_rows, stats = parse_org_hierarchy_csv(input_path)
     root_rows = [row for row in summary_rows if row["depth"] == 0]
     wb = Workbook()
-    write_org_hierarchy_summary(wb.active, summary_rows, stats)
+    write_org_hierarchy_summary(wb.active, summary_rows, stats, root_rows)
     write_org_hierarchy_tree(wb.create_sheet(), tree_rows)
     write_org_hierarchy_exceptions(wb.create_sheet(), exception_rows, root_rows)
     wb.save(output_path)
