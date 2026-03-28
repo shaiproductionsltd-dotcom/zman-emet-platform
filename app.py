@@ -1190,29 +1190,48 @@ def parse_rimon_home_office_report(input_path):
 
 
 def write_rimon_home_office_summary(ws, employee_rows):
-    ws.title = safe_sheet_title("Rimon Summary", "Rimon Summary")
+    ws.title = safe_sheet_title("סיכום רימון", "Rimon Summary")
     ws.sheet_view.rightToLeft = True
     ws.sheet_view.showGridLines = False
-    ws.freeze_panes = "A2"
+    ws.freeze_panes = "A7"
+
+    ws["A1"] = "דוח סיכום עבודה מהבית - רימון"
+    ws["A1"].font = Font(bold=True, size=18, color="0F172A")
+    ws["A1"].fill = PatternFill(fill_type="solid", fgColor="BFDBFE")
+
+    metrics = [
+        ("עובדים עם לפחות יום עבודה מהבית אחד", sum(1 for row in employee_rows if row["home_office_days"] > 0), "DBEAFE"),
+        ("עובדים עם לפחות יום עבודה מהמשרד אחד", sum(1 for row in employee_rows if row["office_work_days"] > 0), "DCFCE7"),
+        ("עובדים עם לפחות יום חסר/היעדרות אחד", sum(1 for row in employee_rows if row["missing_absence_days"] > 0), "FEF3C7"),
+        ("עובדים עם לפחות יום שגיאה אחד", sum(1 for row in employee_rows if row["error_days"] > 0), "FEE2E2"),
+    ]
+    for idx, (label, value, fill_color) in enumerate(metrics, start=3):
+        label_cell = ws.cell(row=idx, column=1, value=label)
+        value_cell = ws.cell(row=idx, column=2, value=value)
+        label_cell.font = Font(bold=True, color="334155")
+        value_cell.font = Font(bold=True, color="0F172A")
+        label_cell.fill = PatternFill(fill_type="solid", fgColor=fill_color)
+        value_cell.fill = PatternFill(fill_type="solid", fgColor=fill_color)
 
     headers = [
-        "Employee Name",
-        "Payroll Number",
-        "ID Number",
-        "Department",
-        "Office Work Days",
-        "Home-Office Days",
-        "Missing/Absence Days",
-        "Error Days",
-        "Total Grouped Dates",
+        "שם עובד",
+        "מספר שכר",
+        "תעודת זהות",
+        "מחלקה",
+        "ימי עבודה מהמשרד",
+        "ימי עבודה מהבית",
+        "ימי חסר/היעדרות",
+        "ימי שגיאה",
+        "סה\"כ תאריכים ייחודיים שזוהו בדוח",
     ]
+    header_row = 6
     for col, header in enumerate(headers, start=1):
-        cell = ws.cell(row=1, column=col, value=header)
+        cell = ws.cell(row=header_row, column=col, value=header)
         cell.font = Font(bold=True, color="FFFFFF")
         cell.fill = PatternFill(fill_type="solid", fgColor="1E3A8A")
 
     sorted_rows = sorted(employee_rows, key=lambda row: (row["employee_name"], row["payroll_number"]))
-    for row_idx, row in enumerate(sorted_rows, start=2):
+    for row_idx, row in enumerate(sorted_rows, start=header_row + 1):
         values = [
             row["employee_name"],
             row["payroll_number"],
@@ -1229,29 +1248,29 @@ def write_rimon_home_office_summary(ws, employee_rows):
             if row_idx % 2 == 0:
                 ws.cell(row=row_idx, column=col).fill = PatternFill(fill_type="solid", fgColor="F8FAFC")
 
-    widths = [24, 16, 16, 24, 18, 18, 20, 12, 18]
+    widths = [24, 16, 16, 24, 18, 18, 18, 14, 28]
     for col, width in enumerate(widths, start=1):
         ws.column_dimensions[get_column_letter(col)].width = width
 
 
 def write_rimon_home_office_daily(ws, daily_rows):
-    ws.title = safe_sheet_title("Daily Breakdown", "Daily Breakdown")
+    ws.title = safe_sheet_title("פירוט יומי", "Daily Breakdown")
     ws.sheet_view.rightToLeft = True
     ws.sheet_view.showGridLines = False
     ws.freeze_panes = "A2"
 
     headers = [
-        "Employee",
-        "Date",
-        "Home Office",
-        "Office Work",
-        "Missing/Absence",
-        "Error",
-        "Event",
-        "Total Hours",
-        "Standard Hours",
-        "Missing Hours",
-        "Error Text",
+        "עובד",
+        "תאריך",
+        "עבודה מהבית",
+        "עבודה מהמשרד",
+        "חסר/היעדרות",
+        "שגיאה",
+        "אירוע",
+        "סה\"כ שעות",
+        "שעות תקן",
+        "שעות חסר",
+        "פירוט שגיאה",
     ]
     for col, header in enumerate(headers, start=1):
         cell = ws.cell(row=1, column=col, value=header)
@@ -1685,8 +1704,8 @@ SCRIPTS["matan_manual_corrections"] = {
 
 SCRIPTS["rimon_home_office_summary"] = {
     "id": "rimon_home_office_summary",
-    "name": "Rimon Home-Office Summary",
-    "desc": "Summarize office, home-office, absence, and error days per employee",
+    "name": "סיכום עבודה מהבית רימון",
+    "desc": "סיכום ימי משרד, עבודה מהבית, היעדרות ושגיאות לכל עובד",
     "accept": ".xls",
     "icon": "🏠",
 }
@@ -1743,20 +1762,20 @@ SCRIPT_REGISTRY["rimon_home_office_summary"] = {
     **SCRIPTS["rimon_home_office_summary"],
     "processor": run_rimon_home_office_summary,
     "output_suffix": "rimon_home_office_summary",
-    "success_title": "Rimon summary report is ready",
-    "success_action": "Download report",
-    "retry_action": "Process another file",
-    "submit_label": "Create summary report",
-    "back_label": "Back to tools",
-    "empty_error": "No file selected",
-    "unsupported_error": "Please upload the original XLS Rimon monthly detailed report",
-    "invalid_error": "The uploaded file is not a valid Excel file",
-    "empty_file_error": "The uploaded file is empty",
-    "too_large_error": "The uploaded file is too large",
-    "processing_error": "Could not generate the Rimon summary report from this file",
-    "processing_title": "Rimon summary report is being prepared",
-    "processing_note": "The system is grouping dates and counting office, home-office, absence, and error days. This may take a few minutes.",
-    "file_picker_label": "Choose Rimon monthly report",
+    "success_title": "דוח הסיכום מוכן",
+    "success_action": "הורדת הדוח",
+    "retry_action": "עיבוד קובץ נוסף",
+    "submit_label": "יצירת דוח סיכום",
+    "back_label": "חזרה לכלים",
+    "empty_error": "לא נבחר קובץ",
+    "unsupported_error": "יש להעלות את דוח רימון החודשי המפורט המקורי מסוג XLS",
+    "invalid_error": "הקובץ שהועלה אינו קובץ אקסל תקין",
+    "empty_file_error": "הקובץ שהועלה ריק",
+    "too_large_error": "הקובץ שהועלה גדול מדי",
+    "processing_error": "לא ניתן היה להפיק את דוח הסיכום מהקובץ הזה",
+    "processing_title": "דוח הסיכום בהכנה",
+    "processing_note": "המערכת מקבצת תאריכים וסופרת ימי משרד, עבודה מהבית, היעדרות ושגיאות. הפעולה עשויה להימשך כמה דקות.",
+    "file_picker_label": "בחירת דוח רימון חודשי",
 }
 
 SCRIPTS = SCRIPT_REGISTRY
