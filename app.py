@@ -3281,14 +3281,15 @@ def dashboard():
         + cards
         + '</div></div>'
         '<details style="margin-top:1rem;background:#ffffff;border:1px solid #e2e8f0;border-radius:16px;box-shadow:0 2px 16px rgba(0,0,0,.04);overflow:hidden">'
-        '<summary style="list-style:none;cursor:pointer;padding:16px 18px;font-size:15px;font-weight:800;color:#0f172a;display:flex;align-items:center;justify-content:space-between;background:linear-gradient(180deg,#ffffff 0%,#f8fafc 100%)">'
+        '<summary style="list-style:none;cursor:pointer;padding:16px 18px;font-size:15px;font-weight:800;color:#0f172a;display:flex;align-items:center;justify-content:space-between;background:linear-gradient(180deg,#ffffff 0%,#f8fafc 100%);direction:rtl;text-align:right">'
         '<span>פירוט השירות והמנוי</span><span style="font-size:18px;color:#64748b">+</span></summary>'
-        '<div style="padding:0 18px 18px;font-size:14px;line-height:1.9;color:#334155">'
-        'הפלטפורמה מרכזת כלים ודוחות שפותחו מתוך צרכים אמיתיים של לקוחות בשירות.<br>'
-        'לקוחות מנויים נהנים מגישה לכלל הכלים במערכת, ומקבלים גם כלי אחד מותאם אישית במסגרת המנוי.<br>'
-        'כלי נוסף או התאמה ייעודית ניתנים בתמחור נפרד לפי היקף העבודה.<br>'
+        '<div style="padding:0 18px 18px;font-size:14px;line-height:1.9;color:#334155;direction:rtl;text-align:right">'
+        'הפלטפורמה מרכזת כלים ודוחות שפותחו מתוך צרכים אמיתיים שעלו מהשטח.<br>'
+        'לקוחות מנויים נהנים מגישה לכלל הכלים הזמינים במערכת.<br>'
+        'פיתוח של כלי חדש מתבצע בתמחור חד־פעמי נפרד, בהתאם להיקף העבודה ובהצעת מחיר מראש.<br>'
         'לקוחות בתקופת ניסיון אינם כלולים בשירות המלא.<br>'
         'עלות השירות: 250 ש&quot;ח לחודש, בחיוב שנתי מראש, בתוספת מע&quot;מ.'
+        '<br>ליצירת קשר ומענה: בוואטסאפ 0525776994 או במייל shaiproductionsltd@gmail.com'
         '</div></details>'
     )
     return render(
