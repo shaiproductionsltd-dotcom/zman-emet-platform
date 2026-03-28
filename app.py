@@ -1052,6 +1052,247 @@ def run_matan_manual_corrections(input_path, output_path, extension, options=Non
     wb.save(output_path)
 
 
+def has_rimon_work_activity(entry_value, exit_value, total_hours):
+    return any([str(entry_value).strip(), str(exit_value).strip(), parse_hours_value(total_hours)])
+
+
+def is_rimon_error_text(error_text):
+    text = str(error_text).strip()
+    if not text:
+        return False
+    return text not in {"יום חסר"}
+
+
+def parse_rimon_home_office_report(input_path):
+    workbook = xlrd.open_workbook(input_path)
+    employee_rows = []
+    daily_rows = []
+
+    for sheet in workbook.sheets():
+        employee_name = str(get_sheet_cell(sheet, 5, 5, "")).strip() or sheet.name
+        department = str(get_sheet_cell(sheet, 5, 21, "")).strip()
+        payroll_number = str(get_sheet_cell(sheet, 5, 48, "")).strip()
+        id_number = str(get_sheet_cell(sheet, 7, 5, "")).strip()
+
+        grouped_dates = {}
+        current_date = None
+
+        for row_index in range(11, sheet.nrows):
+            row_date = parse_excel_date(workbook, get_sheet_cell(sheet, row_index, 0, ""))
+            if row_date:
+                current_date = row_date
+            if current_date is None:
+                continue
+
+            entry_value = str(get_sheet_cell(sheet, row_index, 8, "")).strip()
+            exit_value = str(get_sheet_cell(sheet, row_index, 12, "")).strip()
+            event_value = str(get_sheet_cell(sheet, row_index, 17, "")).strip()
+            total_hours = str(get_sheet_cell(sheet, row_index, 20, "")).strip()
+            standard_hours = str(get_sheet_cell(sheet, row_index, 25, "")).strip()
+            missing_hours = str(get_sheet_cell(sheet, row_index, 30, "")).strip()
+            error_text = str(get_sheet_cell(sheet, row_index, 51, "")).strip()
+
+            if not any([row_date, entry_value, exit_value, event_value, total_hours, standard_hours, missing_hours, error_text]):
+                continue
+
+            day_key = current_date.isoformat()
+            if day_key not in grouped_dates:
+                grouped_dates[day_key] = {
+                    "employee_name": employee_name,
+                    "payroll_number": payroll_number,
+                    "id_number": id_number,
+                    "department": department,
+                    "date": day_key,
+                    "home_office": False,
+                    "work_activity": False,
+                    "missing_absence": False,
+                    "error": False,
+                    "events": [],
+                    "total_hours_value": None,
+                    "standard_hours_value": None,
+                    "missing_hours_value": None,
+                    "errors": [],
+                }
+
+            grouped = grouped_dates[day_key]
+            grouped["home_office"] = grouped["home_office"] or event_value == "עבודה מהבית"
+            grouped["work_activity"] = grouped["work_activity"] or has_rimon_work_activity(entry_value, exit_value, total_hours)
+            grouped["error"] = grouped["error"] or is_rimon_error_text(error_text)
+
+            parsed_total = parse_hours_value(total_hours)
+            if parsed_total is not None:
+                grouped["total_hours_value"] = max(grouped["total_hours_value"] or 0.0, parsed_total)
+
+            parsed_standard = parse_hours_value(standard_hours)
+            if parsed_standard is not None:
+                grouped["standard_hours_value"] = max(grouped["standard_hours_value"] or 0.0, parsed_standard)
+
+            parsed_missing = parse_hours_value(missing_hours)
+            if parsed_missing is not None:
+                grouped["missing_hours_value"] = max(grouped["missing_hours_value"] or 0.0, parsed_missing)
+
+            if event_value and event_value not in grouped["events"]:
+                grouped["events"].append(event_value)
+            if error_text and error_text not in grouped["errors"]:
+                grouped["errors"].append(error_text)
+
+        office_days = 0
+        home_office_days = 0
+        missing_absence_days = 0
+        error_days = 0
+
+        for day_key in sorted(grouped_dates):
+            grouped = grouped_dates[day_key]
+            absence_signal = bool(grouped["events"] or grouped["errors"] or (grouped["missing_hours_value"] or 0.0) > 0)
+            grouped["missing_absence"] = (not grouped["work_activity"]) and absence_signal
+            office_work = grouped["work_activity"] and not grouped["home_office"]
+
+            if grouped["home_office"]:
+                home_office_days += 1
+            if office_work:
+                office_days += 1
+            if grouped["missing_absence"]:
+                missing_absence_days += 1
+            if grouped["error"]:
+                error_days += 1
+
+            daily_rows.append(
+                {
+                    "employee_name": grouped["employee_name"],
+                    "date": grouped["date"],
+                    "home_office": grouped["home_office"],
+                    "office_work": office_work,
+                    "missing_absence": grouped["missing_absence"],
+                    "error": grouped["error"],
+                    "event": " | ".join(grouped["events"]),
+                    "total_hours": format_hours(grouped["total_hours_value"]),
+                    "standard_hours": format_hours(grouped["standard_hours_value"]),
+                    "missing_hours": format_hours(grouped["missing_hours_value"]),
+                    "error_text": " | ".join(grouped["errors"]),
+                }
+            )
+
+        employee_rows.append(
+            {
+                "employee_name": employee_name,
+                "payroll_number": payroll_number,
+                "id_number": id_number,
+                "department": department,
+                "office_work_days": office_days,
+                "home_office_days": home_office_days,
+                "missing_absence_days": missing_absence_days,
+                "error_days": error_days,
+                "total_grouped_dates": len(grouped_dates),
+            }
+        )
+
+    return employee_rows, daily_rows
+
+
+def write_rimon_home_office_summary(ws, employee_rows):
+    ws.title = safe_sheet_title("Rimon Summary", "Rimon Summary")
+    ws.sheet_view.rightToLeft = True
+    ws.sheet_view.showGridLines = False
+    ws.freeze_panes = "A2"
+
+    headers = [
+        "Employee Name",
+        "Payroll Number",
+        "ID Number",
+        "Department",
+        "Office Work Days",
+        "Home-Office Days",
+        "Missing/Absence Days",
+        "Error Days",
+        "Total Grouped Dates",
+    ]
+    for col, header in enumerate(headers, start=1):
+        cell = ws.cell(row=1, column=col, value=header)
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = PatternFill(fill_type="solid", fgColor="1E3A8A")
+
+    sorted_rows = sorted(employee_rows, key=lambda row: (row["employee_name"], row["payroll_number"]))
+    for row_idx, row in enumerate(sorted_rows, start=2):
+        values = [
+            row["employee_name"],
+            row["payroll_number"],
+            row["id_number"],
+            row["department"],
+            row["office_work_days"],
+            row["home_office_days"],
+            row["missing_absence_days"],
+            row["error_days"],
+            row["total_grouped_dates"],
+        ]
+        for col, value in enumerate(values, start=1):
+            ws.cell(row=row_idx, column=col, value=value)
+            if row_idx % 2 == 0:
+                ws.cell(row=row_idx, column=col).fill = PatternFill(fill_type="solid", fgColor="F8FAFC")
+
+    widths = [24, 16, 16, 24, 18, 18, 20, 12, 18]
+    for col, width in enumerate(widths, start=1):
+        ws.column_dimensions[get_column_letter(col)].width = width
+
+
+def write_rimon_home_office_daily(ws, daily_rows):
+    ws.title = safe_sheet_title("Daily Breakdown", "Daily Breakdown")
+    ws.sheet_view.rightToLeft = True
+    ws.sheet_view.showGridLines = False
+    ws.freeze_panes = "A2"
+
+    headers = [
+        "Employee",
+        "Date",
+        "Home Office",
+        "Office Work",
+        "Missing/Absence",
+        "Error",
+        "Event",
+        "Total Hours",
+        "Standard Hours",
+        "Missing Hours",
+        "Error Text",
+    ]
+    for col, header in enumerate(headers, start=1):
+        cell = ws.cell(row=1, column=col, value=header)
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = PatternFill(fill_type="solid", fgColor="0F766E")
+
+    sorted_rows = sorted(daily_rows, key=lambda row: (row["employee_name"], row["date"]))
+    for row_idx, row in enumerate(sorted_rows, start=2):
+        values = [
+            row["employee_name"],
+            row["date"],
+            yes_no(row["home_office"]),
+            yes_no(row["office_work"]),
+            yes_no(row["missing_absence"]),
+            yes_no(row["error"]),
+            row["event"],
+            row["total_hours"],
+            row["standard_hours"],
+            row["missing_hours"],
+            row["error_text"],
+        ]
+        for col, value in enumerate(values, start=1):
+            ws.cell(row=row_idx, column=col, value=value)
+            if row_idx % 2 == 0:
+                ws.cell(row=row_idx, column=col).fill = PatternFill(fill_type="solid", fgColor="ECFDF5")
+
+    widths = [24, 14, 14, 14, 18, 10, 20, 14, 14, 14, 22]
+    for col, width in enumerate(widths, start=1):
+        ws.column_dimensions[get_column_letter(col)].width = width
+
+
+def run_rimon_home_office_summary(input_path, output_path, extension, options=None):
+    if extension != "xls":
+        raise ValueError("Rimon home-office summary currently supports original XLS exports only")
+    employee_rows, daily_rows = parse_rimon_home_office_report(input_path)
+    wb = Workbook()
+    write_rimon_home_office_summary(wb.active, employee_rows)
+    write_rimon_home_office_daily(wb.create_sheet(), daily_rows)
+    wb.save(output_path)
+
+
 def run_matan_missing_filter(input_path, output_path, extension, options=None):
     if extension != "xls":
         raise ValueError("Matan missing-hours tool currently supports XLS export only")
@@ -1442,6 +1683,14 @@ SCRIPTS["matan_manual_corrections"] = {
     "icon": "📝",
 }
 
+SCRIPTS["rimon_home_office_summary"] = {
+    "id": "rimon_home_office_summary",
+    "name": "Rimon Home-Office Summary",
+    "desc": "Summarize office, home-office, absence, and error days per employee",
+    "accept": ".xls",
+    "icon": "🏠",
+}
+
 SCRIPT_REGISTRY["matan_missing"] = {
     **SCRIPTS["matan_missing"],
     "processor": run_matan_missing_filter,
@@ -1488,6 +1737,26 @@ SCRIPT_REGISTRY["matan_manual_corrections"] = {
         {"name": "min_corrections", "label": "מינימום תיקונים", "placeholder": "לדוגמה 4"},
         {"name": "max_corrections", "label": "מקסימום תיקונים", "placeholder": "לדוגמה 12"},
     ],
+}
+
+SCRIPT_REGISTRY["rimon_home_office_summary"] = {
+    **SCRIPTS["rimon_home_office_summary"],
+    "processor": run_rimon_home_office_summary,
+    "output_suffix": "rimon_home_office_summary",
+    "success_title": "Rimon summary report is ready",
+    "success_action": "Download report",
+    "retry_action": "Process another file",
+    "submit_label": "Create summary report",
+    "back_label": "Back to tools",
+    "empty_error": "No file selected",
+    "unsupported_error": "Please upload the original XLS Rimon monthly detailed report",
+    "invalid_error": "The uploaded file is not a valid Excel file",
+    "empty_file_error": "The uploaded file is empty",
+    "too_large_error": "The uploaded file is too large",
+    "processing_error": "Could not generate the Rimon summary report from this file",
+    "processing_title": "Rimon summary report is being prepared",
+    "processing_note": "The system is grouping dates and counting office, home-office, absence, and error days. This may take a few minutes.",
+    "file_picker_label": "Choose Rimon monthly report",
 }
 
 SCRIPTS = SCRIPT_REGISTRY
