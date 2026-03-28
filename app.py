@@ -2943,6 +2943,17 @@ td { padding: 12px; border-bottom: 1px solid #f1f5f9; vertical-align: middle; }
 """
 
 
+def get_table_columns(db, table_name):
+    if db.is_postgres:
+        rows = db.execute(
+            "SELECT column_name FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = %s",
+            (table_name,),
+        ).fetchall()
+        return {row["column_name"] for row in rows}
+    rows = db.execute(f"PRAGMA table_info({table_name})").fetchall()
+    return {row["name"] for row in rows}
+
+
 def init_db():
     with get_db() as db:
         db.execute(
@@ -2959,20 +2970,20 @@ def init_db():
             user_id INTEGER, script_id TEXT,
             PRIMARY KEY (user_id, script_id))"""
         )
-        for ddl in (
-            "ALTER TABLE users ADD COLUMN company_name TEXT",
-            "ALTER TABLE users ADD COLUMN company_id TEXT",
-            "ALTER TABLE users ADD COLUMN email TEXT",
-            "ALTER TABLE users ADD COLUMN phone TEXT",
-            "ALTER TABLE users ADD COLUMN join_date TEXT",
-            "ALTER TABLE users ADD COLUMN trial_start_date TEXT",
-            "ALTER TABLE users ADD COLUMN service_valid_until TEXT",
-            "ALTER TABLE users ADD COLUMN billing_mode TEXT DEFAULT 'monthly'",
-        ):
-            try:
-                db.execute(ddl)
-            except Exception:
-                pass
+        existing_columns = get_table_columns(db, "users")
+        desired_columns = {
+            "company_name": "TEXT",
+            "company_id": "TEXT",
+            "email": "TEXT",
+            "phone": "TEXT",
+            "join_date": "TEXT",
+            "trial_start_date": "TEXT",
+            "service_valid_until": "TEXT",
+            "billing_mode": "TEXT DEFAULT 'monthly'",
+        }
+        for column_name, column_sql in desired_columns.items():
+            if column_name not in existing_columns:
+                db.execute(f"ALTER TABLE users ADD COLUMN {column_name} {column_sql}")
         if not db.execute("SELECT id FROM users WHERE username='admin'").fetchone():
             db.execute(
                 "INSERT INTO users(username,password,full_name,is_admin) VALUES (?,?,?,1)",
