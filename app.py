@@ -1030,6 +1030,13 @@ def build_org_exceptions_slide_lines(exception_rows):
     return [f"{row['category']}: {row['employee_name']} | {row['detail']}".strip(" |") for row in exception_rows]
 
 
+def format_display_name(name):
+    parts = str(name or "").split()
+    if len(parts) <= 1:
+        return str(name or "").strip()
+    return " ".join(reversed(parts))
+
+
 def build_org_root_nodes(summary_rows, root_name):
     nodes = []
     for row in summary_rows:
@@ -1153,6 +1160,46 @@ def build_org_detail_slide_nodes(root_node, children_map):
     return detail_nodes
 
 
+def build_department_summary_rows(summary_rows):
+    department_rows = []
+    grouped = defaultdict(list)
+    for row in summary_rows:
+        grouped[row["department"] or "ללא מחלקה"].append(row)
+    for department, rows in sorted(grouped.items(), key=lambda item: (-len(item[1]), item[0])):
+        managers = [row for row in rows if row["is_manager"] == "כן"]
+        manager_names = [format_display_name(row["employee_name"]) for row in sorted(managers, key=lambda item: item["employee_name"])[:4]]
+        department_rows.append(
+            {
+                "department": department,
+                "employee_count": len(rows),
+                "manager_count": len(managers),
+                "manager_names": manager_names,
+            }
+        )
+    return department_rows
+
+
+def build_manager_summary_rows(summary_rows, root_nodes):
+    manager_rows = []
+    for root_node in root_nodes:
+        nodes, children_map = build_org_root_nodes(summary_rows, root_node["root_key"])
+        node_map = {node["node_key"]: node for node in nodes}
+        for node in sorted(nodes, key=lambda item: (-item["subtree_employee_count"], item["employee_name"])):
+            if node["direct_reports_count"] <= 0:
+                continue
+            direct_reports = children_map.get(node["node_key"], [])
+            manager_rows.append(
+                {
+                    "manager_name": format_display_name(node["employee_name"]),
+                    "department": node["department"] or "ללא מחלקה",
+                    "direct_reports_count": node["direct_reports_count"],
+                    "subtree_employee_count": node["subtree_employee_count"],
+                    "employee_names": [format_display_name(child["employee_name"]) for child in direct_reports],
+                }
+            )
+    return manager_rows
+
+
 def add_pptx_bullets(text_frame, lines, font_size=18):
     text_frame.clear()
     if not lines:
@@ -1211,21 +1258,17 @@ def add_org_chart_slide(prs, title, top_nodes, children_map, note_text, level_li
     if not nodes:
         return slide, {}
 
-    box_nodes = [node for node in nodes if node["direct_reports_count"] > 0 or node.get("chart_depth", 0) == 0]
+    box_nodes = [node for node in nodes if node["direct_reports_count"] > 0]
+    if not box_nodes:
+        return slide, {}
     box_node_keys = {node["node_key"] for node in box_nodes}
     top_node_keys = {node["node_key"] for node in box_nodes if node.get("chart_depth", 0) == 0}
     box_children_map = defaultdict(list)
-    leaf_lists_by_parent = defaultdict(list)
     for parent_key, children in children_map.items():
         visible_box_children = [child for child in children if child["node_key"] in box_node_keys]
         if visible_box_children or parent_key in box_node_keys or parent_key is None:
             box_children_map[parent_key].extend(visible_box_children)
             box_children_map[parent_key].sort(key=lambda item: (item["employee_name"], item["department"]))
-        for child in children:
-            if child["node_key"] not in box_node_keys and parent_key in box_node_keys:
-                leaf_lists_by_parent[parent_key].append(child)
-    for parent_key, leaf_children in leaf_lists_by_parent.items():
-        leaf_children.sort(key=lambda item: (item["employee_name"], item["department"]))
 
     widths = {}
     total_units = 0.0
@@ -1309,7 +1352,7 @@ def add_org_chart_slide(prs, title, top_nodes, children_map, note_text, level_li
         text_frame.margin_left = int(Inches(0.05))
         text_frame.margin_right = int(Inches(0.05))
         name_paragraph = text_frame.paragraphs[0]
-        name_paragraph.text = node["employee_name"]
+        name_paragraph.text = format_display_name(node["employee_name"])
         name_paragraph.alignment = PP_ALIGN.CENTER
         if name_paragraph.runs:
             name_run = name_paragraph.runs[0]
@@ -1338,48 +1381,6 @@ def add_org_chart_slide(prs, title, top_nodes, children_map, note_text, level_li
         shape_bounds[node["node_key"]] = {"x": x, "y": y, "w": box_width, "h": box_height}
         node_shapes[node["node_key"]] = shape
 
-        if not compact and leaf_lists_by_parent.get(node["node_key"]):
-            available_height = max(0, int(vertical_gap - box_height - Inches(0.08)))
-            if available_height > int(Inches(0.14)):
-                leaf_names = [leaf["employee_name"] for leaf in leaf_lists_by_parent[node["node_key"]]]
-                use_two_columns = len(leaf_names) > 8
-                column_count = 2 if use_two_columns else 1
-                row_count = max(1, (len(leaf_names) + column_count - 1) // column_count)
-                max_box_height = int(Inches(0.86)) if use_two_columns else int(Inches(0.96))
-                list_height = min(available_height, max_box_height)
-                font_size = max(5.5, min(7.0, (list_height / max(row_count, 1)) / 12700 - 1.0))
-                column_width = (box_width - int(Inches(0.04))) // column_count
-                columns = []
-                if use_two_columns:
-                    columns = [
-                        leaf_names[:row_count],
-                        leaf_names[row_count:],
-                    ]
-                else:
-                    columns = [leaf_names]
-                for column_index, column_names in enumerate(columns):
-                    list_box = slide.shapes.add_textbox(
-                        x + column_index * (column_width + int(Inches(0.04))),
-                        y + box_height + int(Inches(0.03)),
-                        column_width,
-                        list_height,
-                    )
-                    list_frame = list_box.text_frame
-                    list_frame.clear()
-                    list_frame.word_wrap = True
-                    list_frame.margin_top = 0
-                    list_frame.margin_bottom = 0
-                    list_frame.margin_left = int(Inches(0.02))
-                    list_frame.margin_right = int(Inches(0.02))
-                    for index, leaf_name in enumerate(column_names):
-                        paragraph = list_frame.paragraphs[0] if index == 0 else list_frame.add_paragraph()
-                        paragraph.text = leaf_name
-                        paragraph.alignment = PP_ALIGN.CENTER
-                        if paragraph.runs:
-                            run = paragraph.runs[0]
-                            run.font.size = Pt(font_size)
-                            run.font.color.rgb = RGBColor(71, 85, 105)
-
     for node in sorted_nodes:
         parent_bounds = shape_bounds.get(node["node_key"])
         if not parent_bounds:
@@ -1400,20 +1401,170 @@ def add_org_chart_slide(prs, title, top_nodes, children_map, note_text, level_li
     return slide, node_shapes
 
 
+def add_department_summary_slide(prs, title, department_rows, page_index=1, page_count=1):
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    title_box = slide.shapes.add_textbox(Inches(0.45), Inches(0.2), Inches(12.2), Inches(0.55))
+    title_frame = title_box.text_frame
+    title_frame.clear()
+    title_paragraph = title_frame.paragraphs[0]
+    title_paragraph.text = title if page_count == 1 else f"{title} ({page_index}/{page_count})"
+    title_paragraph.alignment = PP_ALIGN.RIGHT
+    if title_paragraph.runs:
+        title_run = title_paragraph.runs[0]
+        title_run.font.size = Pt(24)
+        title_run.font.bold = True
+
+    cols = 2
+    rows = 3
+    card_width = Inches(6.15)
+    card_height = Inches(1.55)
+    start_x = Inches(0.45)
+    start_y = Inches(1.1)
+    gap_x = Inches(0.18)
+    gap_y = Inches(0.16)
+    for index, department in enumerate(department_rows):
+        row = index // cols
+        col = index % cols
+        x = start_x + col * (card_width + gap_x)
+        y = start_y + row * (card_height + gap_y)
+        card = slide.shapes.add_shape(MSO_AUTO_SHAPE_TYPE.ROUNDED_RECTANGLE, x, y, card_width, card_height)
+        card.line.color.rgb = RGBColor(15, 118, 110)
+        card.line.width = Pt(1)
+        card.fill.solid()
+        card.fill.fore_color.rgb = RGBColor(236, 253, 245)
+        frame = card.text_frame
+        frame.clear()
+        frame.margin_top = int(Inches(0.05))
+        frame.margin_bottom = int(Inches(0.04))
+        frame.margin_left = int(Inches(0.06))
+        frame.margin_right = int(Inches(0.06))
+
+        p1 = frame.paragraphs[0]
+        p1.text = department["department"]
+        p1.alignment = PP_ALIGN.CENTER
+        if p1.runs:
+            p1.runs[0].font.bold = True
+            p1.runs[0].font.size = Pt(13)
+            p1.runs[0].font.color.rgb = RGBColor(15, 23, 42)
+        p2 = frame.add_paragraph()
+        p2.text = f"עובדים: {department['employee_count']} | מנהלים: {department['manager_count']}"
+        p2.alignment = PP_ALIGN.CENTER
+        if p2.runs:
+            p2.runs[0].font.size = Pt(10)
+            p2.runs[0].font.color.rgb = RGBColor(51, 65, 85)
+        p3 = frame.add_paragraph()
+        p3.text = "מנהלים מובילים: " + (", ".join(department["manager_names"]) if department["manager_names"] else "ללא")
+        p3.alignment = PP_ALIGN.CENTER
+        if p3.runs:
+            p3.runs[0].font.size = Pt(9)
+            p3.runs[0].font.color.rgb = RGBColor(71, 85, 105)
+    return slide
+
+
+def add_manager_summary_slide(prs, title, manager_rows, page_index=1, page_count=1):
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    title_box = slide.shapes.add_textbox(Inches(0.45), Inches(0.2), Inches(12.2), Inches(0.55))
+    title_frame = title_box.text_frame
+    title_frame.clear()
+    title_paragraph = title_frame.paragraphs[0]
+    title_paragraph.text = title if page_count == 1 else f"{title} ({page_index}/{page_count})"
+    title_paragraph.alignment = PP_ALIGN.RIGHT
+    if title_paragraph.runs:
+        title_run = title_paragraph.runs[0]
+        title_run.font.size = Pt(24)
+        title_run.font.bold = True
+
+    cols = 2
+    card_width = Inches(6.1)
+    card_height = Inches(2.0)
+    start_x = Inches(0.45)
+    start_y = Inches(1.05)
+    gap_x = Inches(0.25)
+    gap_y = Inches(0.18)
+    for index, manager in enumerate(manager_rows):
+        row = index // cols
+        col = index % cols
+        x = start_x + col * (card_width + gap_x)
+        y = start_y + row * (card_height + gap_y)
+        card = slide.shapes.add_shape(MSO_AUTO_SHAPE_TYPE.ROUNDED_RECTANGLE, x, y, card_width, card_height)
+        card.line.color.rgb = RGBColor(100, 116, 139)
+        card.line.width = Pt(1)
+        card.fill.solid()
+        if manager["subtree_employee_count"] >= 12:
+            card.fill.fore_color.rgb = RGBColor(254, 240, 138)
+        elif manager["direct_reports_count"] >= 5:
+            card.fill.fore_color.rgb = RGBColor(220, 252, 231)
+        else:
+            card.fill.fore_color.rgb = RGBColor(239, 246, 255)
+        frame = card.text_frame
+        frame.clear()
+        frame.margin_top = int(Inches(0.05))
+        frame.margin_bottom = int(Inches(0.04))
+        frame.margin_left = int(Inches(0.06))
+        frame.margin_right = int(Inches(0.06))
+
+        p1 = frame.paragraphs[0]
+        p1.text = manager["manager_name"]
+        p1.alignment = PP_ALIGN.CENTER
+        if p1.runs:
+            p1.runs[0].font.bold = True
+            p1.runs[0].font.size = Pt(13)
+            p1.runs[0].font.color.rgb = RGBColor(30, 41, 59)
+        p2 = frame.add_paragraph()
+        p2.text = f"{manager['department']} | כפיפים ישירים: {manager['direct_reports_count']} | סה\"כ בענף: {manager['subtree_employee_count']}"
+        p2.alignment = PP_ALIGN.CENTER
+        if p2.runs:
+            p2.runs[0].font.size = Pt(9.5)
+            p2.runs[0].font.color.rgb = RGBColor(51, 65, 85)
+
+        employee_names = manager["employee_names"]
+        if len(employee_names) <= 4:
+            pill_y = y + Inches(0.95)
+            pill_width = Inches(1.8)
+            pill_height = Inches(0.28)
+            pill_gap = Inches(0.08)
+            total_width = len(employee_names) * pill_width + max(0, len(employee_names) - 1) * pill_gap
+            pill_x = x + max(0, (card_width - total_width) / 2)
+            for name in employee_names:
+                pill = slide.shapes.add_shape(MSO_AUTO_SHAPE_TYPE.ROUNDED_RECTANGLE, pill_x, pill_y, pill_width, pill_height)
+                pill.line.color.rgb = RGBColor(191, 219, 254)
+                pill.line.width = Pt(0.8)
+                pill.fill.solid()
+                pill.fill.fore_color.rgb = RGBColor(239, 246, 255)
+                pill_frame = pill.text_frame
+                pill_frame.clear()
+                para = pill_frame.paragraphs[0]
+                para.text = name
+                para.alignment = PP_ALIGN.CENTER
+                if para.runs:
+                    para.runs[0].font.size = Pt(8.5)
+                    para.runs[0].font.color.rgb = RGBColor(30, 64, 175)
+                pill_x += pill_width + pill_gap
+        else:
+            p3 = frame.add_paragraph()
+            p3.text = ", ".join(employee_names)
+            p3.alignment = PP_ALIGN.CENTER
+            if p3.runs:
+                p3.runs[0].font.size = Pt(8.5 if len(employee_names) <= 6 else (7.5 if len(employee_names) <= 10 else 6.5))
+                p3.runs[0].font.color.rgb = RGBColor(71, 85, 105)
+    return slide
+
+
 def write_org_hierarchy_pptx(output_path, summary_rows, tree_rows, exception_rows, stats):
     prs = Presentation()
     prs.slide_width = Inches(13.333)
     prs.slide_height = Inches(7.5)
     manager_count = sum(1 for row in summary_rows if row["is_manager"] == "כן")
+    department_rows = build_department_summary_rows(summary_rows)
     root_nodes = [
         {
             "root_key": (row["employee_number"], row["id_number"], row["employee_name"]),
-            "title": row["employee_name"],
+            "title": format_display_name(row["employee_name"]),
         }
         for row in summary_rows
         if row["depth"] == 0
     ]
-    root_payloads = []
+    manager_rows = build_manager_summary_rows(summary_rows, root_nodes)
     overview_top_nodes = []
     overview_children_map = defaultdict(list)
     for root_node in root_nodes:
@@ -1427,65 +1578,62 @@ def write_org_hierarchy_pptx(output_path, summary_rows, tree_rows, exception_row
         overview_top_nodes.extend(top_nodes)
         for parent_key, children in children_map.items():
             overview_children_map[parent_key].extend(children)
-        root_payloads.append(
-            {
-                "title": root_node["title"],
-                "actual_root": actual_root,
-                "top_nodes": top_nodes,
-                "children_map": children_map,
-                "detail_nodes": build_org_detail_slide_nodes(actual_root, children_map),
-            }
-        )
-    overview_note = (
-        f"סקירת כלל הארגון | עובדים: {stats['employee_count']} | שורשים: {stats['root_count']} | "
-        f"מנהלים: {manager_count} | חריגים: {stats['exception_count']}"
+    add_pptx_slide(
+        prs,
+        "סיכום מבנה ארגוני",
+        [
+            {"text": line, "size": 20}
+            for line in (
+                build_org_summary_slide_lines(summary_rows, stats)
+                + [f"סה\"כ מחלקות: {len(department_rows)}"]
+            )
+        ],
     )
-    _, overview_shape_map = add_org_chart_slide(
+    add_org_chart_slide(
+        prs,
+        "מפת מנהלים ומחלקות",
+        overview_top_nodes,
+        overview_children_map,
+        "תרשים ניהולי של מבנה הדיווח בין מנהלים. עובדים ללא צוות אינם מוצגים בתרשים זה.",
+        level_limit=3,
+        compact=True,
+    )
+    add_org_chart_slide(
         prs,
         "מבט-על ארגוני",
         overview_top_nodes,
         overview_children_map,
-        overview_note,
+        (
+            f"סקירת כלל הארגון לפי מחלקות ומנהלים | עובדים: {stats['employee_count']} | "
+            f"מנהלים: {manager_count} | מחלקות: {len(department_rows)}"
+        ),
         level_limit=None,
         compact=True,
     )
-    _, map_shape_map = add_org_chart_slide(
-        prs,
-        "מפת ענפים וניווט",
-        overview_top_nodes,
-        overview_children_map,
-        "לחצו על מנהל או ענף מרכזי למעבר לשקופית פירוט מתאימה.",
-        level_limit=1,
-        compact=True,
-    )
-    detail_slide_by_key = {}
-    for payload in root_payloads:
-        detail_slide, _ = add_org_chart_slide(
+    department_page_size = 6
+    department_pages = max(1, (len(department_rows) + department_page_size - 1) // department_page_size)
+    for page_index in range(department_pages):
+        start = page_index * department_page_size
+        end = start + department_page_size
+        add_department_summary_slide(
             prs,
-            f"{payload['title']} - פירוט",
-            [payload["actual_root"]],
-            payload["children_map"],
-            "שקופית פירוט שורש: מוצגות עד 4 רמות לשמירה על קריאות.",
-            level_limit=3,
-            compact=False,
+            "סיכום מחלקות",
+            department_rows[start:end],
+            page_index=page_index + 1,
+            page_count=department_pages,
         )
-        detail_slide_by_key[payload["actual_root"]["node_key"]] = detail_slide
-        for branch_node in payload["detail_nodes"]:
-            branch_slide, _ = add_org_chart_slide(
-                prs,
-                f"{branch_node['employee_name']} - פירוט ענף",
-                [branch_node],
-                payload["children_map"],
-                "שקופית פירוט ענף: מוצגות עד 4 רמות לשמירה על קריאות.",
-                level_limit=3,
-                compact=False,
-            )
-            detail_slide_by_key[branch_node["node_key"]] = branch_slide
-    for shape_map in (overview_shape_map, map_shape_map):
-        for node_key, shape in shape_map.items():
-            target_slide = detail_slide_by_key.get(node_key)
-            if target_slide is not None:
-                shape.click_action.target_slide = target_slide
+    manager_page_size = 4
+    manager_pages = max(1, (len(manager_rows) + manager_page_size - 1) // manager_page_size)
+    for page_index in range(manager_pages):
+        start = page_index * manager_page_size
+        end = start + manager_page_size
+        add_manager_summary_slide(
+            prs,
+            "סיכום מנהלים וצוותים",
+            manager_rows[start:end],
+            page_index=page_index + 1,
+            page_count=manager_pages,
+        )
     add_pptx_slide(
         prs,
         "חריגים",
