@@ -1059,7 +1059,26 @@ def build_org_root_nodes(summary_rows, root_name):
         children_map[node["parent_key"]].append(node)
     for parent_key, children in children_map.items():
         children.sort(key=lambda item: (item["employee_name"], item["department"]))
+    top_nodes = [node for node in nodes if node.get("parent_key") is None]
+    metrics = {}
+    for top_node in top_nodes:
+        compute_org_subtree_metrics(top_node, children_map, metrics)
+    for node in nodes:
+        node["direct_reports_count"] = metrics.get(node["node_key"], {}).get("direct_reports_count", 0)
+        node["subtree_employee_count"] = metrics.get(node["node_key"], {}).get("subtree_employee_count", 1)
     return nodes, children_map
+
+
+def compute_org_subtree_metrics(node, children_map, metrics):
+    children = children_map.get(node["node_key"], [])
+    subtree_total = 1
+    for child in children:
+        subtree_total += compute_org_subtree_metrics(child, children_map, metrics)
+    metrics[node["node_key"]] = {
+        "direct_reports_count": len(children),
+        "subtree_employee_count": subtree_total,
+    }
+    return subtree_total
 
 
 def compute_org_subtree_widths(node, children_map, widths):
@@ -1088,6 +1107,50 @@ def layout_org_chart(node, children_map, widths, positions, left_units=0.0):
     first_child = children[0]["node_key"]
     last_child = children[-1]["node_key"]
     positions[node["node_key"]] = (positions[first_child] + positions[last_child]) / 2.0
+
+
+def build_org_chart_subset(top_nodes, children_map, level_limit=None):
+    subset_nodes = []
+    subset_keys = set()
+
+    def visit(node, chart_depth):
+        node_copy = dict(node)
+        node_copy["chart_depth"] = chart_depth
+        subset_nodes.append(node_copy)
+        subset_keys.add(node["node_key"])
+        if level_limit is not None and chart_depth >= level_limit:
+            return
+        for child in children_map.get(node["node_key"], []):
+            visit(child, chart_depth + 1)
+
+    for top_node in top_nodes:
+        visit(top_node, 0)
+
+    subset_children_map = defaultdict(list)
+    for node in subset_nodes:
+        parent_key = node.get("parent_key")
+        if parent_key not in subset_keys:
+            parent_key = None
+        subset_children_map[parent_key].append(node)
+    for parent_key, children in subset_children_map.items():
+        children.sort(key=lambda item: (item["employee_name"], item["department"]))
+    return subset_nodes, subset_children_map
+
+
+def build_org_detail_slide_nodes(root_node, children_map):
+    detail_nodes = []
+
+    def visit(node):
+        if node["direct_reports_count"] > 0 and (
+            node["direct_reports_count"] >= 4 or node["subtree_employee_count"] >= 10
+        ):
+            detail_nodes.append(node)
+        for child in children_map.get(node["node_key"], []):
+            visit(child)
+
+    for child in children_map.get(root_node["node_key"], []):
+        visit(child)
+    return detail_nodes
 
 
 def add_pptx_bullets(text_frame, lines, font_size=18):
@@ -1119,7 +1182,7 @@ def add_pptx_slide(prs, title, body_lines):
     return slide
 
 
-def add_org_chart_slide(prs, title, summary_rows, root_name):
+def add_org_chart_slide(prs, title, top_nodes, children_map, note_text):
     slide = prs.slides.add_slide(prs.slide_layouts[6])
 
     title_box = slide.shapes.add_textbox(Inches(0.45), Inches(0.2), Inches(12.2), Inches(0.55))
@@ -1137,30 +1200,24 @@ def add_org_chart_slide(prs, title, summary_rows, root_name):
     note_frame = note_box.text_frame
     note_frame.clear()
     note_paragraph = note_frame.paragraphs[0]
-    note_paragraph.text = "תרשים היררכי: הקווים מציגים קשרי דיווח ישירים."
+    note_paragraph.text = note_text
     note_paragraph.alignment = PP_ALIGN.RIGHT
     if note_paragraph.runs:
         note_run = note_paragraph.runs[0]
         note_run.font.size = Pt(11)
         note_run.font.color.rgb = RGBColor(71, 85, 105)
 
-    nodes, children_map = build_org_root_nodes(summary_rows, root_name)
+    nodes, children_map = build_org_chart_subset(top_nodes, children_map, level_limit=2)
     if not nodes:
         return slide
 
-    root_node = next((row for row in nodes if row["node_key"] == root_name and row["depth"] == 0), nodes[0])
-    top_nodes = [root_node]
-    top_node_keys = {root_node["node_key"]}
-    for node in nodes:
-        if node["node_key"] != root_node["node_key"] and node.get("parent_key") is None:
-            top_nodes.append(node)
-            top_node_keys.add(node["node_key"])
+    top_node_keys = {node["node_key"] for node in nodes if node.get("chart_depth", 0) == 0}
 
     widths = {}
     total_units = 0.0
     left_units = 0.0
     positions = {}
-    for top_node in sorted(top_nodes, key=lambda item: (item["depth"], item["employee_name"], item["department"])):
+    for top_node in sorted([node for node in nodes if node.get("chart_depth", 0) == 0], key=lambda item: (item["employee_name"], item["department"])):
         subtree_width = compute_org_subtree_widths(top_node, children_map, widths)
         layout_org_chart(top_node, children_map, widths, positions, left_units)
         left_units += subtree_width
@@ -1174,27 +1231,29 @@ def add_org_chart_slide(prs, title, summary_rows, root_name):
     bottom_margin = Inches(0.35)
     chart_width = slide_width - left_margin - right_margin
     chart_height = slide_height - top_margin - bottom_margin
-    max_depth = max((row["depth"] for row in nodes), default=0)
+    max_depth = max((row.get("chart_depth", 0) for row in nodes), default=0)
     level_count = max_depth + 1
     vertical_gap = chart_height / max(level_count, 1)
     total_units = max(total_units, 1.0)
 
-    box_height = min(int(Inches(0.72)), max(int(Inches(0.42)), int(vertical_gap * 0.6)))
+    base_box_height = min(int(Inches(0.72)), max(int(Inches(0.42)), int(vertical_gap * 0.58)))
+    manager_box_height = min(int(Inches(0.96)), max(int(Inches(0.56)), int(vertical_gap * 0.82)))
     min_box_width = int(Inches(1.35))
     max_box_width = int(Inches(1.95))
     shape_bounds = {}
 
-    sorted_nodes = sorted(nodes, key=lambda item: (item["depth"], positions.get(item["node_key"], 0.0), item["employee_name"]))
+    sorted_nodes = sorted(nodes, key=lambda item: (item.get("chart_depth", 0), positions.get(item["node_key"], 0.0), item["employee_name"]))
     for node in sorted_nodes:
         node_width_units = widths.get(node["node_key"], 1.0)
         center_unit = positions.get(node["node_key"], 0.5)
-        depth = node["depth"]
+        depth = node.get("chart_depth", 0)
         children = children_map.get(node["node_key"], [])
 
         center_x = int(left_margin + (center_unit / total_units) * chart_width)
         center_y = int(top_margin + depth * vertical_gap + vertical_gap * 0.45)
         width_by_subtree = int((node_width_units / total_units) * chart_width * 0.72)
         box_width = max(min_box_width, min(max_box_width, width_by_subtree))
+        box_height = manager_box_height if node["direct_reports_count"] > 0 else base_box_height
         x = max(int(left_margin), min(int(slide_width - right_margin - box_width), center_x - box_width // 2))
         y = max(int(top_margin), min(int(slide_height - bottom_margin - box_height), center_y - box_height // 2))
 
@@ -1214,21 +1273,36 @@ def add_org_chart_slide(prs, title, summary_rows, root_name):
         text_frame = shape.text_frame
         text_frame.clear()
         text_frame.word_wrap = True
+        text_frame.margin_top = int(Inches(0.05))
+        text_frame.margin_bottom = int(Inches(0.04))
+        text_frame.margin_left = int(Inches(0.05))
+        text_frame.margin_right = int(Inches(0.05))
         name_paragraph = text_frame.paragraphs[0]
         name_paragraph.text = node["employee_name"]
         name_paragraph.alignment = PP_ALIGN.CENTER
         if name_paragraph.runs:
             name_run = name_paragraph.runs[0]
             name_run.font.bold = True
-            name_run.font.size = Pt(13 if depth == 0 else 11)
+            name_run.font.size = Pt(13 if depth == 0 else (10.5 if node["direct_reports_count"] > 0 else 11))
+            name_run.font.color.rgb = RGBColor(30, 41, 59)
 
         dept_paragraph = text_frame.add_paragraph()
         dept_paragraph.text = node["department"] or ""
         dept_paragraph.alignment = PP_ALIGN.CENTER
         if dept_paragraph.runs:
             dept_run = dept_paragraph.runs[0]
-            dept_run.font.size = Pt(9)
+            dept_run.font.size = Pt(8.5 if node["direct_reports_count"] > 0 else 9)
             dept_run.font.color.rgb = RGBColor(71, 85, 105)
+
+        if node["direct_reports_count"] > 0:
+            metrics_paragraph = text_frame.add_paragraph()
+            metrics_paragraph.text = f"כפיפים ישירים: {node['direct_reports_count']} | סה\"כ בענף: {node['subtree_employee_count']}"
+            metrics_paragraph.alignment = PP_ALIGN.CENTER
+            if metrics_paragraph.runs:
+                metrics_run = metrics_paragraph.runs[0]
+                metrics_run.font.size = Pt(7.5)
+                metrics_run.font.bold = True
+                metrics_run.font.color.rgb = RGBColor(51, 65, 85)
 
         shape_bounds[node["node_key"]] = {"x": x, "y": y, "w": box_width, "h": box_height}
 
@@ -1270,7 +1344,28 @@ def write_org_hierarchy_pptx(output_path, summary_rows, tree_rows, exception_row
         [{"text": line, "size": 20} for line in build_org_summary_slide_lines(summary_rows, stats)],
     )
     for root_node in root_nodes:
-        add_org_chart_slide(prs, root_node["title"], summary_rows, root_node["root_key"])
+        nodes, children_map = build_org_root_nodes(summary_rows, root_node["root_key"])
+        actual_root = next((row for row in nodes if row["node_key"] == root_node["root_key"] and row["depth"] == 0), nodes[0] if nodes else None)
+        if actual_root is None:
+            continue
+        overview_top_nodes = [actual_root] + [
+            node for node in nodes if node["node_key"] != actual_root["node_key"] and node.get("parent_key") is None
+        ]
+        add_org_chart_slide(
+            prs,
+            root_node["title"],
+            overview_top_nodes,
+            children_map,
+            "שקופית סקירה: מוצגות עד 3 רמות. ענפים צפופים מפוצלים לשקופיות המשך.",
+        )
+        for branch_node in build_org_detail_slide_nodes(actual_root, children_map):
+            add_org_chart_slide(
+                prs,
+                f"{branch_node['employee_name']} - פירוט ענף",
+                [branch_node],
+                children_map,
+                "שקופית פירוט ענף: מוצגות עד 3 רמות לשמירה על קריאות.",
+            )
     add_pptx_slide(
         prs,
         "חריגים",
