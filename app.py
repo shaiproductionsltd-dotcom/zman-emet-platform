@@ -1,8 +1,9 @@
 ﻿from pathlib import Path
-from zipfile import BadZipFile
+from zipfile import BadZipFile, ZIP_DEFLATED, ZipFile
 from collections import defaultdict
 import calendar
 import csv
+from datetime import datetime, timezone
 import html
 import os
 import secrets
@@ -990,16 +991,267 @@ def write_org_hierarchy_exceptions(ws, exception_rows, root_rows):
         ws.column_dimensions[get_column_letter(col)].width = width
 
 
+def build_org_summary_slide_lines(summary_rows, stats):
+    manager_count = sum(1 for row in summary_rows if row["is_manager"] == "כן")
+    return [
+        f"סה\"כ עובדים: {stats['employee_count']}",
+        f"סה\"כ שורשים: {stats['root_count']}",
+        f"סה\"כ מנהלים: {manager_count}",
+        f"סה\"כ חריגים: {stats['exception_count']}",
+    ]
+
+
+def build_org_root_slide_lines(tree_rows, root_name):
+    lines = []
+    for row in tree_rows:
+        if row["root_name"] != root_name:
+            continue
+        meta = []
+        if row["department"]:
+            meta.append(row["department"])
+        if row["employee_number"]:
+            meta.append(f"מס' שכר {row['employee_number']}")
+        line = row["display_name"].strip()
+        if meta:
+            line += " | " + " | ".join(meta)
+        lines.append((row["depth"], line))
+    return lines
+
+
+def build_org_exceptions_slide_lines(exception_rows):
+    if not exception_rows:
+        return ["אין חריגים"]
+    return [f"{row['category']}: {row['employee_name']} | {row['detail']}".strip(" |") for row in exception_rows]
+
+
+def pptx_escape(text):
+    return html.escape(str(text), quote=False)
+
+
+def pptx_paragraph(text, level=0, size=1800, bold=False):
+    if text is None:
+        text = ""
+    mar_l = 228600 * max(level, 0)
+    return (
+        f'<a:p><a:pPr marL="{mar_l}"><a:buNone/></a:pPr>'
+        f'<a:r><a:rPr lang="he-IL" sz="{size}"{" b=\"1\"" if bold else ""}/>'
+        f'<a:t>{pptx_escape(text)}</a:t></a:r>'
+        f'<a:endParaRPr lang="he-IL" sz="{size}"/></a:p>'
+    )
+
+
+def pptx_textbox(shape_id, name, x, y, cx, cy, paragraphs):
+    para_xml = "".join(paragraphs) if paragraphs else pptx_paragraph("")
+    return (
+        f'<p:sp><p:nvSpPr><p:cNvPr id="{shape_id}" name="{pptx_escape(name)}"/>'
+        '<p:cNvSpPr txBox="1"/><p:nvPr/></p:nvSpPr>'
+        f'<p:spPr><a:xfrm><a:off x="{x}" y="{y}"/><a:ext cx="{cx}" cy="{cy}"/></a:xfrm>'
+        '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:noFill/></p:spPr>'
+        '<p:txBody><a:bodyPr rtlCol="1" anchor="t"/><a:lstStyle/>'
+        f'{para_xml}</p:txBody></p:sp>'
+    )
+
+
+def build_org_pptx_slide_xml(title, body_paragraphs):
+    title_box = pptx_textbox(2, "Title 1", 457200, 228600, 8229600, 685800, [pptx_paragraph(title, size=2400, bold=True)])
+    body_box = pptx_textbox(3, "Content 2", 457200, 1219200, 8229600, 5029200, body_paragraphs)
+    return (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" '
+        'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" '
+        'xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">'
+        '<p:cSld><p:spTree>'
+        '<p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr>'
+        '<p:grpSpPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/><a:chOff x="0" y="0"/><a:chExt cx="0" cy="0"/></a:xfrm></p:grpSpPr>'
+        f'{title_box}{body_box}</p:spTree></p:cSld>'
+        '<p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr></p:sld>'
+    )
+
+
+def write_org_hierarchy_pptx(output_path, summary_rows, tree_rows, exception_rows, stats):
+    root_names = [row["employee_name"] for row in summary_rows if row["depth"] == 0]
+    slide_defs = [("סיכום מבנה ארגוני", [pptx_paragraph(line, size=2000) for line in build_org_summary_slide_lines(summary_rows, stats)])]
+    for root_name in root_names:
+        paragraphs = [pptx_paragraph("הזחה מייצגת עומק דיווח בלבד", size=1600, bold=True)]
+        paragraphs.extend(pptx_paragraph(line, level=depth, size=1800) for depth, line in build_org_root_slide_lines(tree_rows, root_name))
+        slide_defs.append((root_name, paragraphs))
+    slide_defs.append(("חריגים", [pptx_paragraph(line, size=1800) for line in build_org_exceptions_slide_lines(exception_rows)]))
+
+    core_created = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    slide_entries = []
+    slide_rel_entries = []
+    slide_id_entries = []
+    for index, (title, paragraphs) in enumerate(slide_defs, start=1):
+        slide_entries.append((f"ppt/slides/slide{index}.xml", build_org_pptx_slide_xml(title, paragraphs)))
+        slide_rel_entries.append(
+            (
+                f"ppt/slides/_rels/slide{index}.xml.rels",
+                '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+                '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+                '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout" Target="../slideLayouts/slideLayout1.xml"/>'
+                '</Relationships>',
+            )
+        )
+        slide_id_entries.append(
+            f'<p:sldId id="{255 + index}" r:id="rId{index + 1}"/>'
+        )
+
+    presentation_rels = ['<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideMaster" Target="slideMasters/slideMaster1.xml"/>']
+    for index in range(1, len(slide_defs) + 1):
+        presentation_rels.append(
+            f'<Relationship Id="rId{index + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide{index}.xml"/>'
+        )
+
+    content_slide_overrides = "".join(
+        f'<Override PartName="/ppt/slides/slide{index}.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slide+xml"/>'
+        for index in range(1, len(slide_defs) + 1)
+    )
+
+    with ZipFile(output_path, "w", compression=ZIP_DEFLATED) as zf:
+        zf.writestr(
+            "[Content_Types].xml",
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+            '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+            '<Default Extension="xml" ContentType="application/xml"/>'
+            '<Override PartName="/ppt/presentation.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml"/>'
+            '<Override PartName="/ppt/slideMasters/slideMaster1.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slideMaster+xml"/>'
+            '<Override PartName="/ppt/slideLayouts/slideLayout1.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slideLayout+xml"/>'
+            '<Override PartName="/ppt/theme/theme1.xml" ContentType="application/vnd.openxmlformats-officedocument.theme+xml"/>'
+            '<Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/>'
+            '<Override PartName="/docProps/app.xml" ContentType="application/vnd.openxmlformats-officedocument.extended-properties+xml"/>'
+            f'{content_slide_overrides}</Types>',
+        )
+        zf.writestr(
+            "_rels/.rels",
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="ppt/presentation.xml"/>'
+            '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/>'
+            '<Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties" Target="docProps/app.xml"/>'
+            '</Relationships>',
+        )
+        zf.writestr(
+            "docProps/core.xml",
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" '
+            'xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/" '
+            'xmlns:dcmitype="http://purl.org/dc/dcmitype/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">'
+            '<dc:title>Organizational Hierarchy Report</dc:title><dc:creator>Scriptly</dc:creator>'
+            '<cp:lastModifiedBy>Scriptly</cp:lastModifiedBy>'
+            f'<dcterms:created xsi:type="dcterms:W3CDTF">{core_created}</dcterms:created>'
+            f'<dcterms:modified xsi:type="dcterms:W3CDTF">{core_created}</dcterms:modified>'
+            '</cp:coreProperties>',
+        )
+        zf.writestr(
+            "docProps/app.xml",
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties" '
+            'xmlns:vt="http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes">'
+            '<Application>Scriptly</Application><Slides>%d</Slides><PresentationFormat>On-screen Show (4:3)</PresentationFormat>'
+            '</Properties>' % len(slide_defs),
+        )
+        zf.writestr(
+            "ppt/presentation.xml",
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<p:presentation xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" '
+            'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" '
+            'xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">'
+            '<p:sldMasterIdLst><p:sldMasterId id="2147483648" r:id="rId1"/></p:sldMasterIdLst>'
+            f'<p:sldIdLst>{"".join(slide_id_entries)}</p:sldIdLst>'
+            '<p:sldSz cx="9144000" cy="6858000" type="screen4x3"/>'
+            '<p:notesSz cx="6858000" cy="9144000"/></p:presentation>',
+        )
+        zf.writestr(
+            "ppt/_rels/presentation.xml.rels",
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            + "".join(presentation_rels)
+            + "</Relationships>",
+        )
+        zf.writestr(
+            "ppt/slideMasters/slideMaster1.xml",
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<p:sldMaster xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" '
+            'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" '
+            'xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">'
+            '<p:cSld name="Office Theme"><p:bg><p:bgRef idx="1001"><a:schemeClr val="bg1"/></p:bgRef></p:bg>'
+            '<p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr>'
+            '<p:grpSpPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/><a:chOff x="0" y="0"/><a:chExt cx="0" cy="0"/></a:xfrm></p:grpSpPr>'
+            '</p:spTree></p:cSld><p:clrMap accent1="accent1" accent2="accent2" accent3="accent3" accent4="accent4" accent5="accent5" accent6="accent6" bg1="lt1" bg2="lt2" folHlink="folHlink" hlink="hlink" tx1="dk1" tx2="dk2"/>'
+            '<p:sldLayoutIdLst><p:sldLayoutId id="1" r:id="rId1"/></p:sldLayoutIdLst>'
+            '<p:txStyles><p:titleStyle/><p:bodyStyle/><p:otherStyle/></p:txStyles></p:sldMaster>',
+        )
+        zf.writestr(
+            "ppt/slideMasters/_rels/slideMaster1.xml.rels",
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+            '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout" Target="../slideLayouts/slideLayout1.xml"/>'
+            '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme" Target="../theme/theme1.xml"/>'
+            '</Relationships>',
+        )
+        zf.writestr(
+            "ppt/slideLayouts/slideLayout1.xml",
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<p:sldLayout xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" '
+            'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" '
+            'xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" type="blank" preserve="1">'
+            '<p:cSld name="Blank"><p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr>'
+            '<p:grpSpPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/><a:chOff x="0" y="0"/><a:chExt cx="0" cy="0"/></a:xfrm></p:grpSpPr>'
+            '</p:spTree></p:cSld><p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr></p:sldLayout>',
+        )
+        zf.writestr(
+            "ppt/theme/theme1.xml",
+            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+            '<a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" name="Office Theme">'
+            '<a:themeElements><a:clrScheme name="Office"><a:dk1><a:srgbClr val="000000"/></a:dk1><a:lt1><a:srgbClr val="FFFFFF"/></a:lt1>'
+            '<a:dk2><a:srgbClr val="1F497D"/></a:dk2><a:lt2><a:srgbClr val="EEECE1"/></a:lt2>'
+            '<a:accent1><a:srgbClr val="4F81BD"/></a:accent1><a:accent2><a:srgbClr val="C0504D"/></a:accent2>'
+            '<a:accent3><a:srgbClr val="9BBB59"/></a:accent3><a:accent4><a:srgbClr val="8064A2"/></a:accent4>'
+            '<a:accent5><a:srgbClr val="4BACC6"/></a:accent5><a:accent6><a:srgbClr val="F79646"/></a:accent6>'
+            '<a:hlink><a:srgbClr val="0000FF"/></a:hlink><a:folHlink><a:srgbClr val="800080"/></a:folHlink></a:clrScheme>'
+            '<a:fontScheme name="Office"><a:majorFont><a:latin typeface="Arial"/><a:ea typeface="Arial"/><a:cs typeface="Arial"/></a:majorFont>'
+            '<a:minorFont><a:latin typeface="Arial"/><a:ea typeface="Arial"/><a:cs typeface="Arial"/></a:minorFont></a:fontScheme>'
+            '<a:fmtScheme name="Office"><a:fillStyleLst><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:fillStyleLst>'
+            '<a:lnStyleLst><a:ln w="9525" cap="flat" cmpd="sng" algn="ctr"><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:ln></a:lnStyleLst>'
+            '<a:effectStyleLst><a:effectStyle/></a:effectStyleLst><a:bgFillStyleLst><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:bgFillStyleLst></a:fmtScheme>'
+            '</a:themeElements></a:theme>',
+        )
+        for part_name, content in slide_entries + slide_rel_entries:
+            zf.writestr(part_name, content)
+
+
 def run_org_hierarchy_report(input_path, output_path, extension, options=None):
     if extension != "csv":
         raise ValueError("Organizational hierarchy report currently supports CSV input only")
+    options = options or {}
+    output_type = options.get("output_type", "both").strip() or "both"
     summary_rows, tree_rows, exception_rows, stats = parse_org_hierarchy_csv(input_path)
     root_rows = [row for row in summary_rows if row["depth"] == 0]
+    output_file = Path(output_path)
+    excel_output_path = output_file.with_name(output_file.stem + ".xlsx")
+    pptx_output_path = output_file.with_name(output_file.stem + ".pptx")
     wb = Workbook()
     write_org_hierarchy_summary(wb.active, summary_rows, stats, root_rows)
     write_org_hierarchy_tree(wb.create_sheet(), tree_rows)
     write_org_hierarchy_exceptions(wb.create_sheet(), exception_rows, root_rows)
-    wb.save(output_path)
+    if output_type == "excel":
+        wb.save(output_file)
+        return
+    if output_type == "powerpoint":
+        write_org_hierarchy_pptx(str(output_file), summary_rows, tree_rows, exception_rows, stats)
+        return
+
+    wb.save(excel_output_path)
+    write_org_hierarchy_pptx(str(pptx_output_path), summary_rows, tree_rows, exception_rows, stats)
+    with ZipFile(output_file, "w", compression=ZIP_DEFLATED) as bundle:
+        bundle.write(excel_output_path, arcname=excel_output_path.name)
+        bundle.write(pptx_output_path, arcname=pptx_output_path.name)
+    for temp_path in (excel_output_path, pptx_output_path):
+        try:
+            temp_path.unlink()
+        except OSError:
+            pass
 
 
 def parse_matan_missing_report(input_path):
@@ -2159,8 +2411,11 @@ SCRIPT_REGISTRY["org_hierarchy_report"] = {
     **SCRIPTS["org_hierarchy_report"],
     "processor": run_org_hierarchy_report,
     "output_suffix": "org_hierarchy_report",
+    "output_extension": "zip",
+    "output_option_name": "output_type",
+    "output_extension_map": {"excel": "xlsx", "powerpoint": "pptx", "both": "zip"},
     "success_title": "דוח המבנה הארגוני מוכן",
-    "success_action": "הורדת הדוח",
+    "success_action": "הורדת הקובץ",
     "retry_action": "עיבוד קובץ נוסף",
     "submit_label": "יצירת דוח מבנה ארגוני",
     "back_label": "חזרה לכלים",
@@ -2171,8 +2426,21 @@ SCRIPT_REGISTRY["org_hierarchy_report"] = {
     "too_large_error": "הקובץ שהועלה גדול מדי",
     "processing_error": "לא ניתן היה להפיק את דוח המבנה הארגוני מהקובץ הזה",
     "processing_title": "דוח המבנה הארגוני בהכנה",
-    "processing_note": "המערכת בונה היררכיה ארגונית, עץ ארגוני ודוח חריגים. הפעולה עשויה להימשך כמה דקות.",
+    "processing_note": "המערכת בונה דוח אקסל, מצגת או קובץ ZIP לפי הבחירה שלך. הפעולה עשויה להימשך כמה דקות.",
     "file_picker_label": "בחירת קובץ מבנה ארגוני",
+    "filter_fields": [
+        {
+            "name": "output_type",
+            "label": "סוג פלט",
+            "type": "select",
+            "default": "both",
+            "options": [
+                {"value": "excel", "label": "אקסל בלבד"},
+                {"value": "powerpoint", "label": "PowerPoint בלבד"},
+                {"value": "both", "label": "שניהם יחד (ZIP)"},
+            ],
+        },
+    ],
 }
 
 SCRIPTS = SCRIPT_REGISTRY
@@ -2182,9 +2450,16 @@ def get_script(script_id):
     return SCRIPT_REGISTRY.get(script_id)
 
 
-def build_output_filename(script, uid):
+def build_output_filename(script, uid, options=None):
     suffix = script.get("output_suffix", "output")
-    return f"{uid}_{suffix}.xlsx"
+    extension = script.get("output_extension", "xlsx")
+    option_name = script.get("output_option_name")
+    extension_map = script.get("output_extension_map", {})
+    if option_name and options:
+        selected = str(options.get(option_name, "")).strip()
+        if selected in extension_map:
+            extension = extension_map[selected]
+    return f"{uid}_{suffix}.{extension}"
 
 
 def execute_script(script, input_path, output_path, extension, options=None):
@@ -2477,12 +2752,12 @@ def run_script(script_id):
         else:
             uid = str(uuid.uuid4())[:8]
             inp = str(UPLOAD_FOLDER / f"{uid}.{ext}")
-            result_name = build_output_filename(scr, uid)
-            out = str(OUTPUT_FOLDER / result_name)
             options = {}
             extra_paths = []
             for field in scr.get("filter_fields", []):
                 options[field["name"]] = request.form.get(field["name"], "").strip()
+            result_name = build_output_filename(scr, uid, options)
+            out = str(OUTPUT_FOLDER / result_name)
             for upload in scr.get("extra_uploads", []):
                 extra_file = request.files.get(upload["name"])
                 if extra_file and extra_file.filename:
@@ -2547,10 +2822,23 @@ def run_script(script_id):
         if scr.get("filter_fields"):
             filter_fields_html += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;margin-bottom:1rem">'
             for field in scr.get("filter_fields", []):
-                filter_fields_html += (
-                    '<div><label class="field-label">' + field["label"] + '</label>'
-                    + '<input type="text" name="' + field["name"] + '" placeholder="' + field.get("placeholder", "") + '" style="margin-bottom:0"></div>'
-                )
+                if field.get("type") == "select":
+                    select_options = ""
+                    default_value = field.get("default", "")
+                    for option in field.get("options", []):
+                        selected = ' selected' if option.get("value") == default_value else ""
+                        select_options += '<option value="' + option.get("value", "") + '"' + selected + '>' + option.get("label", "") + '</option>'
+                    filter_fields_html += (
+                        '<div><label class="field-label">' + field["label"] + '</label>'
+                        + '<select name="' + field["name"] + '" style="padding:9px 12px;border:1.5px solid #e2e8f0;border-radius:8px;font-size:13px;font-family:inherit;outline:none;width:100%;margin-bottom:0;background:white">'
+                        + select_options
+                        + '</select></div>'
+                    )
+                else:
+                    filter_fields_html += (
+                        '<div><label class="field-label">' + field["label"] + '</label>'
+                        + '<input type="text" name="' + field["name"] + '" placeholder="' + field.get("placeholder", "") + '" style="margin-bottom:0"></div>'
+                    )
             filter_fields_html += '</div>'
         content = (
             error
