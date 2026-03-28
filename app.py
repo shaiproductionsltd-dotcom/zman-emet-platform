@@ -1200,10 +1200,9 @@ def write_rimon_home_office_summary(ws, employee_rows):
     ws["A1"].fill = PatternFill(fill_type="solid", fgColor="BFDBFE")
 
     metrics = [
-        ("עובדים עם לפחות יום עבודה מהבית אחד", sum(1 for row in employee_rows if row["home_office_days"] > 0), "DBEAFE"),
-        ("עובדים עם לפחות יום עבודה מהמשרד אחד", sum(1 for row in employee_rows if row["office_work_days"] > 0), "DCFCE7"),
-        ("עובדים עם לפחות יום חסר/היעדרות אחד", sum(1 for row in employee_rows if row["missing_absence_days"] > 0), "FEF3C7"),
-        ("עובדים עם לפחות יום שגיאה אחד", sum(1 for row in employee_rows if row["error_days"] > 0), "FEE2E2"),
+        ("סה\"כ ימי עבודה", sum(row["office_work_days"] + row["home_office_days"] for row in employee_rows), "DBEAFE"),
+        ("סה\"כ ימי עבודה מהבית", sum(row["home_office_days"] for row in employee_rows), "DDD6FE"),
+        ("סה\"כ ימי עבודה מהמשרד", sum(row["office_work_days"] for row in employee_rows), "DCFCE7"),
     ]
     for idx, (label, value, fill_color) in enumerate(metrics, start=3):
         label_cell = ws.cell(row=idx, column=1, value=label)
@@ -1222,7 +1221,7 @@ def write_rimon_home_office_summary(ws, employee_rows):
         "ימי עבודה מהבית",
         "ימי חסר/היעדרות",
         "ימי שגיאה",
-        "סה\"כ תאריכים ייחודיים שזוהו בדוח",
+        "סה\"כ ימי עבודה שזוהו",
     ]
     header_row = 6
     for col, header in enumerate(headers, start=1):
@@ -1241,7 +1240,7 @@ def write_rimon_home_office_summary(ws, employee_rows):
             row["home_office_days"],
             row["missing_absence_days"],
             row["error_days"],
-            row["total_grouped_dates"],
+            row["office_work_days"] + row["home_office_days"],
         ]
         for col, value in enumerate(values, start=1):
             ws.cell(row=row_idx, column=col, value=value)
