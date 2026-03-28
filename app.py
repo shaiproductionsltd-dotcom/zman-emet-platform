@@ -1142,7 +1142,7 @@ def build_org_detail_slide_nodes(root_node, children_map):
 
     def visit(node):
         if node["direct_reports_count"] > 0 and (
-            node["direct_reports_count"] >= 4 or node["subtree_employee_count"] >= 10
+            node["direct_reports_count"] >= 5 or node["subtree_employee_count"] >= 12
         ):
             detail_nodes.append(node)
         for child in children_map.get(node["node_key"], []):
@@ -1211,15 +1211,29 @@ def add_org_chart_slide(prs, title, top_nodes, children_map, note_text, level_li
     if not nodes:
         return slide, {}
 
-    top_node_keys = {node["node_key"] for node in nodes if node.get("chart_depth", 0) == 0}
+    box_nodes = [node for node in nodes if node["direct_reports_count"] > 0 or node.get("chart_depth", 0) == 0]
+    box_node_keys = {node["node_key"] for node in box_nodes}
+    top_node_keys = {node["node_key"] for node in box_nodes if node.get("chart_depth", 0) == 0}
+    box_children_map = defaultdict(list)
+    leaf_lists_by_parent = defaultdict(list)
+    for parent_key, children in children_map.items():
+        visible_box_children = [child for child in children if child["node_key"] in box_node_keys]
+        if visible_box_children or parent_key in box_node_keys or parent_key is None:
+            box_children_map[parent_key].extend(visible_box_children)
+            box_children_map[parent_key].sort(key=lambda item: (item["employee_name"], item["department"]))
+        for child in children:
+            if child["node_key"] not in box_node_keys and parent_key in box_node_keys:
+                leaf_lists_by_parent[parent_key].append(child)
+    for parent_key, leaf_children in leaf_lists_by_parent.items():
+        leaf_children.sort(key=lambda item: (item["employee_name"], item["department"]))
 
     widths = {}
     total_units = 0.0
     left_units = 0.0
     positions = {}
-    for top_node in sorted([node for node in nodes if node.get("chart_depth", 0) == 0], key=lambda item: (item["employee_name"], item["department"])):
-        subtree_width = compute_org_subtree_widths(top_node, children_map, widths)
-        layout_org_chart(top_node, children_map, widths, positions, left_units)
+    for top_node in sorted([node for node in box_nodes if node.get("chart_depth", 0) == 0], key=lambda item: (item["employee_name"], item["department"])):
+        subtree_width = compute_org_subtree_widths(top_node, box_children_map, widths)
+        layout_org_chart(top_node, box_children_map, widths, positions, left_units)
         left_units += subtree_width
         total_units += subtree_width
 
@@ -1231,7 +1245,7 @@ def add_org_chart_slide(prs, title, top_nodes, children_map, note_text, level_li
     bottom_margin = Inches(0.35)
     chart_width = slide_width - left_margin - right_margin
     chart_height = slide_height - top_margin - bottom_margin
-    max_depth = max((row.get("chart_depth", 0) for row in nodes), default=0)
+    max_depth = max((row.get("chart_depth", 0) for row in box_nodes), default=0)
     level_count = max_depth + 1
     vertical_gap = chart_height / max(level_count, 1)
     total_units = max(total_units, 1.0)
@@ -1259,12 +1273,12 @@ def add_org_chart_slide(prs, title, top_nodes, children_map, note_text, level_li
     shape_bounds = {}
     node_shapes = {}
 
-    sorted_nodes = sorted(nodes, key=lambda item: (item.get("chart_depth", 0), positions.get(item["node_key"], 0.0), item["employee_name"]))
+    sorted_nodes = sorted(box_nodes, key=lambda item: (item.get("chart_depth", 0), positions.get(item["node_key"], 0.0), item["employee_name"]))
     for node in sorted_nodes:
         node_width_units = widths.get(node["node_key"], 1.0)
         center_unit = positions.get(node["node_key"], 0.5)
         depth = node.get("chart_depth", 0)
-        children = children_map.get(node["node_key"], [])
+        children = box_children_map.get(node["node_key"], [])
 
         center_x = int(left_margin + (center_unit / total_units) * chart_width)
         center_y = int(top_margin + depth * vertical_gap + vertical_gap * 0.45)
@@ -1324,11 +1338,53 @@ def add_org_chart_slide(prs, title, top_nodes, children_map, note_text, level_li
         shape_bounds[node["node_key"]] = {"x": x, "y": y, "w": box_width, "h": box_height}
         node_shapes[node["node_key"]] = shape
 
+        if not compact and leaf_lists_by_parent.get(node["node_key"]):
+            available_height = max(0, int(vertical_gap - box_height - Inches(0.08)))
+            if available_height > int(Inches(0.14)):
+                leaf_names = [leaf["employee_name"] for leaf in leaf_lists_by_parent[node["node_key"]]]
+                use_two_columns = len(leaf_names) > 8
+                column_count = 2 if use_two_columns else 1
+                row_count = max(1, (len(leaf_names) + column_count - 1) // column_count)
+                max_box_height = int(Inches(0.86)) if use_two_columns else int(Inches(0.96))
+                list_height = min(available_height, max_box_height)
+                font_size = max(5.5, min(7.0, (list_height / max(row_count, 1)) / 12700 - 1.0))
+                column_width = (box_width - int(Inches(0.04))) // column_count
+                columns = []
+                if use_two_columns:
+                    columns = [
+                        leaf_names[:row_count],
+                        leaf_names[row_count:],
+                    ]
+                else:
+                    columns = [leaf_names]
+                for column_index, column_names in enumerate(columns):
+                    list_box = slide.shapes.add_textbox(
+                        x + column_index * (column_width + int(Inches(0.04))),
+                        y + box_height + int(Inches(0.03)),
+                        column_width,
+                        list_height,
+                    )
+                    list_frame = list_box.text_frame
+                    list_frame.clear()
+                    list_frame.word_wrap = True
+                    list_frame.margin_top = 0
+                    list_frame.margin_bottom = 0
+                    list_frame.margin_left = int(Inches(0.02))
+                    list_frame.margin_right = int(Inches(0.02))
+                    for index, leaf_name in enumerate(column_names):
+                        paragraph = list_frame.paragraphs[0] if index == 0 else list_frame.add_paragraph()
+                        paragraph.text = leaf_name
+                        paragraph.alignment = PP_ALIGN.CENTER
+                        if paragraph.runs:
+                            run = paragraph.runs[0]
+                            run.font.size = Pt(font_size)
+                            run.font.color.rgb = RGBColor(71, 85, 105)
+
     for node in sorted_nodes:
         parent_bounds = shape_bounds.get(node["node_key"])
         if not parent_bounds:
             continue
-        for child in children_map.get(node["node_key"], []):
+        for child in box_children_map.get(node["node_key"], []):
             child_bounds = shape_bounds.get(child["node_key"])
             if not child_bounds:
                 continue
