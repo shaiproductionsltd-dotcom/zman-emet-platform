@@ -3,6 +3,7 @@ from zipfile import BadZipFile, ZIP_DEFLATED, ZipFile
 from collections import defaultdict
 import calendar
 import csv
+from datetime import date, datetime
 import html
 import os
 import secrets
@@ -2958,6 +2959,20 @@ def init_db():
             user_id INTEGER, script_id TEXT,
             PRIMARY KEY (user_id, script_id))"""
         )
+        for ddl in (
+            "ALTER TABLE users ADD COLUMN company_name TEXT",
+            "ALTER TABLE users ADD COLUMN company_id TEXT",
+            "ALTER TABLE users ADD COLUMN email TEXT",
+            "ALTER TABLE users ADD COLUMN phone TEXT",
+            "ALTER TABLE users ADD COLUMN join_date TEXT",
+            "ALTER TABLE users ADD COLUMN trial_start_date TEXT",
+            "ALTER TABLE users ADD COLUMN service_valid_until TEXT",
+            "ALTER TABLE users ADD COLUMN billing_mode TEXT DEFAULT 'monthly'",
+        ):
+            try:
+                db.execute(ddl)
+            except Exception:
+                pass
         if not db.execute("SELECT id FROM users WHERE username='admin'").fetchone():
             db.execute(
                 "INSERT INTO users(username,password,full_name,is_admin) VALUES (?,?,?,1)",
@@ -2981,6 +2996,79 @@ def pop_flashes():
 def generate_temp_password(length=10):
     alphabet = string.ascii_letters + string.digits
     return "".join(secrets.choice(alphabet) for _ in range(length))
+
+
+def esc(value):
+    return html.escape(str(value or ""))
+
+
+def parse_iso_date(value):
+    text = str(value or "").strip()
+    if not text:
+        return None
+    for fmt in ("%Y-%m-%d", "%d/%m/%Y"):
+        try:
+            return datetime.strptime(text, fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
+def format_ui_date(value, lang="he"):
+    parsed = parse_iso_date(value)
+    if not parsed:
+        return "לא הוגדר" if lang == "he" else "Not set"
+    return parsed.strftime("%d/%m/%Y")
+
+
+def billing_mode_label(value, lang="he"):
+    normalized = str(value or "monthly").strip().lower()
+    labels = {
+        "monthly": "חודשי" if lang == "he" else "Monthly",
+        "yearly_prepaid": "שנתי מראש" if lang == "he" else "Yearly prepaid",
+    }
+    return labels.get(normalized, normalized or ("לא הוגדר" if lang == "he" else "Not set"))
+
+
+def get_account_status(user_row):
+    today = date.today()
+    trial_start = parse_iso_date(user_row["trial_start_date"])
+    valid_until = parse_iso_date(user_row["service_valid_until"])
+
+    if valid_until:
+        if valid_until >= today:
+            return {
+                "status_key": "active",
+                "status_label_he": "לקוח פעיל",
+                "status_label_en": "Active customer",
+                "renewal_date": valid_until,
+                "days_remaining": None,
+            }
+        return {
+            "status_key": "expired",
+            "status_label_he": "שירות שפג תוקפו",
+            "status_label_en": "Expired service",
+            "renewal_date": valid_until,
+            "days_remaining": None,
+        }
+
+    if trial_start:
+        days_remaining = max(0, 30 - (today - trial_start).days)
+        return {
+            "status_key": "trial",
+            "status_label_he": "ניסיון ל-30 יום",
+            "status_label_en": "30-day trial",
+            "renewal_date": None,
+            "days_remaining": days_remaining,
+        }
+
+    return {
+        "status_key": "unknown",
+        "status_label_he": "סטטוס לא הוגדר",
+        "status_label_en": "Status not set",
+        "renewal_date": None,
+        "days_remaining": None,
+    }
 
 
 def render(title, body, nav=True, lang="en", topbar_greeting="Hello, ", logout_label="Logout", show_lang_switch=False):
@@ -3095,9 +3183,27 @@ def dashboard():
     lang = get_flow_lang()
     text = get_flow_text(lang)
     with get_db() as db:
+        user = db.execute("SELECT * FROM users WHERE id=?", (session["user_id"],)).fetchone()
         perms = db.execute("SELECT script_id FROM permissions WHERE user_id=?", (session["user_id"],)).fetchall()
 
     allowed = [get_localized_script(SCRIPTS[p["script_id"]], lang) for p in perms if p["script_id"] in SCRIPTS]
+    status = get_account_status(user)
+    status_label = status["status_label_he"] if lang == "he" else status["status_label_en"]
+    not_set = "לא הוגדר" if lang == "he" else "Not set"
+    status_colors = {
+        "trial": ("#fff7ed", "#c2410c"),
+        "active": ("#ecfdf5", "#047857"),
+        "expired": ("#fef2f2", "#b91c1c"),
+        "unknown": ("#f8fafc", "#475569"),
+    }
+    status_bg, status_fg = status_colors.get(status["status_key"], ("#f8fafc", "#475569"))
+    if status["status_key"] == "trial":
+        service_note = f"נותרו {status['days_remaining']} ימי ניסיון" if lang == "he" else f"{status['days_remaining']} trial days remaining"
+    elif status["renewal_date"]:
+        service_note = ("בתוקף עד " if lang == "he" else "Valid until ") + format_ui_date(status["renewal_date"], lang)
+    else:
+        service_note = "ללא פרטי שירות נוספים" if lang == "he" else "No additional service details"
+
     cards = ""
     for script in allowed:
         cards += (
@@ -3116,13 +3222,53 @@ def dashboard():
             "</div>"
         )
 
+    info_items = [
+        ("שם חברה" if lang == "he" else "Company", user["company_name"] or user["full_name"] or user["username"]),
+        ("שם משתמש" if lang == "he" else "Username", user["username"]),
+        ("איש קשר" if lang == "he" else "Contact name", user["full_name"]),
+        ("ח.פ / מזהה חברה" if lang == "he" else "Company ID", user["company_id"]),
+        ("אימייל" if lang == "he" else "Email", user["email"]),
+        ("טלפון" if lang == "he" else "Phone", user["phone"]),
+        ("תאריך הצטרפות" if lang == "he" else "Join date", format_ui_date(user["join_date"], lang)),
+    ]
+    info_grid = "".join(
+        '<div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:14px;padding:14px">'
+        '<div style="font-size:12px;color:#64748b;margin-bottom:6px">' + esc(label) + '</div>'
+        '<div style="font-size:15px;font-weight:700;color:#0f172a">' + esc(value or not_set) + "</div>"
+        "</div>"
+        for label, value in info_items
+    )
     body = (
-        '<h2 style="font-size:22px;font-weight:700;color:#1e3a8a;margin-bottom:.4rem">' + text["dashboard_greeting"]
-        + session["name"]
-        + ' &#128075;</h2><p style="font-size:14px;color:#64748b;margin-bottom:2rem">' + text["dashboard_intro"] + "</p>"
-        '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:1rem">'
+        '<h2 style="font-size:24px;font-weight:800;color:#1e3a8a;margin-bottom:.4rem">' + text["dashboard_greeting"]
+        + esc(session["name"])
+        + ' &#128075;</h2><p style="font-size:14px;color:#64748b;margin-bottom:1.5rem">' + text["dashboard_intro"] + "</p>"
+        '<div style="display:grid;grid-template-columns:1.15fr .85fr;gap:1rem;margin-bottom:1rem">'
+        '<div class="card" style="margin:0"><div style="font-size:18px;font-weight:800;color:#0f172a;margin-bottom:14px">'
+        + ("פרטי חשבון ולקוח" if lang == "he" else "Account and company details")
+        + '</div><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px">'
+        + info_grid
+        + '</div></div>'
+        '<div class="card" style="margin:0;background:linear-gradient(180deg,#ffffff 0%,#f8fbff 100%)">'
+        '<div style="font-size:18px;font-weight:800;color:#0f172a;margin-bottom:12px">' + ("סטטוס שירות" if lang == "he" else "Service status") + '</div>'
+        '<div style="display:inline-flex;align-items:center;padding:8px 12px;border-radius:999px;background:' + status_bg + ';color:' + status_fg + ';font-size:14px;font-weight:800;margin-bottom:10px">' + esc(status_label) + '</div>'
+        '<div style="font-size:14px;color:#334155;margin-bottom:8px">' + esc(service_note) + '</div>'
+        '<div style="font-size:12px;color:#64748b;margin-bottom:4px">' + ("מסלול חיוב" if lang == "he" else "Billing mode") + '</div>'
+        '<div style="font-size:15px;font-weight:700;color:#0f172a">' + esc(billing_mode_label(user["billing_mode"], lang)) + '</div>'
+        '</div></div>'
+        '<div class="card" style="margin-bottom:1rem;background:linear-gradient(135deg,#eff6ff 0%,#f8fafc 100%);border:1px solid #bfdbfe">'
+        '<div style="font-size:18px;font-weight:800;color:#1e3a8a;margin-bottom:8px">' + ("אבטחת מידע ופרטיות" if lang == "he" else "Security and privacy") + '</div>'
+        '<div style="font-size:14px;line-height:1.8;color:#334155">'
+        + (
+            "הדוחות שאתם מעלים משמשים לעיבוד בלבד ואינם נשמרים כחלק ממאגר קבוע. קבצי העבודה ותוצרי העיבוד נשמרים זמנית לצורך השלמת התהליך וההורדה, ולאחר מכן מנוקים באופן אוטומטי."
+            if lang == "he"
+            else "Uploaded reports are used only for processing and are not kept as part of a permanent data store. Working files and generated outputs are kept temporarily for processing and download, and are cleaned up automatically afterward."
+        )
+        + '</div></div>'
+        '<div class="card" style="margin:0"><div style="font-size:18px;font-weight:800;color:#0f172a;margin-bottom:14px">'
+        + ("הכלים הזמינים לך" if lang == "he" else "Your available tools")
+        + '</div><div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:1rem">'
         + cards
-        + "</div>"
+        + "</div></div>"
     )
     return render(
         text["dashboard_page_title"],
@@ -3333,6 +3479,7 @@ def admin():
     rows = ""
     for user in users:
         uid = user["id"]
+        status = get_account_status(user)
         checks = ""
         for sid, script in SCRIPTS.items():
             checked = "checked" if (uid in user_perms and sid in user_perms[uid]) else ""
@@ -3347,8 +3494,12 @@ def admin():
 
         rows += (
             "<tr>"
-            "<td><strong>" + user["full_name"] + "</strong></td>"
-            '<td><span class="badge">' + user["username"] + "</span></td>"
+            "<td><strong>" + esc(user["company_name"] or user["full_name"] or user["username"]) + "</strong><br><span style=\"font-size:12px;color:#64748b\">ח.פ: " + esc(user["company_id"] or "לא הוגדר") + "</span></td>"
+            '<td><div style="font-weight:700;color:#0f172a">' + esc(user["full_name"] or "לא הוגדר") + '</div><div style="font-size:12px;color:#64748b">@' + esc(user["username"]) + '</div><div style="font-size:12px;color:#64748b">' + esc(user["email"] or "ללא אימייל") + '</div><div style="font-size:12px;color:#64748b">' + esc(user["phone"] or "ללא טלפון") + '</div><div style="font-size:12px;color:#64748b">הצטרפות: ' + esc(format_ui_date(user["join_date"], "he")) + "</div></td>"
+            '<td><div style="font-weight:700;color:#0f172a">' + esc(status["status_label_he"]) + '</div>'
+            + ('<div style="font-size:12px;color:#64748b">נותרו ' + str(status["days_remaining"]) + ' ימים</div>' if status["days_remaining"] is not None else "")
+            + ('<div style="font-size:12px;color:#64748b">בתוקף עד ' + esc(format_ui_date(status["renewal_date"], "he")) + '</div>' if status["renewal_date"] else "")
+            + '<div style="font-size:12px;color:#64748b">חיוב: ' + esc(billing_mode_label(user["billing_mode"], "he")) + "</div></td>"
             '<td><form method="POST" action="/admin/permissions/' + str(uid) + '" style="display:inline"><div style="display:flex;flex-wrap:wrap">'
             + checks
             + '</div><button type="submit" class="btn btn-gray" style="margin-top:6px;font-size:12px;padding:5px 12px">Save</button></form></td>'
@@ -3365,7 +3516,7 @@ def admin():
         )
 
     table = (
-        "<table><thead><tr><th>Name</th><th>Username</th><th>Permissions</th><th>Password</th><th>Delete</th></tr></thead><tbody>"
+        "<table><thead><tr><th>Company</th><th>Contact</th><th>Service</th><th>Permissions</th><th>Password</th><th>Delete</th></tr></thead><tbody>"
         + rows
         + "</tbody></table>"
     ) if users else '<p style="color:#94a3b8;text-align:center;padding:2rem">No users yet</p>'
@@ -3373,8 +3524,16 @@ def admin():
     body = (
         '<div class="card"><h2>&#10133; Add New User</h2><form method="POST" action="/admin/add_user"><div class="form-row">'
         '<div class="form-group"><label class="field-label">Full Name</label><input type="text" name="full_name" placeholder="Customer name" required style="margin-bottom:0"></div>'
+        '<div class="form-group"><label class="field-label">Company Name</label><input type="text" name="company_name" placeholder="Company name" style="margin-bottom:0"></div>'
+        '<div class="form-group"><label class="field-label">Company ID / ח.פ</label><input type="text" name="company_id" placeholder="Company ID" style="margin-bottom:0"></div>'
         '<div class="form-group"><label class="field-label">Username</label><input type="text" name="username" placeholder="Login username" required style="margin-bottom:0"></div>'
         '<div class="form-group"><label class="field-label">Password</label><input type="password" name="password" placeholder="Initial password" required style="margin-bottom:0"></div>'
+        '</div><div class="form-row">'
+        '<div class="form-group"><label class="field-label">Email</label><input type="text" name="email" placeholder="Email" style="margin-bottom:0"></div>'
+        '<div class="form-group"><label class="field-label">Phone</label><input type="text" name="phone" placeholder="Phone" style="margin-bottom:0"></div>'
+        '<div class="form-group"><label class="field-label">Billing Mode</label><select name="billing_mode" style="margin-bottom:0"><option value="monthly">Monthly</option><option value="yearly_prepaid">Yearly prepaid</option></select></div>'
+        '<div class="form-group"><label class="field-label">Account Type</label><select name="account_type" style="margin-bottom:0"><option value="trial">30-day trial</option><option value="active">Active service</option></select></div>'
+        '<div class="form-group"><label class="field-label">Valid Until</label><input type="text" name="service_valid_until" placeholder="YYYY-MM-DD" style="margin-bottom:0"></div>'
         '<button type="submit" class="btn btn-blue" style="height:40px;align-self:flex-end">Add</button></div></form></div>'
         '<div class="card"><h2>&#128101; Users In System</h2>'
         + table
@@ -3394,11 +3553,35 @@ def add_user():
     username = request.form["username"].strip()
     password = request.form["password"]
     full_name = request.form["full_name"].strip()
+    company_name = request.form.get("company_name", "").strip()
+    company_id = request.form.get("company_id", "").strip()
+    email = request.form.get("email", "").strip()
+    phone = request.form.get("phone", "").strip()
+    billing_mode = request.form.get("billing_mode", "monthly").strip() or "monthly"
+    account_type = request.form.get("account_type", "trial").strip() or "trial"
+    service_valid_until = request.form.get("service_valid_until", "").strip()
+    join_date = date.today().isoformat()
+    trial_start_date = join_date if account_type == "trial" else ""
+    service_until_value = service_valid_until if account_type == "active" else ""
     try:
         with get_db() as db:
             db.execute(
-                "INSERT INTO users(username,password,full_name) VALUES (?,?,?)",
-                (username, generate_password_hash(password), full_name),
+                """INSERT INTO users(
+                username,password,full_name,company_name,company_id,email,phone,join_date,trial_start_date,service_valid_until,billing_mode
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    username,
+                    generate_password_hash(password),
+                    full_name,
+                    company_name,
+                    company_id,
+                    email,
+                    phone,
+                    join_date,
+                    trial_start_date,
+                    service_until_value,
+                    billing_mode,
+                ),
             )
             db.commit()
         add_flash("User " + full_name + " was created successfully")
