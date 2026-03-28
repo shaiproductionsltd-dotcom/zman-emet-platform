@@ -18,8 +18,10 @@ from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from pptx import Presentation
+from pptx.dml.color import RGBColor
+from pptx.enum.shapes import MSO_AUTO_SHAPE_TYPE, MSO_CONNECTOR
 from pptx.enum.text import PP_ALIGN
-from pptx.util import Pt
+from pptx.util import Inches, Pt
 
 try:
     import psycopg
@@ -727,7 +729,7 @@ def parse_org_hierarchy_csv(csv_path):
     summary_rows = []
     tree_rows = []
 
-    def walk(node, depth, root_name, stack):
+    def walk(node, depth, root_name, root_key, stack):
         node_key = (node["employee_number"], node["id_number"], node["employee_name"])
         if node_key in stack:
             exception_rows.append(
@@ -752,6 +754,8 @@ def parse_org_hierarchy_csv(csv_path):
                 "email": node["email"],
                 "depth": depth,
                 "root_name": root_name,
+                "root_employee_number": root_key[0],
+                "root_id_number": root_key[1],
             }
         )
         tree_rows.append(
@@ -766,7 +770,7 @@ def parse_org_hierarchy_csv(csv_path):
         )
         next_stack = stack | {node_key}
         for child in sorted(children_map.get(node["employee_name"], []), key=lambda item: (item["employee_name"], item["employee_number"])):
-            walk(child, depth + 1, root_name, next_stack)
+            walk(child, depth + 1, root_name, root_key, next_stack)
 
     unique_roots = []
     seen_root_keys = set()
@@ -777,7 +781,7 @@ def parse_org_hierarchy_csv(csv_path):
             seen_root_keys.add(root_key)
 
     for root in sorted(unique_roots, key=lambda item: (item["employee_name"], item["employee_number"])):
-        walk(root, 0, root["employee_name"], set())
+        walk(root, 0, root["employee_name"], (root["employee_number"], root["id_number"]), set())
 
     for row in rows:
         node_key = (row["employee_number"], row["id_number"], row["employee_name"])
@@ -790,7 +794,7 @@ def parse_org_hierarchy_csv(csv_path):
                     "detail": "השורה לא קושרה לאף צומת שורש",
                 }
             )
-            walk(row, 0, row["employee_name"], set())
+            walk(row, 0, row["employee_name"], (row["employee_number"], row["id_number"]), set())
 
     stats = {
         "employee_count": len(rows),
@@ -1026,6 +1030,66 @@ def build_org_exceptions_slide_lines(exception_rows):
     return [f"{row['category']}: {row['employee_name']} | {row['detail']}".strip(" |") for row in exception_rows]
 
 
+def build_org_root_nodes(summary_rows, root_name):
+    nodes = []
+    for row in summary_rows:
+        row_root_key = (row.get("root_employee_number", ""), row.get("root_id_number", ""), row["root_name"])
+        if row_root_key != root_name:
+            continue
+        node_key = (row["employee_number"], row["id_number"], row["employee_name"])
+        nodes.append(
+            {
+                "node_key": node_key,
+                "employee_name": row["employee_name"],
+                "employee_number": row["employee_number"],
+                "id_number": row["id_number"],
+                "department": row["department"],
+                "direct_manager": row["direct_manager"],
+                "depth": row["depth"],
+            }
+        )
+    keys_by_name = defaultdict(list)
+    for node in nodes:
+        keys_by_name[node["employee_name"]].append(node["node_key"])
+    children_map = defaultdict(list)
+    for node in nodes:
+        manager_keys = keys_by_name.get(node["direct_manager"], [])
+        node["parent_key"] = manager_keys[0] if len(manager_keys) == 1 else None
+        node["manager_resolution"] = "unique" if len(manager_keys) == 1 else ("ambiguous" if len(manager_keys) > 1 else "missing")
+        children_map[node["parent_key"]].append(node)
+    for parent_key, children in children_map.items():
+        children.sort(key=lambda item: (item["employee_name"], item["department"]))
+    return nodes, children_map
+
+
+def compute_org_subtree_widths(node, children_map, widths):
+    children = children_map.get(node["node_key"], [])
+    if not children:
+        widths[node["node_key"]] = 1.0
+        return 1.0
+    total_width = 0.0
+    for child in children:
+        total_width += compute_org_subtree_widths(child, children_map, widths)
+    widths[node["node_key"]] = max(total_width, 1.0)
+    return widths[node["node_key"]]
+
+
+def layout_org_chart(node, children_map, widths, positions, left_units=0.0):
+    node_width = widths[node["node_key"]]
+    children = children_map.get(node["node_key"], [])
+    if not children:
+        positions[node["node_key"]] = left_units + (node_width / 2.0)
+        return
+    current_left = left_units
+    for child in children:
+        child_width = widths[child["node_key"]]
+        layout_org_chart(child, children_map, widths, positions, current_left)
+        current_left += child_width
+    first_child = children[0]["node_key"]
+    last_child = children[-1]["node_key"]
+    positions[node["node_key"]] = (positions[first_child] + positions[last_child]) / 2.0
+
+
 def add_pptx_bullets(text_frame, lines, font_size=18):
     text_frame.clear()
     if not lines:
@@ -1055,21 +1119,158 @@ def add_pptx_slide(prs, title, body_lines):
     return slide
 
 
+def add_org_chart_slide(prs, title, summary_rows, root_name):
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+
+    title_box = slide.shapes.add_textbox(Inches(0.45), Inches(0.2), Inches(12.2), Inches(0.55))
+    title_frame = title_box.text_frame
+    title_frame.clear()
+    title_paragraph = title_frame.paragraphs[0]
+    title_paragraph.text = title
+    title_paragraph.alignment = PP_ALIGN.RIGHT
+    if title_paragraph.runs:
+        title_run = title_paragraph.runs[0]
+        title_run.font.size = Pt(24)
+        title_run.font.bold = True
+
+    note_box = slide.shapes.add_textbox(Inches(0.45), Inches(0.78), Inches(12.2), Inches(0.3))
+    note_frame = note_box.text_frame
+    note_frame.clear()
+    note_paragraph = note_frame.paragraphs[0]
+    note_paragraph.text = "תרשים היררכי: הקווים מציגים קשרי דיווח ישירים."
+    note_paragraph.alignment = PP_ALIGN.RIGHT
+    if note_paragraph.runs:
+        note_run = note_paragraph.runs[0]
+        note_run.font.size = Pt(11)
+        note_run.font.color.rgb = RGBColor(71, 85, 105)
+
+    nodes, children_map = build_org_root_nodes(summary_rows, root_name)
+    if not nodes:
+        return slide
+
+    root_node = next((row for row in nodes if row["node_key"] == root_name and row["depth"] == 0), nodes[0])
+    top_nodes = [root_node]
+    top_node_keys = {root_node["node_key"]}
+    for node in nodes:
+        if node["node_key"] != root_node["node_key"] and node.get("parent_key") is None:
+            top_nodes.append(node)
+            top_node_keys.add(node["node_key"])
+
+    widths = {}
+    total_units = 0.0
+    left_units = 0.0
+    positions = {}
+    for top_node in sorted(top_nodes, key=lambda item: (item["depth"], item["employee_name"], item["department"])):
+        subtree_width = compute_org_subtree_widths(top_node, children_map, widths)
+        layout_org_chart(top_node, children_map, widths, positions, left_units)
+        left_units += subtree_width
+        total_units += subtree_width
+
+    slide_width = prs.slide_width
+    slide_height = prs.slide_height
+    left_margin = Inches(0.3)
+    right_margin = Inches(0.3)
+    top_margin = Inches(1.2)
+    bottom_margin = Inches(0.35)
+    chart_width = slide_width - left_margin - right_margin
+    chart_height = slide_height - top_margin - bottom_margin
+    max_depth = max((row["depth"] for row in nodes), default=0)
+    level_count = max_depth + 1
+    vertical_gap = chart_height / max(level_count, 1)
+    total_units = max(total_units, 1.0)
+
+    box_height = min(int(Inches(0.72)), max(int(Inches(0.42)), int(vertical_gap * 0.6)))
+    min_box_width = int(Inches(1.35))
+    max_box_width = int(Inches(1.95))
+    shape_bounds = {}
+
+    sorted_nodes = sorted(nodes, key=lambda item: (item["depth"], positions.get(item["node_key"], 0.0), item["employee_name"]))
+    for node in sorted_nodes:
+        node_width_units = widths.get(node["node_key"], 1.0)
+        center_unit = positions.get(node["node_key"], 0.5)
+        depth = node["depth"]
+        children = children_map.get(node["node_key"], [])
+
+        center_x = int(left_margin + (center_unit / total_units) * chart_width)
+        center_y = int(top_margin + depth * vertical_gap + vertical_gap * 0.45)
+        width_by_subtree = int((node_width_units / total_units) * chart_width * 0.72)
+        box_width = max(min_box_width, min(max_box_width, width_by_subtree))
+        x = max(int(left_margin), min(int(slide_width - right_margin - box_width), center_x - box_width // 2))
+        y = max(int(top_margin), min(int(slide_height - bottom_margin - box_height), center_y - box_height // 2))
+
+        shape = slide.shapes.add_shape(MSO_AUTO_SHAPE_TYPE.ROUNDED_RECTANGLE, x, y, box_width, box_height)
+        shape.line.color.rgb = RGBColor(100, 116, 139)
+        shape.line.width = Pt(1)
+        shape.fill.solid()
+        if depth == 0:
+            shape.fill.fore_color.rgb = RGBColor(191, 219, 254)
+        elif node["node_key"] in top_node_keys:
+            shape.fill.fore_color.rgb = RGBColor(254, 240, 138)
+        elif children:
+            shape.fill.fore_color.rgb = RGBColor(220, 252, 231)
+        else:
+            shape.fill.fore_color.rgb = RGBColor(241, 245, 249)
+
+        text_frame = shape.text_frame
+        text_frame.clear()
+        text_frame.word_wrap = True
+        name_paragraph = text_frame.paragraphs[0]
+        name_paragraph.text = node["employee_name"]
+        name_paragraph.alignment = PP_ALIGN.CENTER
+        if name_paragraph.runs:
+            name_run = name_paragraph.runs[0]
+            name_run.font.bold = True
+            name_run.font.size = Pt(13 if depth == 0 else 11)
+
+        dept_paragraph = text_frame.add_paragraph()
+        dept_paragraph.text = node["department"] or ""
+        dept_paragraph.alignment = PP_ALIGN.CENTER
+        if dept_paragraph.runs:
+            dept_run = dept_paragraph.runs[0]
+            dept_run.font.size = Pt(9)
+            dept_run.font.color.rgb = RGBColor(71, 85, 105)
+
+        shape_bounds[node["node_key"]] = {"x": x, "y": y, "w": box_width, "h": box_height}
+
+    for node in sorted_nodes:
+        parent_bounds = shape_bounds.get(node["node_key"])
+        if not parent_bounds:
+            continue
+        for child in children_map.get(node["node_key"], []):
+            child_bounds = shape_bounds.get(child["node_key"])
+            if not child_bounds:
+                continue
+            connector = slide.shapes.add_connector(
+                MSO_CONNECTOR.STRAIGHT,
+                parent_bounds["x"] + parent_bounds["w"] // 2,
+                parent_bounds["y"] + parent_bounds["h"],
+                child_bounds["x"] + child_bounds["w"] // 2,
+                child_bounds["y"],
+            )
+            connector.line.color.rgb = RGBColor(148, 163, 184)
+            connector.line.width = Pt(1.2)
+    return slide
+
+
 def write_org_hierarchy_pptx(output_path, summary_rows, tree_rows, exception_rows, stats):
     prs = Presentation()
-    root_names = [row["employee_name"] for row in summary_rows if row["depth"] == 0]
+    prs.slide_width = Inches(13.333)
+    prs.slide_height = Inches(7.5)
+    root_nodes = [
+        {
+            "root_key": (row["employee_number"], row["id_number"], row["employee_name"]),
+            "title": row["employee_name"],
+        }
+        for row in summary_rows
+        if row["depth"] == 0
+    ]
     add_pptx_slide(
         prs,
         "סיכום מבנה ארגוני",
         [{"text": line, "size": 20} for line in build_org_summary_slide_lines(summary_rows, stats)],
     )
-    for root_name in root_names:
-        body_lines = [{"text": "הזחה מייצגת עומק דיווח בלבד", "size": 16, "bold": True}]
-        body_lines.extend(
-            {"text": line, "level": depth, "size": 18}
-            for depth, line in build_org_root_slide_lines(tree_rows, root_name)
-        )
-        add_pptx_slide(prs, root_name, body_lines)
+    for root_node in root_nodes:
+        add_org_chart_slide(prs, root_node["title"], summary_rows, root_node["root_key"])
     add_pptx_slide(
         prs,
         "חריגים",
