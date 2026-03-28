@@ -1182,7 +1182,7 @@ def add_pptx_slide(prs, title, body_lines):
     return slide
 
 
-def add_org_chart_slide(prs, title, top_nodes, children_map, note_text):
+def add_org_chart_slide(prs, title, top_nodes, children_map, note_text, level_limit=2, compact=False):
     slide = prs.slides.add_slide(prs.slide_layouts[6])
 
     title_box = slide.shapes.add_textbox(Inches(0.45), Inches(0.2), Inches(12.2), Inches(0.55))
@@ -1207,9 +1207,9 @@ def add_org_chart_slide(prs, title, top_nodes, children_map, note_text):
         note_run.font.size = Pt(11)
         note_run.font.color.rgb = RGBColor(71, 85, 105)
 
-    nodes, children_map = build_org_chart_subset(top_nodes, children_map, level_limit=2)
+    nodes, children_map = build_org_chart_subset(top_nodes, children_map, level_limit=level_limit)
     if not nodes:
-        return slide
+        return slide, {}
 
     top_node_keys = {node["node_key"] for node in nodes if node.get("chart_depth", 0) == 0}
 
@@ -1236,11 +1236,28 @@ def add_org_chart_slide(prs, title, top_nodes, children_map, note_text):
     vertical_gap = chart_height / max(level_count, 1)
     total_units = max(total_units, 1.0)
 
-    base_box_height = min(int(Inches(0.72)), max(int(Inches(0.42)), int(vertical_gap * 0.58)))
-    manager_box_height = min(int(Inches(0.96)), max(int(Inches(0.56)), int(vertical_gap * 0.82)))
-    min_box_width = int(Inches(1.35))
-    max_box_width = int(Inches(1.95))
+    if compact:
+        base_box_height = min(int(Inches(0.62)), max(int(Inches(0.34)), int(vertical_gap * 0.52)))
+        manager_box_height = min(int(Inches(0.84)), max(int(Inches(0.48)), int(vertical_gap * 0.72)))
+        min_box_width = int(Inches(1.05))
+        max_box_width = int(Inches(1.6))
+        name_size_regular = 9.5
+        name_size_manager = 9
+        dept_size_regular = 7.5
+        dept_size_manager = 7
+        metrics_size = 6.5
+    else:
+        base_box_height = min(int(Inches(0.72)), max(int(Inches(0.42)), int(vertical_gap * 0.58)))
+        manager_box_height = min(int(Inches(0.96)), max(int(Inches(0.56)), int(vertical_gap * 0.82)))
+        min_box_width = int(Inches(1.35))
+        max_box_width = int(Inches(1.95))
+        name_size_regular = 11
+        name_size_manager = 10.5
+        dept_size_regular = 9
+        dept_size_manager = 8.5
+        metrics_size = 7.5
     shape_bounds = {}
+    node_shapes = {}
 
     sorted_nodes = sorted(nodes, key=lambda item: (item.get("chart_depth", 0), positions.get(item["node_key"], 0.0), item["employee_name"]))
     for node in sorted_nodes:
@@ -1283,7 +1300,7 @@ def add_org_chart_slide(prs, title, top_nodes, children_map, note_text):
         if name_paragraph.runs:
             name_run = name_paragraph.runs[0]
             name_run.font.bold = True
-            name_run.font.size = Pt(13 if depth == 0 else (10.5 if node["direct_reports_count"] > 0 else 11))
+            name_run.font.size = Pt(12 if depth == 0 else (name_size_manager if node["direct_reports_count"] > 0 else name_size_regular))
             name_run.font.color.rgb = RGBColor(30, 41, 59)
 
         dept_paragraph = text_frame.add_paragraph()
@@ -1291,7 +1308,7 @@ def add_org_chart_slide(prs, title, top_nodes, children_map, note_text):
         dept_paragraph.alignment = PP_ALIGN.CENTER
         if dept_paragraph.runs:
             dept_run = dept_paragraph.runs[0]
-            dept_run.font.size = Pt(8.5 if node["direct_reports_count"] > 0 else 9)
+            dept_run.font.size = Pt(dept_size_manager if node["direct_reports_count"] > 0 else dept_size_regular)
             dept_run.font.color.rgb = RGBColor(71, 85, 105)
 
         if node["direct_reports_count"] > 0:
@@ -1300,11 +1317,12 @@ def add_org_chart_slide(prs, title, top_nodes, children_map, note_text):
             metrics_paragraph.alignment = PP_ALIGN.CENTER
             if metrics_paragraph.runs:
                 metrics_run = metrics_paragraph.runs[0]
-                metrics_run.font.size = Pt(7.5)
+                metrics_run.font.size = Pt(metrics_size)
                 metrics_run.font.bold = True
                 metrics_run.font.color.rgb = RGBColor(51, 65, 85)
 
         shape_bounds[node["node_key"]] = {"x": x, "y": y, "w": box_width, "h": box_height}
+        node_shapes[node["node_key"]] = shape
 
     for node in sorted_nodes:
         parent_bounds = shape_bounds.get(node["node_key"])
@@ -1323,13 +1341,14 @@ def add_org_chart_slide(prs, title, top_nodes, children_map, note_text):
             )
             connector.line.color.rgb = RGBColor(148, 163, 184)
             connector.line.width = Pt(1.2)
-    return slide
+    return slide, node_shapes
 
 
 def write_org_hierarchy_pptx(output_path, summary_rows, tree_rows, exception_rows, stats):
     prs = Presentation()
     prs.slide_width = Inches(13.333)
     prs.slide_height = Inches(7.5)
+    manager_count = sum(1 for row in summary_rows if row["is_manager"] == "כן")
     root_nodes = [
         {
             "root_key": (row["employee_number"], row["id_number"], row["employee_name"]),
@@ -1338,34 +1357,79 @@ def write_org_hierarchy_pptx(output_path, summary_rows, tree_rows, exception_row
         for row in summary_rows
         if row["depth"] == 0
     ]
-    add_pptx_slide(
-        prs,
-        "סיכום מבנה ארגוני",
-        [{"text": line, "size": 20} for line in build_org_summary_slide_lines(summary_rows, stats)],
-    )
+    root_payloads = []
+    overview_top_nodes = []
+    overview_children_map = defaultdict(list)
     for root_node in root_nodes:
         nodes, children_map = build_org_root_nodes(summary_rows, root_node["root_key"])
         actual_root = next((row for row in nodes if row["node_key"] == root_node["root_key"] and row["depth"] == 0), nodes[0] if nodes else None)
         if actual_root is None:
             continue
-        overview_top_nodes = [actual_root] + [
+        top_nodes = [actual_root] + [
             node for node in nodes if node["node_key"] != actual_root["node_key"] and node.get("parent_key") is None
         ]
-        add_org_chart_slide(
-            prs,
-            root_node["title"],
-            overview_top_nodes,
-            children_map,
-            "שקופית סקירה: מוצגות עד 3 רמות. ענפים צפופים מפוצלים לשקופיות המשך.",
+        overview_top_nodes.extend(top_nodes)
+        for parent_key, children in children_map.items():
+            overview_children_map[parent_key].extend(children)
+        root_payloads.append(
+            {
+                "title": root_node["title"],
+                "actual_root": actual_root,
+                "top_nodes": top_nodes,
+                "children_map": children_map,
+                "detail_nodes": build_org_detail_slide_nodes(actual_root, children_map),
+            }
         )
-        for branch_node in build_org_detail_slide_nodes(actual_root, children_map):
-            add_org_chart_slide(
+    overview_note = (
+        f"סקירת כלל הארגון | עובדים: {stats['employee_count']} | שורשים: {stats['root_count']} | "
+        f"מנהלים: {manager_count} | חריגים: {stats['exception_count']}"
+    )
+    _, overview_shape_map = add_org_chart_slide(
+        prs,
+        "מבט-על ארגוני",
+        overview_top_nodes,
+        overview_children_map,
+        overview_note,
+        level_limit=None,
+        compact=True,
+    )
+    _, map_shape_map = add_org_chart_slide(
+        prs,
+        "מפת ענפים וניווט",
+        overview_top_nodes,
+        overview_children_map,
+        "לחצו על מנהל או ענף מרכזי למעבר לשקופית פירוט מתאימה.",
+        level_limit=1,
+        compact=True,
+    )
+    detail_slide_by_key = {}
+    for payload in root_payloads:
+        detail_slide, _ = add_org_chart_slide(
+            prs,
+            f"{payload['title']} - פירוט",
+            [payload["actual_root"]],
+            payload["children_map"],
+            "שקופית פירוט שורש: מוצגות עד 4 רמות לשמירה על קריאות.",
+            level_limit=3,
+            compact=False,
+        )
+        detail_slide_by_key[payload["actual_root"]["node_key"]] = detail_slide
+        for branch_node in payload["detail_nodes"]:
+            branch_slide, _ = add_org_chart_slide(
                 prs,
                 f"{branch_node['employee_name']} - פירוט ענף",
                 [branch_node],
-                children_map,
-                "שקופית פירוט ענף: מוצגות עד 3 רמות לשמירה על קריאות.",
+                payload["children_map"],
+                "שקופית פירוט ענף: מוצגות עד 4 רמות לשמירה על קריאות.",
+                level_limit=3,
+                compact=False,
             )
+            detail_slide_by_key[branch_node["node_key"]] = branch_slide
+    for shape_map in (overview_shape_map, map_shape_map):
+        for node_key, shape in shape_map.items():
+            target_slide = detail_slide_by_key.get(node_key)
+            if target_slide is not None:
+                shape.click_action.target_slide = target_slide
     add_pptx_slide(
         prs,
         "חריגים",
