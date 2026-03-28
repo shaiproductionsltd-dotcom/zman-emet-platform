@@ -1518,35 +1518,35 @@ def add_manager_summary_slide(prs, title, manager_rows, page_index=1, page_count
             p2.runs[0].font.color.rgb = RGBColor(51, 65, 85)
 
         employee_names = manager["employee_names"]
-        if len(employee_names) <= 4:
-            pill_y = y + Inches(0.95)
-            pill_width = Inches(1.8)
-            pill_height = Inches(0.28)
-            pill_gap = Inches(0.08)
-            total_width = len(employee_names) * pill_width + max(0, len(employee_names) - 1) * pill_gap
-            pill_x = x + max(0, (card_width - total_width) / 2)
-            for name in employee_names:
-                pill = slide.shapes.add_shape(MSO_AUTO_SHAPE_TYPE.ROUNDED_RECTANGLE, pill_x, pill_y, pill_width, pill_height)
-                pill.line.color.rgb = RGBColor(191, 219, 254)
-                pill.line.width = Pt(0.8)
-                pill.fill.solid()
-                pill.fill.fore_color.rgb = RGBColor(239, 246, 255)
-                pill_frame = pill.text_frame
-                pill_frame.clear()
-                para = pill_frame.paragraphs[0]
-                para.text = name
-                para.alignment = PP_ALIGN.CENTER
-                if para.runs:
-                    para.runs[0].font.size = Pt(8.5)
-                    para.runs[0].font.color.rgb = RGBColor(30, 64, 175)
-                pill_x += pill_width + pill_gap
-        else:
+        if employee_names:
             p3 = frame.add_paragraph()
-            p3.text = ", ".join(employee_names)
+            p3.text = "עובדים:"
             p3.alignment = PP_ALIGN.CENTER
             if p3.runs:
-                p3.runs[0].font.size = Pt(8.5 if len(employee_names) <= 6 else (7.5 if len(employee_names) <= 10 else 6.5))
-                p3.runs[0].font.color.rgb = RGBColor(71, 85, 105)
+                p3.runs[0].font.size = Pt(9)
+                p3.runs[0].font.bold = True
+                p3.runs[0].font.color.rgb = RGBColor(30, 41, 59)
+
+            names_per_line = 1 if len(employee_names) <= 4 else (2 if len(employee_names) <= 8 else 3)
+            name_lines = []
+            for start in range(0, len(employee_names), names_per_line):
+                group = employee_names[start:start + names_per_line]
+                name_lines.append(" • ".join(group))
+
+            if len(employee_names) <= 4:
+                name_font_size = 10.5
+            elif len(employee_names) <= 8:
+                name_font_size = 9.5
+            else:
+                name_font_size = 8.5
+
+            for line in name_lines:
+                p_name = frame.add_paragraph()
+                p_name.text = line
+                p_name.alignment = PP_ALIGN.CENTER
+                if p_name.runs:
+                    p_name.runs[0].font.size = Pt(name_font_size)
+                    p_name.runs[0].font.color.rgb = RGBColor(51, 65, 85)
     return slide
 
 
