@@ -2479,8 +2479,8 @@ FLOW_TEXTS = {
         "back_arrow": "&#8592;",
         "scripts": {
             "nikuy": {
-                "name": "Attendance Cleanup",
-                "desc": "Remove * and ? from monthly attendance report",
+                "name": "Attendance Report Cleanup",
+                "desc": "Clean a detailed monthly attendance report by removing asterisks and question marks",
                 "success_title": "File is ready",
                 "success_action": "Download cleaned file",
                 "retry_action": "Process another file",
@@ -2497,8 +2497,8 @@ FLOW_TEXTS = {
                 "file_picker_label": "Choose file",
             },
             "flamingo_payroll": {
-                "name": "Flamingo Payroll",
-                "desc": "Payroll summary based on payable hours and hourly rate",
+                "name": "Fixed Hourly-Rate Payroll Summary",
+                "desc": "Generate a clear monthly payroll summary based on a detailed report and a fixed hourly rate",
                 "success_title": "Payroll file is ready",
                 "success_action": "Download payroll summary",
                 "retry_action": "Process another payroll file",
@@ -2515,8 +2515,8 @@ FLOW_TEXTS = {
                 "file_picker_label": "Choose Flamingo file",
             },
             "matan_missing": {
-                "name": "Matan Missing Hours",
-                "desc": "Filter employees by missing-hours range",
+                "name": "Missing Hours Report",
+                "desc": "Filter employees by their monthly missing-hours totals with a clear summary ready for follow-up",
                 "success_title": "Missing-hours report is ready",
                 "success_action": "Download report",
                 "retry_action": "Process another file",
@@ -2558,8 +2558,8 @@ FLOW_TEXTS = {
         "back_arrow": "&#8594;",
         "scripts": {
             "nikuy": {
-                "name": "ניקוי נוכחות",
-                "desc": "הסרת * ו-? מדוח הנוכחות החודשי",
+                "name": "ניקוי דוח נוכחות",
+                "desc": "ניקוי סימני כוכביות וסימני שאלה מדוח נוכחות מפורט חודשי",
                 "success_title": "הקובץ מוכן",
                 "success_action": "הורדת הקובץ הנקי",
                 "retry_action": "עיבוד קובץ נוסף",
@@ -2576,8 +2576,8 @@ FLOW_TEXTS = {
                 "file_picker_label": "בחירת קובץ",
             },
             "flamingo_payroll": {
-                "name": "שכר פלמינגו",
-                "desc": "סיכום שכר לפי שעות לתשלום ותעריף לשעה",
+                "name": "סיכום שכר לפי תעריף שעתי קבוע",
+                "desc": "הפקת סיכום שכר לפי דוח מפורט חודשי בצורה ברורה ומוכנה לבדיקה",
                 "success_title": "קובץ השכר מוכן",
                 "success_action": "הורדת סיכום השכר",
                 "retry_action": "עיבוד קובץ שכר נוסף",
@@ -2594,8 +2594,8 @@ FLOW_TEXTS = {
                 "file_picker_label": "בחירת קובץ פלמינגו",
             },
             "matan_missing": {
-                "name": "שעות חסר מתן",
-                "desc": "סינון עובדים לפי טווח שעות חסר",
+                "name": "דוח שעות חסר",
+                "desc": "אפשרות לסינון עובדים לפי כמות שעות החוסר החודשיות שלהם כולל סיכום ברור ונוח לטיפול",
                 "success_title": "דוח שעות החסר מוכן",
                 "success_action": "הורדת הדוח",
                 "retry_action": "עיבוד קובץ נוסף",
@@ -2672,8 +2672,8 @@ def build_lang_switch(lang):
 SCRIPTS = {
     "nikuy": {
         "id": "nikuy",
-        "name": "Attendance Cleanup",
-        "desc": "Remove * and ? from monthly attendance report",
+        "name": "ניקוי דוח נוכחות",
+        "desc": "ניקוי סימני כוכביות וסימני שאלה מדוח נוכחות מפורט חודשי",
         "accept": ".xls,.xlsx",
         "icon": "🧹",
     }
@@ -2703,8 +2703,8 @@ SCRIPT_REGISTRY = {
 
 SCRIPTS["flamingo_payroll"] = {
     "id": "flamingo_payroll",
-    "name": "Flamingo Payroll",
-    "desc": "Payroll summary based on payable hours and hourly rate",
+    "name": "סיכום שכר לפי תעריף שעתי קבוע",
+    "desc": "הפקת סיכום שכר לפי דוח מפורט חודשי בצורה ברורה ומוכנה לבדיקה",
     "accept": ".xls",
     "icon": "$",
 }
@@ -2731,32 +2731,32 @@ SCRIPT_REGISTRY["flamingo_payroll"] = {
 
 SCRIPTS["matan_missing"] = {
     "id": "matan_missing",
-    "name": "Matan Missing Hours",
-    "desc": "Filter employees by missing-hours range",
+    "name": "דוח שעות חסר",
+    "desc": "אפשרות לסינון עובדים לפי כמות שעות החוסר החודשיות שלהם כולל סיכום ברור ונוח לטיפול",
     "accept": ".xls",
     "icon": "📊",
 }
 
 SCRIPTS["matan_manual_corrections"] = {
     "id": "matan_manual_corrections",
-    "name": "תיקונים ידניים מתן",
-    "desc": "ספירת תיקוני כניסה ויציאה ידניים לכל עובד",
+    "name": "דוח תיקונים ידניים",
+    "desc": "איתור וסיכום של תיקוני נוכחות ידניים מתוך הדוח, כולל ספירה ותצוגה נוחה לבדיקה",
     "accept": ".xls",
     "icon": "📝",
 }
 
 SCRIPTS["rimon_home_office_summary"] = {
     "id": "rimon_home_office_summary",
-    "name": "סיכום עבודה מהבית רימון",
-    "desc": "סיכום ימי משרד, עבודה מהבית, היעדרות ושגיאות לכל עובד",
+    "name": "סיכום עבודה מהבית והמשרד",
+    "desc": "סיכום ימי עבודה מהבית, ימי עבודה מהמשרד, היעדרויות ושגיאות מתוך דוח הנוכחות",
     "accept": ".xls",
     "icon": "🏠",
 }
 
 SCRIPTS["org_hierarchy_report"] = {
     "id": "org_hierarchy_report",
-    "name": "דוח מבנה ארגוני",
-    "desc": "בניית היררכיה ארגונית ודוח חריגים מקובץ מבנה ארגוני",
+    "name": "תרשים מבנה ארגוני",
+    "desc": "הפקת תרשים מבנה ארגוני ודוחות סיכום לפי מנהלים, מחלקות ומבנה הדיווח בארגון, כולל פלט אקסל ו-PowerPoint",
     "accept": ".csv",
     "icon": "🌳",
 }
