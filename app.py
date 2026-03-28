@@ -3,7 +3,6 @@ from zipfile import BadZipFile, ZIP_DEFLATED, ZipFile
 from collections import defaultdict
 import calendar
 import csv
-from datetime import datetime, timezone
 import html
 import os
 import secrets
@@ -18,6 +17,9 @@ import xlrd
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
+from pptx import Presentation
+from pptx.enum.text import PP_ALIGN
+from pptx.util import Pt
 
 try:
     import psycopg
@@ -1024,201 +1026,56 @@ def build_org_exceptions_slide_lines(exception_rows):
     return [f"{row['category']}: {row['employee_name']} | {row['detail']}".strip(" |") for row in exception_rows]
 
 
-def pptx_escape(text):
-    return html.escape(str(text), quote=False)
+def add_pptx_bullets(text_frame, lines, font_size=18):
+    text_frame.clear()
+    if not lines:
+        lines = [""]
+    for index, line in enumerate(lines):
+        paragraph = text_frame.paragraphs[0] if index == 0 else text_frame.add_paragraph()
+        paragraph.text = str(line.get("text") if isinstance(line, dict) else line)
+        paragraph.level = int(line.get("level", 0)) if isinstance(line, dict) else 0
+        paragraph.alignment = PP_ALIGN.RIGHT
+        if paragraph.runs:
+            run = paragraph.runs[0]
+            run.font.size = Pt(line.get("size", font_size) if isinstance(line, dict) else font_size)
+            run.font.bold = bool(line.get("bold", False)) if isinstance(line, dict) else False
 
 
-def pptx_paragraph(text, level=0, size=1800, bold=False):
-    if text is None:
-        text = ""
-    mar_l = 228600 * max(level, 0)
-    return (
-        f'<a:p><a:pPr marL="{mar_l}"><a:buNone/></a:pPr>'
-        f'<a:r><a:rPr lang="he-IL" sz="{size}"{" b=\"1\"" if bold else ""}/>'
-        f'<a:t>{pptx_escape(text)}</a:t></a:r>'
-        f'<a:endParaRPr lang="he-IL" sz="{size}"/></a:p>'
-    )
-
-
-def pptx_textbox(shape_id, name, x, y, cx, cy, paragraphs):
-    para_xml = "".join(paragraphs) if paragraphs else pptx_paragraph("")
-    return (
-        f'<p:sp><p:nvSpPr><p:cNvPr id="{shape_id}" name="{pptx_escape(name)}"/>'
-        '<p:cNvSpPr txBox="1"/><p:nvPr/></p:nvSpPr>'
-        f'<p:spPr><a:xfrm><a:off x="{x}" y="{y}"/><a:ext cx="{cx}" cy="{cy}"/></a:xfrm>'
-        '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:noFill/></p:spPr>'
-        '<p:txBody><a:bodyPr rtlCol="1" anchor="t"/><a:lstStyle/>'
-        f'{para_xml}</p:txBody></p:sp>'
-    )
-
-
-def build_org_pptx_slide_xml(title, body_paragraphs):
-    title_box = pptx_textbox(2, "Title 1", 457200, 228600, 8229600, 685800, [pptx_paragraph(title, size=2400, bold=True)])
-    body_box = pptx_textbox(3, "Content 2", 457200, 1219200, 8229600, 5029200, body_paragraphs)
-    return (
-        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-        '<p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" '
-        'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" '
-        'xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">'
-        '<p:cSld><p:spTree>'
-        '<p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr>'
-        '<p:grpSpPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/><a:chOff x="0" y="0"/><a:chExt cx="0" cy="0"/></a:xfrm></p:grpSpPr>'
-        f'{title_box}{body_box}</p:spTree></p:cSld>'
-        '<p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr></p:sld>'
-    )
+def add_pptx_slide(prs, title, body_lines):
+    slide = prs.slides.add_slide(prs.slide_layouts[1])
+    slide.shapes.title.text = title
+    title_frame = slide.shapes.title.text_frame
+    for paragraph in title_frame.paragraphs:
+        paragraph.alignment = PP_ALIGN.RIGHT
+        if paragraph.runs:
+            paragraph.runs[0].font.size = Pt(26)
+            paragraph.runs[0].font.bold = True
+    body = slide.placeholders[1]
+    add_pptx_bullets(body.text_frame, body_lines, font_size=18)
+    return slide
 
 
 def write_org_hierarchy_pptx(output_path, summary_rows, tree_rows, exception_rows, stats):
+    prs = Presentation()
     root_names = [row["employee_name"] for row in summary_rows if row["depth"] == 0]
-    slide_defs = [("סיכום מבנה ארגוני", [pptx_paragraph(line, size=2000) for line in build_org_summary_slide_lines(summary_rows, stats)])]
-    for root_name in root_names:
-        paragraphs = [pptx_paragraph("הזחה מייצגת עומק דיווח בלבד", size=1600, bold=True)]
-        paragraphs.extend(pptx_paragraph(line, level=depth, size=1800) for depth, line in build_org_root_slide_lines(tree_rows, root_name))
-        slide_defs.append((root_name, paragraphs))
-    slide_defs.append(("חריגים", [pptx_paragraph(line, size=1800) for line in build_org_exceptions_slide_lines(exception_rows)]))
-
-    core_created = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    slide_entries = []
-    slide_rel_entries = []
-    slide_id_entries = []
-    for index, (title, paragraphs) in enumerate(slide_defs, start=1):
-        slide_entries.append((f"ppt/slides/slide{index}.xml", build_org_pptx_slide_xml(title, paragraphs)))
-        slide_rel_entries.append(
-            (
-                f"ppt/slides/_rels/slide{index}.xml.rels",
-                '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-                '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
-                '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout" Target="../slideLayouts/slideLayout1.xml"/>'
-                '</Relationships>',
-            )
-        )
-        slide_id_entries.append(
-            f'<p:sldId id="{255 + index}" r:id="rId{index + 1}"/>'
-        )
-
-    presentation_rels = ['<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideMaster" Target="slideMasters/slideMaster1.xml"/>']
-    for index in range(1, len(slide_defs) + 1):
-        presentation_rels.append(
-            f'<Relationship Id="rId{index + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide{index}.xml"/>'
-        )
-
-    content_slide_overrides = "".join(
-        f'<Override PartName="/ppt/slides/slide{index}.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slide+xml"/>'
-        for index in range(1, len(slide_defs) + 1)
+    add_pptx_slide(
+        prs,
+        "סיכום מבנה ארגוני",
+        [{"text": line, "size": 20} for line in build_org_summary_slide_lines(summary_rows, stats)],
     )
-
-    with ZipFile(output_path, "w", compression=ZIP_DEFLATED) as zf:
-        zf.writestr(
-            "[Content_Types].xml",
-            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-            '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
-            '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
-            '<Default Extension="xml" ContentType="application/xml"/>'
-            '<Override PartName="/ppt/presentation.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml"/>'
-            '<Override PartName="/ppt/slideMasters/slideMaster1.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slideMaster+xml"/>'
-            '<Override PartName="/ppt/slideLayouts/slideLayout1.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slideLayout+xml"/>'
-            '<Override PartName="/ppt/theme/theme1.xml" ContentType="application/vnd.openxmlformats-officedocument.theme+xml"/>'
-            '<Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/>'
-            '<Override PartName="/docProps/app.xml" ContentType="application/vnd.openxmlformats-officedocument.extended-properties+xml"/>'
-            f'{content_slide_overrides}</Types>',
+    for root_name in root_names:
+        body_lines = [{"text": "הזחה מייצגת עומק דיווח בלבד", "size": 16, "bold": True}]
+        body_lines.extend(
+            {"text": line, "level": depth, "size": 18}
+            for depth, line in build_org_root_slide_lines(tree_rows, root_name)
         )
-        zf.writestr(
-            "_rels/.rels",
-            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
-            '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="ppt/presentation.xml"/>'
-            '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/>'
-            '<Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties" Target="docProps/app.xml"/>'
-            '</Relationships>',
-        )
-        zf.writestr(
-            "docProps/core.xml",
-            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-            '<cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" '
-            'xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/" '
-            'xmlns:dcmitype="http://purl.org/dc/dcmitype/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">'
-            '<dc:title>Organizational Hierarchy Report</dc:title><dc:creator>Scriptly</dc:creator>'
-            '<cp:lastModifiedBy>Scriptly</cp:lastModifiedBy>'
-            f'<dcterms:created xsi:type="dcterms:W3CDTF">{core_created}</dcterms:created>'
-            f'<dcterms:modified xsi:type="dcterms:W3CDTF">{core_created}</dcterms:modified>'
-            '</cp:coreProperties>',
-        )
-        zf.writestr(
-            "docProps/app.xml",
-            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-            '<Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties" '
-            'xmlns:vt="http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes">'
-            '<Application>Scriptly</Application><Slides>%d</Slides><PresentationFormat>On-screen Show (4:3)</PresentationFormat>'
-            '</Properties>' % len(slide_defs),
-        )
-        zf.writestr(
-            "ppt/presentation.xml",
-            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-            '<p:presentation xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" '
-            'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" '
-            'xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">'
-            '<p:sldMasterIdLst><p:sldMasterId id="2147483648" r:id="rId1"/></p:sldMasterIdLst>'
-            f'<p:sldIdLst>{"".join(slide_id_entries)}</p:sldIdLst>'
-            '<p:sldSz cx="9144000" cy="6858000" type="screen4x3"/>'
-            '<p:notesSz cx="6858000" cy="9144000"/></p:presentation>',
-        )
-        zf.writestr(
-            "ppt/_rels/presentation.xml.rels",
-            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
-            + "".join(presentation_rels)
-            + "</Relationships>",
-        )
-        zf.writestr(
-            "ppt/slideMasters/slideMaster1.xml",
-            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-            '<p:sldMaster xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" '
-            'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" '
-            'xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">'
-            '<p:cSld name="Office Theme"><p:bg><p:bgRef idx="1001"><a:schemeClr val="bg1"/></p:bgRef></p:bg>'
-            '<p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr>'
-            '<p:grpSpPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/><a:chOff x="0" y="0"/><a:chExt cx="0" cy="0"/></a:xfrm></p:grpSpPr>'
-            '</p:spTree></p:cSld><p:clrMap accent1="accent1" accent2="accent2" accent3="accent3" accent4="accent4" accent5="accent5" accent6="accent6" bg1="lt1" bg2="lt2" folHlink="folHlink" hlink="hlink" tx1="dk1" tx2="dk2"/>'
-            '<p:sldLayoutIdLst><p:sldLayoutId id="1" r:id="rId1"/></p:sldLayoutIdLst>'
-            '<p:txStyles><p:titleStyle/><p:bodyStyle/><p:otherStyle/></p:txStyles></p:sldMaster>',
-        )
-        zf.writestr(
-            "ppt/slideMasters/_rels/slideMaster1.xml.rels",
-            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-            '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
-            '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout" Target="../slideLayouts/slideLayout1.xml"/>'
-            '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme" Target="../theme/theme1.xml"/>'
-            '</Relationships>',
-        )
-        zf.writestr(
-            "ppt/slideLayouts/slideLayout1.xml",
-            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-            '<p:sldLayout xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" '
-            'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" '
-            'xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" type="blank" preserve="1">'
-            '<p:cSld name="Blank"><p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr>'
-            '<p:grpSpPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/><a:chOff x="0" y="0"/><a:chExt cx="0" cy="0"/></a:xfrm></p:grpSpPr>'
-            '</p:spTree></p:cSld><p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr></p:sldLayout>',
-        )
-        zf.writestr(
-            "ppt/theme/theme1.xml",
-            '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-            '<a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" name="Office Theme">'
-            '<a:themeElements><a:clrScheme name="Office"><a:dk1><a:srgbClr val="000000"/></a:dk1><a:lt1><a:srgbClr val="FFFFFF"/></a:lt1>'
-            '<a:dk2><a:srgbClr val="1F497D"/></a:dk2><a:lt2><a:srgbClr val="EEECE1"/></a:lt2>'
-            '<a:accent1><a:srgbClr val="4F81BD"/></a:accent1><a:accent2><a:srgbClr val="C0504D"/></a:accent2>'
-            '<a:accent3><a:srgbClr val="9BBB59"/></a:accent3><a:accent4><a:srgbClr val="8064A2"/></a:accent4>'
-            '<a:accent5><a:srgbClr val="4BACC6"/></a:accent5><a:accent6><a:srgbClr val="F79646"/></a:accent6>'
-            '<a:hlink><a:srgbClr val="0000FF"/></a:hlink><a:folHlink><a:srgbClr val="800080"/></a:folHlink></a:clrScheme>'
-            '<a:fontScheme name="Office"><a:majorFont><a:latin typeface="Arial"/><a:ea typeface="Arial"/><a:cs typeface="Arial"/></a:majorFont>'
-            '<a:minorFont><a:latin typeface="Arial"/><a:ea typeface="Arial"/><a:cs typeface="Arial"/></a:minorFont></a:fontScheme>'
-            '<a:fmtScheme name="Office"><a:fillStyleLst><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:fillStyleLst>'
-            '<a:lnStyleLst><a:ln w="9525" cap="flat" cmpd="sng" algn="ctr"><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:ln></a:lnStyleLst>'
-            '<a:effectStyleLst><a:effectStyle/></a:effectStyleLst><a:bgFillStyleLst><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:bgFillStyleLst></a:fmtScheme>'
-            '</a:themeElements></a:theme>',
-        )
-        for part_name, content in slide_entries + slide_rel_entries:
-            zf.writestr(part_name, content)
+        add_pptx_slide(prs, root_name, body_lines)
+    add_pptx_slide(
+        prs,
+        "חריגים",
+        [{"text": line, "size": 18} for line in build_org_exceptions_slide_lines(exception_rows)],
+    )
+    prs.save(output_path)
 
 
 def run_org_hierarchy_report(input_path, output_path, extension, options=None):
