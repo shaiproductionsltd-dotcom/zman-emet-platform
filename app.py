@@ -2756,7 +2756,12 @@ SCRIPTS["rimon_home_office_summary"] = {
 SCRIPTS["org_hierarchy_report"] = {
     "id": "org_hierarchy_report",
     "name": "תרשים מבנה ארגוני",
-    "desc": "יש להעלות קובץ מבנה ארגוני בפורמט CSV. כדי שהמערכת תפיק את הדוח, הקובץ חייב לכלול לפחות: שם עובד, מנהל ישיר, מחלקה, ואחד מאמצעי הזיהוי הבאים: מספר עובד, תעודת זהות או דרכון. שדות נוספים כמו סימון מנהל, אימייל או תפקיד יכולים לשפר את הפלט.",
+    "desc": "הפקת תרשים מבנה ארגוני ודוחות סיכום לפי מנהלים, מחלקות ומבנה הדיווח בארגון, כולל פלט אקסל ו-PowerPoint",
+    "help_label": "דרישות לקובץ",
+    "help_title": "מה צריך לכלול בקובץ?",
+    "help_intro": "יש להעלות קובץ מבנה ארגוני בפורמט CSV. כדי שהמערכת תפיק את הדוח, הקובץ חייב לכלול לפחות:",
+    "help_items": ["שם עובד", "מנהל ישיר", "מחלקה", "ואחד מאמצעי הזיהוי הבאים: מספר עובד, תעודת זהות או דרכון"],
+    "help_note": "שדות נוספים כמו סימון מנהל, אימייל או תפקיד יכולים לשפר את הפלט.",
     "accept": ".csv",
     "icon": "🌳",
 }
@@ -3454,19 +3459,53 @@ def run_script(script_id):
             + '</form>'
         )
 
+    help_trigger_html = ""
+    help_modal_html = ""
+    if lang == "he" and scr.get("help_title"):
+        help_items_html = "".join(
+            '<li style="margin-bottom:6px">' + esc(item) + '</li>'
+            for item in scr.get("help_items", [])
+        )
+        help_trigger_html = (
+            '<button type="button" onclick="openHelpModal()" style="display:inline-flex;align-items:center;gap:6px;border:1px solid #bfdbfe;background:#eff6ff;color:#1d4ed8;border-radius:999px;padding:6px 10px;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit">'
+            '<span style="display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:999px;background:#dbeafe">?</span>'
+            + esc(scr.get("help_label", "מידע נוסף"))
+            + '</button>'
+        )
+        help_modal_html = (
+            '<div class="modal-bg" id="helpModal" onclick="closeHelpModal(event)">'
+            '<div class="modal-box" style="width:100%;max-width:560px;padding:1.5rem 1.5rem 1.25rem;border-radius:18px">'
+            '<div style="font-size:18px;font-weight:800;color:#0f172a;margin-bottom:.75rem">' + esc(scr["help_title"]) + '</div>'
+            '<div style="font-size:14px;line-height:1.8;color:#334155">'
+            + esc(scr.get("help_intro", ""))
+            + '<ul style="margin:.6rem 0 .75rem;padding-inline-start:1.2rem">'
+            + help_items_html
+            + '</ul>'
+            + esc(scr.get("help_note", ""))
+            + '</div>'
+            + '<div style="margin-top:1rem"><button type="button" class="btn btn-blue" style="width:100%" onclick="closeHelpModal()">סגור</button></div>'
+            + '</div></div>'
+        )
+
     body = (
         '<a href="/dashboard" style="color:#2563eb;font-size:13px;text-decoration:none;display:block;margin-bottom:1rem">' + text["back_arrow"] + ' ' + scr["back_label"] + '</a>'
         + '<div class="card">'
         + '<div style="font-size:40px;margin-bottom:.5rem">' + scr["icon"] + '</div>'
         + '<div style="font-size:20px;font-weight:700;color:#1e3a8a;margin-bottom:4px">' + scr["name"] + '</div>'
-        + '<div style="font-size:13px;color:#64748b;margin-bottom:1.75rem">' + scr["desc"] + '</div>'
+        + '<div style="display:flex;align-items:center;justify-content:center;gap:10px;flex-wrap:wrap;margin-bottom:1.75rem">'
+        + '<div style="font-size:13px;color:#64748b">' + scr["desc"] + '</div>'
+        + help_trigger_html
+        + '</div>'
         + content
         + '</div>'
+        + help_modal_html
         + '<script>'
         + 'var fileInput=document.getElementById("fi");'
         + 'var label=document.getElementById("lbl");'
         + 'var button=document.getElementById("gb");'
         + 'var form=document.getElementById("uploadForm");'
+        + 'function openHelpModal(){var modal=document.getElementById("helpModal");if(modal){modal.style.display="flex";}}'
+        + 'function closeHelpModal(event){if(event && event.target && event.target.id!=="helpModal"){return;}var modal=document.getElementById("helpModal");if(modal){modal.style.display="none";}}'
         + 'if(fileInput && label){fileInput.addEventListener("change", function(){if(this.files && this.files.length){label.textContent=this.files[0].name;}});}'
         + 'if(form){form.addEventListener("submit", function(event){if(!fileInput || !fileInput.files || !fileInput.files.length){event.preventDefault();return false;}button.disabled=true;button.textContent="' + scr["processing_title"] + '";var box=document.getElementById("processingBox");if(box){box.classList.add("show");}return true;});}'
         + '</script>'
