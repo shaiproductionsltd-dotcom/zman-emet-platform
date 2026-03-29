@@ -2826,7 +2826,7 @@ SCRIPT_REGISTRY["rimon_home_office_summary"] = {
     "processing_error": "לא ניתן היה להפיק את דוח הסיכום מהקובץ הזה",
     "processing_title": "דוח הסיכום בהכנה",
     "processing_note": "המערכת מקבצת תאריכים וסופרת ימי משרד, עבודה מהבית, היעדרות ושגיאות. הפעולה עשויה להימשך כמה דקות.",
-    "file_picker_label": "בחירת דוח רימון חודשי",
+    "file_picker_label": "בחירת דוח מפורט חודשי",
 }
 
 SCRIPT_REGISTRY["org_hierarchy_report"] = {
