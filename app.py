@@ -3266,7 +3266,12 @@ def dashboard():
         '<div style="font-size:12px;color:#64748b;margin-bottom:4px">' + ("מסלול חיוב" if lang == "he" else "Billing mode") + '</div>'
         '<div style="font-size:15px;font-weight:700;color:#0f172a">' + esc(billing_mode_label(user["billing_mode"], lang)) + '</div>'
         '</div></div>'
-        '<div class="card" style="margin-bottom:1rem;background:linear-gradient(135deg,#eff6ff 0%,#f8fafc 100%);border:1px solid #bfdbfe">'
+        '<div class="card" style="margin:0"><div style="font-size:18px;font-weight:800;color:#0f172a;margin-bottom:14px">'
+        + ("האזור האישי שלך" if lang == "he" else "Your available tools")
+        + '</div><div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:1rem">'
+        + cards
+        + '</div></div>'
+        '<div class="card" style="margin-top:1rem;background:linear-gradient(135deg,#eff6ff 0%,#f8fafc 100%);border:1px solid #bfdbfe">'
         '<div style="font-size:18px;font-weight:800;color:#1e3a8a;margin-bottom:8px">' + ("אבטחת מידע ופרטיות" if lang == "he" else "Security and privacy") + '</div>'
         '<div style="font-size:14px;line-height:1.8;color:#334155">'
         + (
@@ -3274,11 +3279,6 @@ def dashboard():
             if lang == "he"
             else "Uploaded reports are used only for processing and are not kept as part of a permanent data store. Working files and generated outputs are kept temporarily for processing and download, and are cleaned up automatically afterward."
         )
-        + '</div></div>'
-        '<div class="card" style="margin:0"><div style="font-size:18px;font-weight:800;color:#0f172a;margin-bottom:14px">'
-        + ("הכלים הזמינים לך" if lang == "he" else "Your available tools")
-        + '</div><div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:1rem">'
-        + cards
         + '</div></div>'
         '<details style="margin-top:1rem;background:#ffffff;border:1px solid #e2e8f0;border-radius:16px;box-shadow:0 2px 16px rgba(0,0,0,.04);overflow:hidden">'
         '<summary style="list-style:none;cursor:pointer;padding:16px 18px;font-size:15px;font-weight:800;color:#0f172a;display:flex;align-items:center;justify-content:space-between;background:linear-gradient(180deg,#ffffff 0%,#f8fafc 100%);direction:rtl;text-align:right">'
