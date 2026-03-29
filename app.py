@@ -2550,7 +2550,7 @@ FLOW_TEXTS = {
         "dashboard_page_title": "הכלים שלך",
         "dashboard_empty": "עדיין אין כלים זמינים לחשבון שלך",
         "dashboard_greeting": "ברוך/ה הבא/ה, ",
-        "dashboard_intro": "הכלים הזמינים שלך:",
+        "dashboard_intro": "",
         "run_access_denied": "אין לך גישה לכלי הזה",
         "run_extra_file_type_error": "סוג הקובץ הנוסף אינו נתמך",
         "run_missing_extra_file_error": "חסר קובץ נוסף נדרש",
@@ -3255,7 +3255,9 @@ def dashboard():
     body = (
         '<h2 style="font-size:24px;font-weight:800;color:#1e3a8a;margin-bottom:.4rem">' + text["dashboard_greeting"]
         + esc(session["name"])
-        + ' &#128075;</h2><p style="font-size:14px;color:#64748b;margin-bottom:1.5rem">' + text["dashboard_intro"] + "</p>"
+        + ' &#128075;</h2>'
+        + ('<p style="font-size:14px;color:#64748b;margin-bottom:1.5rem">' + text["dashboard_intro"] + "</p>" if text["dashboard_intro"] else "")
+        +
         '<div style="display:grid;grid-template-columns:1.15fr .85fr;gap:1rem;margin-bottom:1rem">'
         '<div class="card" style="margin:0"><div style="font-size:18px;font-weight:800;color:#0f172a;margin-bottom:14px">'
         + ("פרטי חשבון ולקוח" if lang == "he" else "Account and company details")
@@ -3270,7 +3272,7 @@ def dashboard():
         '<div style="font-size:15px;font-weight:700;color:#0f172a">' + esc(billing_mode_label(user["billing_mode"], lang)) + '</div>'
         '</div></div>'
         '<div class="card" style="margin:0"><div style="font-size:18px;font-weight:800;color:#0f172a;margin-bottom:14px">'
-        + ("האזור האישי שלך" if lang == "he" else "Your available tools")
+        + ("הכלים הזמינים לך" if lang == "he" else "Your available tools")
         + '</div><div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:1rem">'
         + cards
         + '</div></div>'
