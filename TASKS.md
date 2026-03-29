@@ -34,7 +34,7 @@
 - [x] Deliver Matan manual corrections report
 - [x] Deliver Rimon home office summary report
 - [x] Deliver organizational hierarchy report with Excel, PowerPoint, and ZIP output modes
-- [x] Test these completed reports successfully on production at `https://scriptly-platform.onrender.com/dashboard`
+- [x] Test these completed reports successfully on production at `https://script-ly.com/dashboard`
 
 ## Next
 

@@ -87,7 +87,7 @@ Each agent owns a narrow part of the request supply chain so work can move faste
   - Organizational hierarchy report
 - Production status:
   - These features were tested successfully on production.
-  - Production dashboard URL: `https://scriptly-platform.onrender.com/dashboard`
+  - Production dashboard URL: `https://script-ly.com/dashboard`
 - Organizational hierarchy report V1 status:
   - Excel output exists.
   - PowerPoint output exists.
