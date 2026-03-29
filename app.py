@@ -3196,6 +3196,9 @@ def dashboard():
     with get_db() as db:
         user = db.execute("SELECT * FROM users WHERE id=?", (session["user_id"],)).fetchone()
         perms = db.execute("SELECT script_id FROM permissions WHERE user_id=?", (session["user_id"],)).fetchall()
+    if user is None:
+        session.clear()
+        return redirect("/")
 
     allowed = [get_localized_script(SCRIPTS[p["script_id"]], lang) for p in perms if p["script_id"] in SCRIPTS]
     status = get_account_status(user)
