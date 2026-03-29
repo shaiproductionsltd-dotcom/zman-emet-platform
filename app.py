@@ -2624,8 +2624,8 @@ def get_flow_lang():
     requested = request.args.get("lang")
     if requested in FLOW_LANGUAGES:
         session["flow_lang"] = requested
-    saved = session.get("flow_lang", "en")
-    return saved if saved in FLOW_LANGUAGES else "en"
+    saved = session.get("flow_lang", "he")
+    return saved if saved in FLOW_LANGUAGES else "he"
 
 
 def get_flow_dir(lang):
