@@ -2152,6 +2152,8 @@ def default_rimon_mapping():
         "entry_time_source": "col:8",
         "exit_time_source": "col:12",
         "total_hours_source": "col:20",
+        "standard_hours_source": "col:25",
+        "missing_hours_source": "col:30",
         "event_source": "col:17",
         "error_text_source": "col:51",
         "department_source": "meta:department",
@@ -2216,7 +2218,9 @@ def parse_rimon_home_office_report(input_path, extension, mapping):
             entry_time = stringify_excel_value(extract_rimon_mapping_value(sheet, workbook_kind, mapping.get("entry_time_source"), row_index))
             exit_time = stringify_excel_value(extract_rimon_mapping_value(sheet, workbook_kind, mapping.get("exit_time_source"), row_index))
             total_hours = stringify_excel_value(extract_rimon_mapping_value(sheet, workbook_kind, mapping.get("total_hours_source"), row_index))
-            if not any([row_date, event_value, error_text, entry_time, exit_time, total_hours]):
+            standard_hours = stringify_excel_value(extract_rimon_mapping_value(sheet, workbook_kind, mapping.get("standard_hours_source"), row_index))
+            missing_hours = stringify_excel_value(extract_rimon_mapping_value(sheet, workbook_kind, mapping.get("missing_hours_source"), row_index))
+            if not any([row_date, event_value, error_text, entry_time, exit_time, total_hours, standard_hours, missing_hours]):
                 continue
 
             day_key = current_date.isoformat()
@@ -2234,6 +2238,8 @@ def parse_rimon_home_office_report(input_path, extension, mapping):
                     "entry_time": "",
                     "exit_time": "",
                     "total_hours": "",
+                    "standard_hours": "",
+                    "missing_hours": "",
                     "events": [],
                     "errors": [],
                 }
@@ -2249,6 +2255,10 @@ def parse_rimon_home_office_report(input_path, extension, mapping):
                 grouped["exit_time"] = exit_time
             if total_hours and not grouped["total_hours"]:
                 grouped["total_hours"] = total_hours
+            if standard_hours and not grouped["standard_hours"]:
+                grouped["standard_hours"] = standard_hours
+            if missing_hours and not grouped["missing_hours"]:
+                grouped["missing_hours"] = missing_hours
             if event_value and event_value not in grouped["events"]:
                 grouped["events"].append(event_value)
             if error_text and error_text not in grouped["errors"]:
@@ -2311,8 +2321,8 @@ def parse_rimon_home_office_report(input_path, extension, mapping):
                     "error": grouped["error"],
                     "event": " | ".join(grouped["events"]),
                     "total_hours": grouped["total_hours"],
-                    "standard_hours": "",
-                    "missing_hours": "",
+                    "standard_hours": grouped["standard_hours"],
+                    "missing_hours": grouped["missing_hours"],
                     "error_text": " | ".join(grouped["errors"]),
                 }
             )
@@ -2465,7 +2475,7 @@ def write_rimon_home_office_daily(ws, daily_rows):
         "שגיאה",
         "אירוע",
         "שעות תקן",
-        "שעות חסר",
+        "שעות חוסר",
         "פירוט שגיאה",
     ]
     for col, header in enumerate(headers, start=1):
@@ -3338,6 +3348,8 @@ RIMON_MAPPING_FIELDS = [
     {"name": "entry_time_source", "label": "שעת כניסה", "required": False},
     {"name": "exit_time_source", "label": "שעת יציאה", "required": False},
     {"name": "total_hours_source", "label": "סה\"כ שעות", "required": False},
+    {"name": "standard_hours_source", "label": "שעות תקן", "required": False},
+    {"name": "missing_hours_source", "label": "שעות חוסר", "required": False},
     {"name": "event_source", "label": "אירוע", "required": True},
     {"name": "error_text_source", "label": "שדה שגיאה", "required": False},
     {"name": "department_source", "label": "מחלקה", "required": False},
@@ -3353,6 +3365,8 @@ RIMON_SUGGESTION_KEYWORDS = {
     "entry_time_source": ["כניסה", "entry", "checkin"],
     "exit_time_source": ["יציאה", "exit", "checkout"],
     "total_hours_source": ["סהכ", "סה\"כ", "total", "hours"],
+    "standard_hours_source": ["תקן", "ש.תקן", "standard"],
+    "missing_hours_source": ["חוסר", "missing"],
     "event_source": ["אירוע", "event", "סטטוס"],
     "error_text_source": ["שגיאה", "שגיאות", "error", "errors"],
     "department_source": ["מחלקה", "department"],
@@ -3519,6 +3533,34 @@ def dedupe_rimon_field_options(options):
     return deduped
 
 
+def filter_rimon_table_options_for_display(options):
+    exact_sample_signatures = set()
+    for option in options:
+        if option.get("source_kind") != "table_exact":
+            continue
+        header_token = normalize_token(option.get("exact_header", "") or option.get("header", ""))
+        sample_token = normalize_token(option.get("sample", ""))
+        if header_token and sample_token:
+            exact_sample_signatures.add((header_token, sample_token))
+
+    filtered = []
+    seen_nearby_signatures = set()
+    for option in options:
+        if option.get("source_kind") != "table_nearby":
+            filtered.append(option)
+            continue
+        header_token = normalize_token(option.get("exact_header", "") or option.get("header", ""))
+        sample_token = normalize_token(option.get("sample", ""))
+        if not sample_token:
+            continue
+        signature = (header_token, sample_token)
+        if signature in exact_sample_signatures or signature in seen_nearby_signatures:
+            continue
+        seen_nearby_signatures.add(signature)
+        filtered.append(option)
+    return filtered
+
+
 def detect_rimon_header_row(sheet, workbook_kind):
     rows, cols = get_excel_dims(sheet, workbook_kind)
     best_row = 11 if rows > 11 else 0
@@ -3628,7 +3670,7 @@ def build_rimon_mapping_options(input_path, extension):
         resolved_header = header_text or f"עמודה {column_letter}"
         label = f"עמודה {column_letter} - {resolved_header}"
         if from_nearby:
-            label += " (הכותרת זוהתה מעמודה סמוכה)"
+            label += " (הכותרת נלקחה מהעמודה ליד)"
         if sample:
             label += f" (לדוגמה: {sample})"
         option_value = f"col:{col_index}"
@@ -3683,13 +3725,14 @@ def build_rimon_mapping_options(input_path, extension):
         labels, fallback_cells = candidate_meta_labels[field_name]
         meta_options[field_name].extend(find_rimon_meta_candidates(first_sheet, workbook_kind, labels))
 
+    visible_table_options = filter_rimon_table_options_for_display(table_options)
     options_by_field = {}
     suggestions = {}
     for field in RIMON_MAPPING_FIELDS:
         field_name = field["name"]
         options = [{"value": "", "label": "לא נבחר", "source_kind": "empty"}]
         options.extend(meta_options.get(field_name, []))
-        options.extend(table_options)
+        options.extend(visible_table_options)
         options_by_field[field_name] = options
 
         suggested = ""
@@ -3697,7 +3740,7 @@ def build_rimon_mapping_options(input_path, extension):
             suggested = meta_options[field_name][0]["value"]
         if not suggested:
             keywords = RIMON_SUGGESTION_KEYWORDS.get(field_name, [])
-            ranked_options = sorted(table_options, key=lambda option: (option.get("from_nearby", False), option["value"]))
+            ranked_options = sorted(visible_table_options, key=lambda option: (option.get("from_nearby", False), option["value"]))
             if field_name == "date_source":
                 for option in ranked_options:
                     header_token = normalize_token(option["header"])
