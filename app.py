@@ -268,6 +268,13 @@ def parse_float_or_none(value):
     return float(text.replace(",", "."))
 
 
+def parse_int_or_none(value):
+    parsed = parse_float_or_none(value)
+    if parsed is None:
+        return None
+    return int(parsed)
+
+
 def detect_matan_missing_header_row(sheet):
     best_row = 4 if sheet.nrows > 4 else 0
     best_score = -1
@@ -2118,6 +2125,226 @@ def apply_matan_manual_corrections_filters(rows, options):
     return filtered
 
 
+def subtract_months(base_date, months):
+    if months <= 0:
+        return base_date
+    year = base_date.year
+    month = base_date.month - months
+    while month <= 0:
+        month += 12
+        year -= 1
+    day = min(base_date.day, calendar.monthrange(year, month)[1])
+    return date(year, month, day)
+
+
+def looks_like_repeated_inactive_header(row_map):
+    return normalize_token(row_map.get("employee_name_source", "")) == "שםעובד" or normalize_token(row_map.get("date_source", "")) == "תאריך"
+
+
+def clean_daily_activity_value(value):
+    text = stringify_excel_value(value)
+    token = normalize_token(text)
+    if token in {"כניסה", "יציאה", "אירוע", "סהכ", "שעות", "שםעובד", "תאריך"}:
+        return ""
+    return text
+
+
+def parse_inactive_workers_report(input_path, extension, mapping, options):
+    workbook_kind, workbook = open_excel_workbook(input_path, extension)
+    sheet = iter_excel_sheets(workbook_kind, workbook)[0]
+    rows, _cols = get_excel_dims(sheet, workbook_kind)
+    header_row = detect_inactive_workers_header_row(sheet, workbook_kind)
+
+    employees = {}
+    all_dates = set()
+    for row_index in range(header_row + 1, rows):
+        date_value = parse_excel_date_generic(workbook_kind, workbook, extract_inactive_workers_mapping_value(sheet, workbook_kind, mapping.get("date_source"), row_index))
+        row_map = {
+            "employee_name_source": stringify_excel_value(extract_inactive_workers_mapping_value(sheet, workbook_kind, mapping.get("employee_name_source"), row_index)),
+            "employee_number_source": stringify_excel_value(extract_inactive_workers_mapping_value(sheet, workbook_kind, mapping.get("employee_number_source"), row_index)),
+            "badge_number_source": stringify_excel_value(extract_inactive_workers_mapping_value(sheet, workbook_kind, mapping.get("badge_number_source"), row_index)),
+            "id_number_source": stringify_excel_value(extract_inactive_workers_mapping_value(sheet, workbook_kind, mapping.get("id_number_source"), row_index)),
+            "passport_number_source": stringify_excel_value(extract_inactive_workers_mapping_value(sheet, workbook_kind, mapping.get("passport_number_source"), row_index)),
+        }
+        if looks_like_repeated_inactive_header({"employee_name_source": row_map["employee_name_source"], "date_source": stringify_excel_value(extract_inactive_workers_mapping_value(sheet, workbook_kind, mapping.get("date_source"), row_index))}):
+            continue
+
+        employee_name = row_map["employee_name_source"]
+        employee_number = row_map["employee_number_source"]
+        badge_number = row_map["badge_number_source"]
+        id_number = row_map["id_number_source"]
+        passport_number = row_map["passport_number_source"]
+        if not any([employee_name, employee_number, badge_number, id_number, passport_number]):
+            continue
+        if not date_value:
+            continue
+
+        all_dates.add(date_value)
+        entry_time = clean_daily_activity_value(extract_inactive_workers_mapping_value(sheet, workbook_kind, mapping.get("entry_time_source"), row_index))
+        exit_time = clean_daily_activity_value(extract_inactive_workers_mapping_value(sheet, workbook_kind, mapping.get("exit_time_source"), row_index))
+        total_hours_text = clean_daily_activity_value(extract_inactive_workers_mapping_value(sheet, workbook_kind, mapping.get("total_hours_source"), row_index))
+        event_text = clean_daily_activity_value(extract_inactive_workers_mapping_value(sheet, workbook_kind, mapping.get("event_source"), row_index))
+        department = stringify_excel_value(extract_inactive_workers_mapping_value(sheet, workbook_kind, mapping.get("department_source"), row_index))
+        error_text = stringify_excel_value(extract_inactive_workers_mapping_value(sheet, workbook_kind, mapping.get("error_text_source"), row_index))
+
+        has_attendance_pair = bool(entry_time and exit_time)
+        total_hours_value = parse_hours_or_zero(total_hours_text)
+        has_total_hours = bool(total_hours_text and total_hours_value > 0)
+        has_event = bool(event_text)
+        has_activity = has_attendance_pair or has_total_hours or has_event
+
+        employee_key = (
+            employee_number,
+            badge_number,
+            id_number,
+            passport_number,
+            employee_name,
+        )
+        if employee_key not in employees:
+            employees[employee_key] = {
+                "employee_name": employee_name,
+                "employee_number": employee_number,
+                "badge_number": badge_number,
+                "id_number": id_number,
+                "passport_number": passport_number,
+                "department": department,
+                "last_active_date": None,
+                "last_seen_date": date_value,
+                "activity_days": 0,
+                "event_only_days": 0,
+                "error_notes": set(),
+            }
+        employee = employees[employee_key]
+        employee["last_seen_date"] = max(employee["last_seen_date"], date_value)
+        if department and not employee["department"]:
+            employee["department"] = department
+        if error_text:
+            employee["error_notes"].add(error_text)
+        if has_activity:
+            employee["activity_days"] += 1
+            if has_event and not (has_attendance_pair or has_total_hours):
+                employee["event_only_days"] += 1
+            if employee["last_active_date"] is None or date_value > employee["last_active_date"]:
+                employee["last_active_date"] = date_value
+
+    reference_date = max(all_dates) if all_dates else date.today()
+    unit = str(options.get("inactive_period_unit", "days") or "days").strip().lower()
+    threshold_value = parse_int_or_none(options.get("inactive_period_value", "")) or 30
+    threshold_value = max(1, threshold_value)
+    cutoff_date = reference_date - timedelta(days=threshold_value) if unit == "days" else subtract_months(reference_date, threshold_value)
+
+    inactive_rows = []
+    for employee in employees.values():
+        last_active_date = employee["last_active_date"]
+        is_inactive = last_active_date is None or last_active_date < cutoff_date
+        if not is_inactive:
+            continue
+        inactive_rows.append(
+            {
+                "employee_name": employee["employee_name"],
+                "employee_number": employee["employee_number"],
+                "badge_number": employee["badge_number"],
+                "id_number": employee["id_number"],
+                "passport_number": employee["passport_number"],
+                "department": employee["department"],
+                "last_active_date": last_active_date,
+                "last_active_display": last_active_date.strftime("%d/%m/%Y") if last_active_date else "לא קיים מידע",
+                "last_seen_date": employee["last_seen_date"],
+                "activity_days": employee["activity_days"],
+                "event_only_days": employee["event_only_days"],
+                "status_reason": "לא זוהתה פעילות בכלל" if last_active_date is None else "לא זוהתה פעילות בטווח שנבדק",
+                "error_text": " | ".join(sorted(employee["error_notes"])),
+            }
+        )
+
+    inactive_rows.sort(key=lambda row: (row["last_active_date"] is not None, row["last_active_date"] or date.min, row["employee_name"]))
+    return inactive_rows, {
+        "reference_date": reference_date,
+        "cutoff_date": cutoff_date,
+        "threshold_unit": unit,
+        "threshold_value": threshold_value,
+        "employee_count": len(employees),
+        "inactive_count": len(inactive_rows),
+        "span_days": ((reference_date - min(all_dates)).days + 1) if all_dates else 0,
+    }
+
+
+def write_inactive_workers_summary(ws, inactive_rows, meta, mapping):
+    ws.title = safe_sheet_title("עובדים לא פעילים", "עובדים לא פעילים")
+    ws.sheet_view.rightToLeft = True
+    ws.sheet_view.showGridLines = False
+
+    ws["A1"] = "דוח עובדים לא פעילים"
+    ws["A1"].font = Font(bold=True, size=18, color="0F172A")
+    ws["A1"].fill = PatternFill(fill_type="solid", fgColor="BFDBFE")
+    ws["A2"] = "איתור עובדים ללא פעילות בטווח שנבדק לפי דוח יומי"
+    ws["A2"].font = Font(italic=True, size=11, color="475569")
+
+    unit_label = "ימים אחרונים" if meta.get("threshold_unit") == "days" else "חודשים אחרונים"
+    metrics = [
+        ("עובדים שנבדקו", meta.get("employee_count", 0)),
+        ("עובדים לא פעילים", meta.get("inactive_count", 0)),
+        ("תאריך ייחוס אחרון בקובץ", meta.get("reference_date").strftime("%d/%m/%Y") if meta.get("reference_date") else "—"),
+        ("טווח בדיקה", f"{meta.get('threshold_value', 0)} {unit_label}"),
+        ("תאריך חיתוך", meta.get("cutoff_date").strftime("%d/%m/%Y") if meta.get("cutoff_date") else "—"),
+        ("מספר ימים שנכללו בקובץ", meta.get("span_days", 0)),
+    ]
+    for idx, (label, value) in enumerate(metrics, start=4):
+        ws.cell(row=idx, column=1, value=label).font = Font(bold=True)
+        ws.cell(row=idx, column=2, value=value)
+
+    header_row = 12
+    headers = ["שם עובד"]
+    if mapping.get("employee_number_source"):
+        headers.append("מספר עובד")
+    if mapping.get("badge_number_source"):
+        headers.append("מספר תג")
+    if mapping.get("id_number_source"):
+        headers.append("תעודת זהות")
+    if mapping.get("passport_number_source"):
+        headers.append("דרכון")
+    if mapping.get("department_source"):
+        headers.append("מחלקה")
+    headers.extend(["תאריך אחרון שזוהתה פעילות", "סיבת סימון", "ימי פעילות שזוהו"])
+    if mapping.get("event_source"):
+        headers.append("ימי אירוע ללא נוכחות")
+    if mapping.get("error_text_source"):
+        headers.append("שגיאות")
+
+    for col, header in enumerate(headers, start=1):
+        cell = ws.cell(row=header_row, column=col, value=header)
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = PatternFill(fill_type="solid", fgColor="1E3A8A")
+        cell.alignment = Alignment(horizontal="right")
+
+    for row_idx, row in enumerate(inactive_rows, start=header_row + 1):
+        values = [row["employee_name"]]
+        if mapping.get("employee_number_source"):
+            values.append(row["employee_number"])
+        if mapping.get("badge_number_source"):
+            values.append(row["badge_number"])
+        if mapping.get("id_number_source"):
+            values.append(row["id_number"])
+        if mapping.get("passport_number_source"):
+            values.append(row["passport_number"])
+        if mapping.get("department_source"):
+            values.append(row["department"])
+        values.extend([row["last_active_display"], row["status_reason"], row["activity_days"]])
+        if mapping.get("event_source"):
+            values.append(row["event_only_days"])
+        if mapping.get("error_text_source"):
+            values.append(row["error_text"])
+        for col, value in enumerate(values, start=1):
+            cell = ws.cell(row=row_idx, column=col, value=value)
+            cell.alignment = Alignment(horizontal="right")
+            if row_idx % 2 == 0:
+                cell.fill = PatternFill(fill_type="solid", fgColor="F8FAFC")
+
+    widths = [24, 14, 14, 16, 16, 22, 22, 22, 14, 18, 24]
+    for col, width in enumerate(widths[:len(headers)], start=1):
+        ws.column_dimensions[get_column_letter(col)].width = width
+
+
 def write_matan_corrections_summary(ws, employee_rows, filters_used):
     ws.title = safe_sheet_title("סיכום תיקונים", "Corrections Summary")
     ws.sheet_view.rightToLeft = True
@@ -2886,6 +3113,19 @@ def run_matan_missing_filter(input_path, output_path, extension, options=None):
     return {"warnings": build_matan_missing_mapping_warnings(mapping)}
 
 
+def run_inactive_workers_report(input_path, output_path, extension, options=None):
+    if extension not in {"xls", "xlsx"}:
+        raise ValueError("Inactive workers report currently supports XLS and XLSX uploads only")
+    options = options or {}
+    mapping = default_inactive_workers_mapping()
+    mapping.update({key: value for key, value in options.items() if key.endswith("_source")})
+    inactive_rows, meta = parse_inactive_workers_report(input_path, extension, mapping, options)
+    wb = Workbook()
+    write_inactive_workers_summary(wb.active, inactive_rows, meta, mapping)
+    wb.save(output_path)
+    return {"warnings": build_inactive_workers_mapping_warnings(mapping, options)}
+
+
 def run_flamingo_payroll(input_path, output_path, extension, options=None):
     if extension not in {"xls", "xlsx"}:
         raise ValueError("Flamingo payroll currently supports XLS and XLSX uploads only")
@@ -3308,6 +3548,30 @@ SCRIPTS["matan_missing"] = {
     "icon": "📊",
 }
 
+SCRIPTS["inactive_workers"] = {
+    "id": "inactive_workers",
+    "name": "איתור עובדים לא פעילים",
+    "desc": "איתור עובדים שלא זוהתה אצלם פעילות בטווח הימים או החודשים האחרונים מתוך דוח יומי",
+    "help_label": "דרישות לקובץ",
+    "help_title": "מה צריך להעלות?",
+    "help_intro": "יש להעלות דוח יומי מתאריך עד תאריך, רצוי של לפחות 3 חודשים.",
+    "help_items": ["המערכת מזהה את שדות הפעילות מתוך הדוח", "מבקשת אישור שדות לפני יצירת הדוח", "ובודקת אם לעובד הייתה פעילות בטווח הימים או החודשים האחרונים"],
+    "help_note": "פעילות יכולה להיחשב לפי כניסה ויציאה יחד, או לפי שדה סה\"כ שעות. אפשר גם לבחור אירוע כשדה משלים.",
+    "rules_label": "איך הסקריפט מחשב",
+    "rules_title": "מה נחשב פעילות של עובד?",
+    "rules_intro": "הסקריפט בודק אם לעובד הייתה פעילות בטווח שנבחר לפי תאריך הייחוס האחרון שקיים בקובץ.",
+    "rules_items": [
+        "שדות חובה: שם עובד, תאריך ולפחות מזהה עובד אחד נוסף",
+        "כדי לזהות פעילות יש לבחור או כניסה ויציאה יחד, או שדה סה\"כ שעות",
+        "אירוע הוא שדה אופציונלי, ואם הוא נבחר הוא יכול להיחשב גם הוא כפעילות",
+        "אם לא זוהתה לעובד פעילות בכלל, הוא יסומן כלא פעיל ויוצג שלא קיים מידע על פעילות קודמת",
+        "אם זוהתה פעילות בעבר אך לא בטווח שנבדק, יוצג התאריך האחרון שבו זוהתה פעילות",
+    ],
+    "rules_note": "יום חסר או מצב בלי כניסה ובלי יציאה אינם נחשבים פעילות.",
+    "accept": ".xls,.xlsx",
+    "icon": "🕵️",
+}
+
 SCRIPTS["matan_manual_corrections"] = {
     "id": "matan_manual_corrections",
     "name": "דוח תיקונים ידניים",
@@ -3394,6 +3658,27 @@ SCRIPT_REGISTRY["matan_missing"] = {
         {"name": "min_missing_hours", "label": "Minimum missing hours", "placeholder": "For example 4"},
         {"name": "max_missing_hours", "label": "Maximum missing hours", "placeholder": "For example 8"}
     ],
+}
+
+SCRIPT_REGISTRY["inactive_workers"] = {
+    **SCRIPTS["inactive_workers"],
+    "processor": run_inactive_workers_report,
+    "output_suffix": "inactive_workers_report",
+    "requires_mapping_confirmation": True,
+    "success_title": "דוח העובדים הלא פעילים מוכן",
+    "success_action": "הורדת הדוח",
+    "retry_action": "עיבוד קובץ נוסף",
+    "submit_label": "יצירת דוח עובדים לא פעילים",
+    "back_label": "חזרה לכלים",
+    "empty_error": "לא נבחר קובץ",
+    "unsupported_error": "יש להעלות דוח יומי מקורי מסוג XLS או XLSX",
+    "invalid_error": "הקובץ שהועלה אינו קובץ אקסל תקין",
+    "empty_file_error": "הקובץ שהועלה ריק",
+    "too_large_error": "הקובץ שהועלה גדול מדי",
+    "processing_error": "לא ניתן היה להפיק את דוח העובדים הלא פעילים מהקובץ הזה",
+    "processing_title": "דוח העובדים הלא פעילים בהכנה",
+    "processing_note": "המערכת בודקת עובדים ללא פעילות בטווח שנבחר. הפעולה יכולה להימשך כמה דקות.",
+    "file_picker_label": "בחירת דוח יומי",
 }
 
 SCRIPT_REGISTRY["matan_manual_corrections"] = {
@@ -3903,6 +4188,21 @@ MATAN_MISSING_MAPPING_FIELDS = [
     {"name": "absence_hours_source", "label": "היעדרות", "required": False},
 ]
 
+INACTIVE_WORKERS_MAPPING_FIELDS = [
+    {"name": "employee_name_source", "label": "שם עובד", "required": True},
+    {"name": "employee_number_source", "label": "מספר עובד", "required": False},
+    {"name": "badge_number_source", "label": "מספר תג", "required": False},
+    {"name": "id_number_source", "label": "תעודת זהות", "required": False},
+    {"name": "passport_number_source", "label": "דרכון", "required": False},
+    {"name": "date_source", "label": "תאריך", "required": True},
+    {"name": "entry_time_source", "label": "כניסה", "required": False, "critical": True},
+    {"name": "exit_time_source", "label": "יציאה", "required": False, "critical": True},
+    {"name": "total_hours_source", "label": "סה\"כ שעות", "required": False, "critical": True},
+    {"name": "event_source", "label": "אירוע", "required": False},
+    {"name": "department_source", "label": "מחלקה", "required": False},
+    {"name": "error_text_source", "label": "שגיאות", "required": False},
+]
+
 ORG_HIERARCHY_MAPPING_FIELDS = [
     {"name": "employee_name_source", "label": "שם עובד", "required": True, "critical": True},
     {"name": "direct_manager_source", "label": "מנהל ישיר", "required": True, "critical": True},
@@ -3965,6 +4265,21 @@ MATAN_MISSING_SUGGESTION_KEYWORDS = {
     "pregnancy_hours_source": ["הריון"],
     "special_child_hours_source": ["ילדמיחד", "ילדמיוחד"],
     "absence_hours_source": ["היעדרות"],
+}
+
+INACTIVE_WORKERS_SUGGESTION_KEYWORDS = {
+    "employee_name_source": ["שםעובד", "שם", "עובד"],
+    "employee_number_source": ["מספרעובד", "מספר", "עובד"],
+    "badge_number_source": ["תג", "מספרתג"],
+    "id_number_source": ["תעודתזהות", "זהות"],
+    "passport_number_source": ["דרכון", "passport"],
+    "date_source": ["תאריך", "date"],
+    "entry_time_source": ["כניסה", "checkin", "entry"],
+    "exit_time_source": ["יציאה", "checkout", "exit"],
+    "total_hours_source": ["סהכ", "סה\"כ", "שעות", "total"],
+    "event_source": ["אירוע", "event"],
+    "department_source": ["מחלקה", "department"],
+    "error_text_source": ["שגיאה", "שגיאות", "error"],
 }
 
 ORG_HIERARCHY_SUGGESTION_KEYWORDS = {
@@ -4228,6 +4543,170 @@ def build_matan_missing_mapping_warnings(mapping):
     if not any(identifier_sources):
         warnings.append("לא נבחר מזהה נוסף לעובד. מומלץ לבחור מספר עובד, תעודת זהות, מספר תג או דרכון.")
     return warnings
+
+
+def default_inactive_workers_mapping():
+    return {
+        "employee_name_source": "col:2",
+        "employee_number_source": "",
+        "badge_number_source": "col:4",
+        "id_number_source": "",
+        "passport_number_source": "",
+        "date_source": "col:0",
+        "entry_time_source": "col:7",
+        "exit_time_source": "col:8",
+        "total_hours_source": "col:15",
+        "event_source": "col:9",
+        "department_source": "col:30",
+        "error_text_source": "col:31",
+    }
+
+
+def build_inactive_workers_mapping_warnings(mapping, options):
+    warnings = []
+    if not mapping.get("date_source"):
+        warnings.append("לא נבחר שדה תאריך. בלי השדה הזה לא ניתן לבדוק אי-פעילות.")
+    if not mapping.get("employee_name_source"):
+        warnings.append("לא נבחר שדה שם עובד. בלי השדה הזה הדוח לא יהיה קריא.")
+    identifier_sources = [
+        mapping.get("employee_number_source"),
+        mapping.get("badge_number_source"),
+        mapping.get("id_number_source"),
+        mapping.get("passport_number_source"),
+    ]
+    if not any(identifier_sources):
+        warnings.append("לא נבחר מזהה נוסף לעובד. מומלץ לבחור מספר עובד, מספר תג, תעודת זהות או דרכון.")
+    has_attendance_pair = bool(mapping.get("entry_time_source") and mapping.get("exit_time_source"))
+    has_total_hours = bool(mapping.get("total_hours_source"))
+    if not has_attendance_pair and not has_total_hours:
+        warnings.append("יש לבחור כניסה ויציאה יחד, או לחלופין שדה סה\"כ שעות.")
+    threshold_value = parse_int_or_none(options.get("inactive_period_value", ""))
+    if threshold_value is None or threshold_value <= 0:
+        warnings.append("ערך בדיקת אי-הפעילות אינו תקין. מומלץ להזין מספר חיובי של ימים או חודשים.")
+    return warnings
+
+
+def detect_inactive_workers_header_row(sheet, workbook_kind):
+    rows, cols = get_excel_dims(sheet, workbook_kind)
+    best_row = 0
+    best_score = -1
+    for row_index in range(min(rows, 40)):
+        row_tokens = [normalize_token(get_excel_cell(sheet, workbook_kind, row_index, col_index, "")) for col_index in range(cols)]
+        score = 0
+        if "תאריך" in row_tokens:
+            score += 3
+        if "שםעובד" in row_tokens:
+            score += 3
+        if "כניסה" in row_tokens:
+            score += 2
+        if "יציאה" in row_tokens:
+            score += 2
+        if any(token in row_tokens for token in ("סהכ", "סהכ\"")):
+            score += 1
+        if "אירוע" in row_tokens:
+            score += 1
+        if score > best_score:
+            best_score = score
+            best_row = row_index
+    return best_row
+
+
+def extract_inactive_workers_mapping_value(sheet, workbook_kind, source, row_index):
+    text = str(source or "").strip()
+    if not text.startswith("col:"):
+        return ""
+    try:
+        col_index = int(text.split(":", 1)[1])
+    except ValueError:
+        return ""
+    return get_excel_cell(sheet, workbook_kind, row_index, col_index, "")
+
+
+def build_inactive_workers_mapping_options(input_path, extension):
+    workbook_kind, workbook = open_excel_workbook(input_path, extension)
+    sheet = iter_excel_sheets(workbook_kind, workbook)[0]
+    rows, cols = get_excel_dims(sheet, workbook_kind)
+    header_row = detect_inactive_workers_header_row(sheet, workbook_kind)
+
+    options = [{"value": "", "label": "לא נבחר", "source_kind": "empty"}]
+    for col_index in range(cols):
+        header = stringify_excel_value(get_excel_cell(sheet, workbook_kind, header_row, col_index, ""))
+        if not header:
+            continue
+        sample = ""
+        for row_index in range(header_row + 1, rows):
+            candidate = stringify_excel_value(get_excel_cell(sheet, workbook_kind, row_index, col_index, ""))
+            if not candidate:
+                continue
+            token = normalize_token(candidate)
+            if token in {"תאריך", "יום", "שםעובד", "תג", "הסכם", "כניסה", "יציאה", "אירוע", "נוכחות", "כניסהמ", "יציאהמ", "סהכ", "תקן", "חוסר", "מחלקה", "שגיאות"}:
+                continue
+            sample = candidate
+            break
+        options.append(
+            {
+                "value": f"col:{col_index}",
+                "label": f"עמודה {get_column_letter(col_index + 1)} - {header}" + (f" (לדוגמה: {sample})" if sample else ""),
+                "source_kind": "table_exact",
+                "match_token": normalize_token(header),
+                "header": header,
+                "sample": sample,
+            }
+        )
+
+    preferred_tokens = {
+        "employee_name_source": ["שםעובד"],
+        "employee_number_source": ["מספרעובד"],
+        "badge_number_source": ["תג", "מספרתג"],
+        "id_number_source": ["תעודתזהות"],
+        "passport_number_source": ["דרכון"],
+        "date_source": ["תאריך"],
+        "entry_time_source": ["כניסה"],
+        "exit_time_source": ["יציאה"],
+        "total_hours_source": ["סהכ", "שעות"],
+        "event_source": ["אירוע"],
+        "department_source": ["מחלקה"],
+        "error_text_source": ["שגיאות", "שגיאה"],
+    }
+
+    options_by_field = {}
+    suggestions = {}
+    for field in INACTIVE_WORKERS_MAPPING_FIELDS:
+        field_name = field["name"]
+        field_options = [options[0]]
+        keywords = INACTIVE_WORKERS_SUGGESTION_KEYWORDS.get(field_name, [])
+        for option in options[1:]:
+            token = option.get("match_token", "")
+            if any(keyword in token for keyword in keywords):
+                field_options.append(option)
+        for option in options[1:]:
+            if option["value"] not in {item["value"] for item in field_options}:
+                field_options.append(option)
+        options_by_field[field_name] = field_options
+
+        suggested = ""
+        for preferred in preferred_tokens.get(field_name, []):
+            for option in field_options[1:]:
+                token = option.get("match_token", "")
+                if preferred == token or preferred in token:
+                    suggested = option["value"]
+                    break
+            if suggested:
+                break
+        if not suggested:
+            for option in field_options[1:]:
+                token = option.get("match_token", "")
+                if any(keyword in token for keyword in keywords):
+                    suggested = option["value"]
+                    break
+        suggestions[field_name] = suggested
+
+    return {
+        "header_row": header_row,
+        "options_by_field": options_by_field,
+        "suggestions": suggestions,
+        "suggested_template_name": "תבנית עובדים לא פעילים",
+    }
 
 
 def extract_matan_missing_mapping_value(sheet, source, row_index):
@@ -5188,6 +5667,114 @@ def build_matan_missing_mapping_form(script_id, temp_upload_path, temp_upload_ex
     )
 
 
+def build_inactive_workers_mapping_form(script_id, temp_upload_path, temp_upload_ext, inspection, current_mapping, templates, template_name_value, current_filters):
+    template_options = '<option value="">ללא תבנית שמורה</option>'
+    for template in templates:
+        template_options += '<option value="' + str(template["id"]) + '">' + esc(template["name"]) + '</option>'
+
+    mapping_labels = {field["name"]: field["label"] for field in INACTIVE_WORKERS_MAPPING_FIELDS}
+    template_payload = {
+        str(template["id"]): {key: str(value or "") for key, value in template["mapping"].items()}
+        for template in templates
+    }
+
+    fields_html = ""
+    for field in INACTIVE_WORKERS_MAPPING_FIELDS:
+        field_name = field["name"]
+        current_value = str(current_mapping.get(field_name, "") or "")
+        options = inspection["options_by_field"].get(field_name, [])
+        select_options = ""
+        for option in options:
+            selected = ' selected' if option["value"] == current_value else ""
+            select_options += (
+                '<option value="' + esc(option["value"]) + '" data-base-label="' + esc(option["label"]) + '" data-source-kind="' + esc(option.get("source_kind", "empty")) + '"' + selected + ">"
+                + esc(option["label"])
+                + "</option>"
+            )
+        required_badge = ' <span style="color:#dc2626">*</span>' if field["required"] else ' <span style="color:#94a3b8">(אופציונלי)</span>'
+        wrapper_style = ""
+        if field.get("critical"):
+            wrapper_style = 'background:#fff7ed;border:1px solid #fdba74;border-radius:12px;padding:10px 10px 12px'
+        fields_html += (
+            '<div style="' + wrapper_style + '"><label class="field-label">' + field["label"] + required_badge + '</label>'
+            + ('<div style="font-size:12px;color:#9a3412;line-height:1.6;margin:-4px 0 8px">שדה קריטי לזיהוי פעילות. יש לוודא שהוא ממופה נכון.</div>' if field.get("critical") else '')
+            + '<select name="' + field_name + '" data-mapping-field="1" data-field-label="' + esc(field["label"]) + '" style="padding:9px 12px;border:1.5px solid #e2e8f0;border-radius:8px;font-size:13px;font-family:inherit;outline:none;width:100%;margin-bottom:0;background:white;transition:background-color .15s ease,border-color .15s ease,box-shadow .15s ease">'
+            + select_options
+            + '</select></div>'
+        )
+
+    unit_value = current_filters.get("inactive_period_unit", "days")
+    threshold_value = current_filters.get("inactive_period_value", "")
+
+    return (
+        '<form method="POST" id="inactiveWorkersMappingForm">'
+        + '<input type="hidden" name="flow_mode" value="confirm_mapping">'
+        + '<input type="hidden" name="temp_upload_path" value="' + esc(temp_upload_path) + '">'
+        + '<input type="hidden" name="temp_upload_ext" value="' + esc(temp_upload_ext) + '">'
+        + '<div style="background:#fafcff;border:1px solid #dbeafe;border-radius:14px;padding:1rem;margin-bottom:1rem">'
+        + '<div style="font-size:15px;font-weight:700;color:#1e3a8a;margin-bottom:10px">אישור שדות לפני עיבוד</div>'
+        + '<div style="display:grid;grid-template-columns:260px minmax(0,1fr);gap:14px;align-items:start">'
+        + '<div style="background:#ffffff;border:1px solid #e2e8f0;border-radius:12px;padding:12px">'
+        + '<div style="font-size:14px;font-weight:700;color:#0f172a;margin-bottom:10px">תבניות שמורות</div>'
+        + '<label class="field-label">בחירת תבנית</label>'
+        + '<div style="display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:center;margin-bottom:12px">'
+        + '<select id="selectedInactiveTemplateId" name="selected_template_id" style="padding:9px 12px;border:1.5px solid #e2e8f0;border-radius:8px;font-size:13px;font-family:inherit;outline:none;width:100%;background:white">' + template_options + '</select>'
+        + '<button type="submit" name="mapping_action" value="delete_template" class="btn btn-gray" style="min-width:104px;padding-inline:14px;white-space:nowrap">מחיקה</button>'
+        + '</div>'
+        + '<label style="display:flex;align-items:center;gap:6px;font-size:13px;color:#334155;margin-bottom:10px"><input type="checkbox" name="save_template" value="1"> שמור כתבנית חדשה</label>'
+        + '<label class="field-label">שם תבנית חדשה</label>'
+        + '<input type="text" name="template_name" value="' + esc(template_name_value) + '" placeholder="שם תבנית" style="margin-bottom:14px">'
+        + '<div style="font-size:14px;font-weight:700;color:#0f172a;margin-bottom:10px">טווח הבדיקה</div>'
+        + '<label class="field-label">סוג בדיקה</label>'
+        + '<select name="inactive_period_unit" style="padding:9px 12px;border:1.5px solid #e2e8f0;border-radius:8px;font-size:13px;font-family:inherit;outline:none;width:100%;margin-bottom:10px;background:white">'
+        + '<option value="days"' + (' selected' if unit_value == "days" else '') + '>ימים אחרונים</option>'
+        + '<option value="months"' + (' selected' if unit_value == "months" else '') + '>חודשים אחרונים</option>'
+        + '</select>'
+        + '<label class="field-label">ערך הבדיקה</label>'
+        + '<input type="text" name="inactive_period_value" value="' + esc(threshold_value) + '" placeholder="לדוגמה 30 או 3" style="margin-bottom:0">'
+        + '<div style="font-size:12px;color:#64748b;line-height:1.7;margin-top:10px">המערכת תבדוק האם לעובד הייתה פעילות בטווח שנבחר, לפי תאריך הייחוס האחרון שקיים בקובץ.</div>'
+        + '</div>'
+        + '<div>'
+        + '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">'
+        + '<span style="display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border-radius:999px;background:#fff7ed;border:1px solid #fdba74;font-size:12px;color:#9a3412">שדה קריטי לזיהוי פעילות</span>'
+        + '<span style="display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border-radius:999px;background:#ecfdf5;border:1px solid #86efac;font-size:12px;color:#166534">שדה מהדוח</span>'
+        + '</div>'
+        + '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-bottom:12px">' + fields_html + '</div>'
+        + '<div style="font-size:12px;color:#64748b;line-height:1.7;margin-bottom:12px">שדות חובה: שם עובד ותאריך. בנוסף יש לבחור לפחות מזהה אחד נוסף, וגם לבחור או כניסה ויציאה יחד, או לחלופין שדה סה&quot;כ שעות.</div>'
+        + '<div style="display:flex;gap:10px;flex-wrap:wrap;justify-content:center"><button type="submit" id="inactiveWorkersConfirmButton" name="mapping_action" value="confirm" class="btn btn-blue" style="min-width:220px">אשר הכל והפעל עיבוד</button><a href="/run/' + script_id + '" class="btn btn-gray" style="text-decoration:none;display:inline-flex;align-items:center;justify-content:center;min-width:150px">העלאת קובץ חדש</a></div>'
+        + '</div></div>'
+        + '</div>'
+        + '<div id="inactiveWorkersProcessingOverlay" style="display:none;position:fixed;inset:0;background:rgba(248,250,252,.78);backdrop-filter:blur(2px);z-index:80;align-items:center;justify-content:center;padding:20px">'
+        + '<div style="width:100%;max-width:320px;background:#ffffff;border:1px solid #dbeafe;border-radius:18px;box-shadow:0 20px 50px rgba(15,23,42,.14);padding:24px 20px;text-align:center">'
+        + '<div style="width:42px;height:42px;border-radius:999px;border:3px solid #bfdbfe;border-top-color:#2563eb;margin:0 auto 14px;animation:mappingSpin .9s linear infinite"></div>'
+        + '<div style="font-size:16px;font-weight:800;color:#1e3a8a;margin-bottom:6px">הדוח בהכנה</div>'
+        + '<div style="font-size:13px;line-height:1.7;color:#475569">המערכת מאשרת את השדות ובודקת עובדים ללא פעילות בטווח שנבחר. בקבצים גדולים הפעולה יכולה להימשך מעט זמן.</div>'
+        + '</div></div>'
+        + '<script>'
+        + '(function(){'
+        + 'var templateSelect=document.getElementById("selectedInactiveTemplateId");'
+        + 'var fieldSelects=Array.prototype.slice.call(document.querySelectorAll(\'select[data-mapping-field="1"]\'));'
+        + 'var form=document.getElementById("inactiveWorkersMappingForm");'
+        + 'var confirmButton=document.getElementById("inactiveWorkersConfirmButton");'
+        + 'var overlay=document.getElementById("inactiveWorkersProcessingOverlay");'
+        + 'var templateMappings=' + json.dumps(template_payload, ensure_ascii=False) + ';'
+        + 'var fieldLabels=' + json.dumps(mapping_labels, ensure_ascii=False) + ';'
+        + 'var selectStyles={critical:{bg:"#fff7ed",border:"#fb923c",shadow:"rgba(249,115,22,.14)"},table_exact:{bg:"#ecfdf5",border:"#4ade80",shadow:"rgba(34,197,94,.14)"},empty:{bg:"#ffffff",border:"#e2e8f0",shadow:"rgba(148,163,184,.08)"}};'
+        + 'function applySelectVisual(sel){var isCritical=(sel.name==="entry_time_source"||sel.name==="exit_time_source"||sel.name==="total_hours_source");var kind=isCritical?"critical":"table_exact";var style=selectStyles[kind]||selectStyles.empty;sel.style.backgroundColor=style.bg;sel.style.borderColor=style.border;sel.style.boxShadow="0 0 0 3px "+style.shadow;}'
+        + 'function refreshOptionLabels(){var assignments={};fieldSelects.forEach(function(sel){if(sel.value){assignments[sel.value]=sel.name;}});fieldSelects.forEach(function(sel){Array.prototype.forEach.call(sel.options,function(opt){var base=opt.getAttribute("data-base-label")||opt.text;var assigned=assignments[opt.value];var suffix="";if(opt.value&&assigned&&assigned!==sel.name){suffix=" [נבחר עבור "+(fieldLabels[assigned]||assigned)+"]";}opt.text=base+suffix;});applySelectVisual(sel);});}'
+        + 'function clearDuplicateSelections(changedSelect){if(!changedSelect.value){refreshOptionLabels();return;}fieldSelects.forEach(function(sel){if(sel!==changedSelect&&sel.value===changedSelect.value){sel.value="";}});refreshOptionLabels();}'
+        + 'function applyTemplate(templateId){var mapping=templateMappings[templateId]||{};if(!templateId){refreshOptionLabels();return;}fieldSelects.forEach(function(sel){sel.value=mapping[sel.name]||"";});var seen={};fieldSelects.forEach(function(sel){if(sel.value&&seen[sel.value]){sel.value="";}else if(sel.value){seen[sel.value]=true;}});refreshOptionLabels();}'
+        + 'fieldSelects.forEach(function(sel){sel.addEventListener("change",function(){clearDuplicateSelections(sel);});});'
+        + 'if(templateSelect){templateSelect.addEventListener("change",function(){applyTemplate(this.value);});}'
+        + 'if(form){form.addEventListener("submit",function(event){var submitter=event.submitter||document.activeElement;if(!submitter||submitter.value!=="confirm"){return;}if(confirmButton){confirmButton.disabled=true;confirmButton.textContent="העיבוד התחיל...";}if(overlay){overlay.style.display="flex";}document.body.style.overflow="hidden";});}'
+        + 'refreshOptionLabels();'
+        + '})();'
+        + '</script>'
+        + '<style>@keyframes mappingSpin{from{transform:rotate(0deg);}to{transform:rotate(360deg);}}</style>'
+        + '</form>'
+    )
+
+
 def build_org_hierarchy_mapping_form(script_id, temp_upload_path, temp_upload_ext, inspection, current_mapping, templates, template_name_value, current_output_type):
     template_options = '<option value="">ללא תבנית שמורה</option>'
     for template in templates:
@@ -5938,6 +6525,10 @@ def run_script(script_id):
                     inspection = build_matan_missing_mapping_options(inp, ext)
                     selected_mapping = dict(default_matan_missing_mapping())
                     selected_mapping.update(inspection["suggestions"])
+                elif script_id == "inactive_workers":
+                    inspection = build_inactive_workers_mapping_options(inp, ext)
+                    selected_mapping = dict(default_inactive_workers_mapping())
+                    selected_mapping.update(inspection["suggestions"])
                 elif script_id == "org_hierarchy_report":
                     inspection = build_org_hierarchy_mapping_options(inp, ext)
                     selected_mapping = dict(default_org_hierarchy_mapping())
@@ -5972,6 +6563,20 @@ def run_script(script_id):
                             "max_missing_hours": request.form.get("max_missing_hours", "").strip(),
                         },
                     )
+                elif script_id == "inactive_workers":
+                    mapping_confirmation_html = build_inactive_workers_mapping_form(
+                        script_id,
+                        inp,
+                        ext,
+                        inspection,
+                        selected_mapping,
+                        mapping_templates,
+                        get_next_mapping_template_name(mapping_templates),
+                        {
+                            "inactive_period_unit": request.form.get("inactive_period_unit", "").strip() or "days",
+                            "inactive_period_value": request.form.get("inactive_period_value", "").strip(),
+                        },
+                    )
                 elif script_id == "org_hierarchy_report":
                     mapping_confirmation_html = build_org_hierarchy_mapping_form(
                         script_id,
@@ -5997,13 +6602,17 @@ def run_script(script_id):
             inp = request.form.get("temp_upload_path", "").strip()
             ext = request.form.get("temp_upload_ext", "").strip().lower()
             mapping = {}
-            mapping_fields = FLAMINGO_MAPPING_FIELDS if script_id == "flamingo_payroll" else MATAN_MISSING_MAPPING_FIELDS if script_id == "matan_missing" else ORG_HIERARCHY_MAPPING_FIELDS if script_id == "org_hierarchy_report" else RIMON_MAPPING_FIELDS
+            mapping_fields = FLAMINGO_MAPPING_FIELDS if script_id == "flamingo_payroll" else MATAN_MISSING_MAPPING_FIELDS if script_id == "matan_missing" else INACTIVE_WORKERS_MAPPING_FIELDS if script_id == "inactive_workers" else ORG_HIERARCHY_MAPPING_FIELDS if script_id == "org_hierarchy_report" else RIMON_MAPPING_FIELDS
             for field in mapping_fields:
                 mapping[field["name"]] = request.form.get(field["name"], "").strip()
             manual_hourly_rate = request.form.get("manual_hourly_rate", "").strip() if script_id == "flamingo_payroll" else ""
             matan_filters = {
                 "min_missing_hours": request.form.get("min_missing_hours", "").strip(),
                 "max_missing_hours": request.form.get("max_missing_hours", "").strip(),
+            }
+            inactive_filters = {
+                "inactive_period_unit": request.form.get("inactive_period_unit", "").strip() or "days",
+                "inactive_period_value": request.form.get("inactive_period_value", "").strip(),
             }
             org_options = {
                 "output_type": request.form.get("output_type", "").strip() or "powerpoint",
@@ -6020,7 +6629,7 @@ def run_script(script_id):
                         info_message = '<div class="flash" style="background:#eff6ff;border-color:#bfdbfe;color:#1d4ed8">התבנית נמחקה.</div>'
                     else:
                         info_message = '<div class="flash-err">לא נבחרה תבנית למחיקה.</div>'
-                    inspection = build_flamingo_mapping_options(inp, ext) if script_id == "flamingo_payroll" else build_matan_missing_mapping_options(inp, ext) if script_id == "matan_missing" else build_org_hierarchy_mapping_options(inp, ext) if script_id == "org_hierarchy_report" else build_rimon_mapping_options(inp, ext)
+                    inspection = build_flamingo_mapping_options(inp, ext) if script_id == "flamingo_payroll" else build_matan_missing_mapping_options(inp, ext) if script_id == "matan_missing" else build_inactive_workers_mapping_options(inp, ext) if script_id == "inactive_workers" else build_org_hierarchy_mapping_options(inp, ext) if script_id == "org_hierarchy_report" else build_rimon_mapping_options(inp, ext)
                     mapping_templates = get_mapping_templates(session["user_id"], script_id)
                     if script_id == "flamingo_payroll":
                         mapping_confirmation_html = build_flamingo_mapping_form(
@@ -6044,6 +6653,17 @@ def run_script(script_id):
                             get_next_mapping_template_name(mapping_templates),
                             matan_filters,
                         )
+                    elif script_id == "inactive_workers":
+                        mapping_confirmation_html = build_inactive_workers_mapping_form(
+                            script_id,
+                            inp,
+                            ext,
+                            inspection,
+                            mapping,
+                            mapping_templates,
+                            get_next_mapping_template_name(mapping_templates),
+                            inactive_filters,
+                        )
                     elif script_id == "org_hierarchy_report":
                         mapping_confirmation_html = build_org_hierarchy_mapping_form(
                             script_id,
@@ -6066,9 +6686,9 @@ def run_script(script_id):
                             get_next_mapping_template_name(mapping_templates),
                         )
             elif mapping_action == "apply_template":
-                inspection = build_flamingo_mapping_options(inp, ext) if script_id == "flamingo_payroll" else build_matan_missing_mapping_options(inp, ext) if script_id == "matan_missing" else build_org_hierarchy_mapping_options(inp, ext) if script_id == "org_hierarchy_report" else build_rimon_mapping_options(inp, ext)
+                inspection = build_flamingo_mapping_options(inp, ext) if script_id == "flamingo_payroll" else build_matan_missing_mapping_options(inp, ext) if script_id == "matan_missing" else build_inactive_workers_mapping_options(inp, ext) if script_id == "inactive_workers" else build_org_hierarchy_mapping_options(inp, ext) if script_id == "org_hierarchy_report" else build_rimon_mapping_options(inp, ext)
                 selected_mapping, selected_template = apply_selected_template(
-                    dict(default_flamingo_mapping()) if script_id == "flamingo_payroll" else dict(default_matan_missing_mapping()) if script_id == "matan_missing" else dict(default_org_hierarchy_mapping()) if script_id == "org_hierarchy_report" else dict(inspection["suggestions"]),
+                    dict(default_flamingo_mapping()) if script_id == "flamingo_payroll" else dict(default_matan_missing_mapping()) if script_id == "matan_missing" else dict(default_inactive_workers_mapping()) if script_id == "inactive_workers" else dict(default_org_hierarchy_mapping()) if script_id == "org_hierarchy_report" else dict(inspection["suggestions"]),
                     mapping_templates,
                     selected_template_id,
                 )
@@ -6097,6 +6717,17 @@ def run_script(script_id):
                         mapping_templates,
                         request.form.get("template_name", "").strip() or get_next_mapping_template_name(mapping_templates),
                         matan_filters,
+                    )
+                elif script_id == "inactive_workers":
+                    mapping_confirmation_html = build_inactive_workers_mapping_form(
+                        script_id,
+                        inp,
+                        ext,
+                        inspection,
+                        selected_mapping,
+                        mapping_templates,
+                        request.form.get("template_name", "").strip() or get_next_mapping_template_name(mapping_templates),
+                        inactive_filters,
                     )
                 elif script_id == "org_hierarchy_report":
                     mapping_confirmation_html = build_org_hierarchy_mapping_form(
@@ -6245,6 +6876,112 @@ def run_script(script_id):
                             logout_label=text["logout"],
                             show_lang_switch=True,
                         )
+                elif script_id == "inactive_workers":
+                    identifier_values = [
+                        mapping.get("employee_number_source"),
+                        mapping.get("badge_number_source"),
+                        mapping.get("id_number_source"),
+                        mapping.get("passport_number_source"),
+                    ]
+                    has_entry_exit = bool(mapping.get("entry_time_source") and mapping.get("exit_time_source"))
+                    has_total_hours = bool(mapping.get("total_hours_source"))
+                    period_value = inactive_filters.get("inactive_period_value", "")
+                    if not mapping.get("employee_name_source") or not mapping.get("date_source"):
+                        inspection = build_inactive_workers_mapping_options(inp, ext)
+                        error = '<div class="flash-err">יש לבחור שדה שם עובד ושדה תאריך לפני יצירת הדוח.</div>'
+                        mapping_confirmation_html = build_inactive_workers_mapping_form(
+                            script_id,
+                            inp,
+                            ext,
+                            inspection,
+                            mapping,
+                            mapping_templates,
+                            request.form.get("template_name", "").strip() or get_next_mapping_template_name(mapping_templates),
+                            inactive_filters,
+                        )
+                        return render(
+                            scr["name"],
+                            '<a href="/dashboard" style="color:#2563eb;font-size:13px;text-decoration:none;display:block;margin-bottom:1rem">' + text["back_arrow"] + ' ' + scr["back_label"] + '</a>'
+                            + '<div class="card"><div style="font-size:40px;margin-bottom:.5rem">' + scr["icon"] + '</div><div style="font-size:20px;font-weight:700;color:#1e3a8a;margin-bottom:4px">' + scr["name"] + '</div>'
+                            + error + mapping_confirmation_html + '</div>',
+                            lang=lang,
+                            topbar_greeting=text["topbar_greeting"],
+                            logout_label=text["logout"],
+                            show_lang_switch=True,
+                        )
+                    if not any(identifier_values):
+                        inspection = build_inactive_workers_mapping_options(inp, ext)
+                        error = '<div class="flash-err">יש לבחור לפחות מזהה אחד נוסף: מספר עובד, מספר תג, תעודת זהות או דרכון.</div>'
+                        mapping_confirmation_html = build_inactive_workers_mapping_form(
+                            script_id,
+                            inp,
+                            ext,
+                            inspection,
+                            mapping,
+                            mapping_templates,
+                            request.form.get("template_name", "").strip() or get_next_mapping_template_name(mapping_templates),
+                            inactive_filters,
+                        )
+                        return render(
+                            scr["name"],
+                            '<a href="/dashboard" style="color:#2563eb;font-size:13px;text-decoration:none;display:block;margin-bottom:1rem">' + text["back_arrow"] + ' ' + scr["back_label"] + '</a>'
+                            + '<div class="card"><div style="font-size:40px;margin-bottom:.5rem">' + scr["icon"] + '</div><div style="font-size:20px;font-weight:700;color:#1e3a8a;margin-bottom:4px">' + scr["name"] + '</div>'
+                            + error + mapping_confirmation_html + '</div>',
+                            lang=lang,
+                            topbar_greeting=text["topbar_greeting"],
+                            logout_label=text["logout"],
+                            show_lang_switch=True,
+                        )
+                    if not has_entry_exit and not has_total_hours:
+                        inspection = build_inactive_workers_mapping_options(inp, ext)
+                        error = '<div class="flash-err">יש לבחור או שדה כניסה ושדה יציאה יחד, או לחלופין שדה סה&quot;כ שעות.</div>'
+                        mapping_confirmation_html = build_inactive_workers_mapping_form(
+                            script_id,
+                            inp,
+                            ext,
+                            inspection,
+                            mapping,
+                            mapping_templates,
+                            request.form.get("template_name", "").strip() or get_next_mapping_template_name(mapping_templates),
+                            inactive_filters,
+                        )
+                        return render(
+                            scr["name"],
+                            '<a href="/dashboard" style="color:#2563eb;font-size:13px;text-decoration:none;display:block;margin-bottom:1rem">' + text["back_arrow"] + ' ' + scr["back_label"] + '</a>'
+                            + '<div class="card"><div style="font-size:40px;margin-bottom:.5rem">' + scr["icon"] + '</div><div style="font-size:20px;font-weight:700;color:#1e3a8a;margin-bottom:4px">' + scr["name"] + '</div>'
+                            + error + mapping_confirmation_html + '</div>',
+                            lang=lang,
+                            topbar_greeting=text["topbar_greeting"],
+                            logout_label=text["logout"],
+                            show_lang_switch=True,
+                        )
+                    try:
+                        period_int = int(period_value)
+                    except (TypeError, ValueError):
+                        period_int = 0
+                    if period_int <= 0:
+                        inspection = build_inactive_workers_mapping_options(inp, ext)
+                        error = '<div class="flash-err">יש להזין ערך חיובי לטווח הבדיקה בימים או בחודשים.</div>'
+                        mapping_confirmation_html = build_inactive_workers_mapping_form(
+                            script_id,
+                            inp,
+                            ext,
+                            inspection,
+                            mapping,
+                            mapping_templates,
+                            request.form.get("template_name", "").strip() or get_next_mapping_template_name(mapping_templates),
+                            inactive_filters,
+                        )
+                        return render(
+                            scr["name"],
+                            '<a href="/dashboard" style="color:#2563eb;font-size:13px;text-decoration:none;display:block;margin-bottom:1rem">' + text["back_arrow"] + ' ' + scr["back_label"] + '</a>'
+                            + '<div class="card"><div style="font-size:40px;margin-bottom:.5rem">' + scr["icon"] + '</div><div style="font-size:20px;font-weight:700;color:#1e3a8a;margin-bottom:4px">' + scr["name"] + '</div>'
+                            + error + mapping_confirmation_html + '</div>',
+                            lang=lang,
+                            topbar_greeting=text["topbar_greeting"],
+                            logout_label=text["logout"],
+                            show_lang_switch=True,
+                        )
                 elif script_id == "org_hierarchy_report":
                     identifier_values = [
                         mapping.get("employee_number_source"),
@@ -6326,6 +7063,8 @@ def run_script(script_id):
                     options["manual_hourly_rate"] = manual_hourly_rate
                 elif script_id == "matan_missing":
                     options.update(matan_filters)
+                elif script_id == "inactive_workers":
+                    options.update(inactive_filters)
                 elif script_id == "org_hierarchy_report":
                     options.update(org_options)
                 result_name = build_output_filename(scr, uid, options)
