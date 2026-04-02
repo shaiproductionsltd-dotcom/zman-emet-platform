@@ -267,6 +267,28 @@ def parse_float_or_none(value):
     return float(text.replace(",", "."))
 
 
+def detect_matan_missing_header_row(sheet):
+    best_row = 4 if sheet.nrows > 4 else 0
+    best_score = -1
+    target_tokens = {
+        normalize_token("שם עובד"),
+        normalize_token("מספר עובד"),
+        normalize_token("חוסר"),
+        normalize_token("ש.תקן"),
+        normalize_token("ש.נוכחות"),
+    }
+    for row_index in range(min(sheet.nrows, 12)):
+        score = 0
+        for col_index in range(sheet.ncols):
+            token = normalize_token(sheet.cell_value(row_index, col_index))
+            if token in target_tokens:
+                score += 1
+        if score > best_score:
+            best_score = score
+            best_row = row_index
+    return best_row
+
+
 def normalize_token(text):
     value = str(text or "").strip().lower()
     return re.sub(r"[\s_\-\"'`]+", "", value)
@@ -1708,43 +1730,35 @@ def run_org_hierarchy_report(input_path, output_path, extension, options=None):
             pass
 
 
-def parse_matan_missing_report(input_path):
+def parse_matan_missing_report(input_path, mapping):
     wb = xlrd.open_workbook(input_path)
     ws = wb.sheet_by_index(0)
-    header_row = 4
-    headers = [str(ws.cell_value(header_row, c)).strip() for c in range(ws.ncols)]
-    header_index = {header: idx for idx, header in enumerate(headers) if header}
-    employee_number_col = header_index.get("מספר עובד", -1)
-    month_col = header_index.get("חודש", -1)
-    employee_name_col = header_index.get("שם עובד", -1)
-    standard_hours_col = header_index.get("ש.תקן", -1)
-    missing_hours_col = header_index.get("חוסר", -1)
-    attendance_hours_col = header_index.get("ש.נוכחות", -1)
-    vacation_hours_col = header_index.get("חופשה", -1)
-    sick_hours_col = header_index.get("מחלה", -1)
-    reserve_hours_col = header_index.get("מילואים", -1)
-    pregnancy_hours_col = header_index.get("שעות הריון", -1)
-    special_child_hours_col = header_index.get("שעות ילד מיחד", -1)
-    absence_hours_col = header_index.get("היעדרות", -1)
+    header_row = detect_matan_missing_header_row(ws)
     rows = []
     for row_index in range(header_row + 1, ws.nrows):
-        employee_number = str(get_sheet_cell(ws, row_index, employee_number_col, "")).strip()
-        employee_name = str(get_sheet_cell(ws, row_index, employee_name_col, "")).strip()
-        if not employee_number and not employee_name:
+        employee_number = stringify_excel_value(extract_matan_missing_mapping_value(ws, mapping.get("employee_number_source"), row_index))
+        employee_name = stringify_excel_value(extract_matan_missing_mapping_value(ws, mapping.get("employee_name_source"), row_index))
+        id_number = stringify_excel_value(extract_matan_missing_mapping_value(ws, mapping.get("id_number_source"), row_index))
+        badge_number = stringify_excel_value(extract_matan_missing_mapping_value(ws, mapping.get("badge_number_source"), row_index))
+        passport_number = stringify_excel_value(extract_matan_missing_mapping_value(ws, mapping.get("passport_number_source"), row_index))
+        if not any([employee_number, employee_name, id_number, badge_number, passport_number]):
             continue
         row = {
             "employee_number": employee_number,
-            "month": str(get_sheet_cell(ws, row_index, month_col, "")).strip(),
+            "id_number": id_number,
+            "badge_number": badge_number,
+            "passport_number": passport_number,
+            "month": stringify_excel_value(extract_matan_missing_mapping_value(ws, mapping.get("month_source"), row_index)),
             "employee_name": employee_name,
-            "standard_hours": parse_hours_or_zero(get_sheet_cell(ws, row_index, standard_hours_col, "")),
-            "missing_hours": parse_hours_or_zero(get_sheet_cell(ws, row_index, missing_hours_col, "")),
-            "attendance_hours": parse_hours_or_zero(get_sheet_cell(ws, row_index, attendance_hours_col, "")),
-            "vacation_hours": parse_hours_or_zero(get_sheet_cell(ws, row_index, vacation_hours_col, "")),
-            "sick_hours": parse_hours_or_zero(get_sheet_cell(ws, row_index, sick_hours_col, "")),
-            "reserve_hours": parse_hours_or_zero(get_sheet_cell(ws, row_index, reserve_hours_col, "")),
-            "pregnancy_hours": parse_hours_or_zero(get_sheet_cell(ws, row_index, pregnancy_hours_col, "")),
-            "special_child_hours": parse_hours_or_zero(get_sheet_cell(ws, row_index, special_child_hours_col, "")),
-            "absence_hours": parse_hours_or_zero(get_sheet_cell(ws, row_index, absence_hours_col, "")),
+            "standard_hours": parse_hours_or_zero(extract_matan_missing_mapping_value(ws, mapping.get("standard_hours_source"), row_index)),
+            "missing_hours": parse_hours_or_zero(extract_matan_missing_mapping_value(ws, mapping.get("missing_hours_source"), row_index)),
+            "attendance_hours": parse_hours_or_zero(extract_matan_missing_mapping_value(ws, mapping.get("attendance_hours_source"), row_index)),
+            "vacation_hours": parse_hours_or_zero(extract_matan_missing_mapping_value(ws, mapping.get("vacation_hours_source"), row_index)),
+            "sick_hours": parse_hours_or_zero(extract_matan_missing_mapping_value(ws, mapping.get("sick_hours_source"), row_index)),
+            "reserve_hours": parse_hours_or_zero(extract_matan_missing_mapping_value(ws, mapping.get("reserve_hours_source"), row_index)),
+            "pregnancy_hours": parse_hours_or_zero(extract_matan_missing_mapping_value(ws, mapping.get("pregnancy_hours_source"), row_index)),
+            "special_child_hours": parse_hours_or_zero(extract_matan_missing_mapping_value(ws, mapping.get("special_child_hours_source"), row_index)),
+            "absence_hours": parse_hours_or_zero(extract_matan_missing_mapping_value(ws, mapping.get("absence_hours_source"), row_index)),
         }
         rows.append(row)
     return rows
@@ -1765,8 +1779,24 @@ def apply_matan_missing_filters(rows, options):
     return filtered
 
 
-def write_matan_missing_summary(ws, filtered_rows, filters_used):
-    ws.title = safe_sheet_title("Missing Hours Summary", "Missing Summary")
+def get_matan_missing_selected_optional_fields(mapping):
+    return [
+        field_name
+        for field_name in (
+            "attendance_hours_source",
+            "vacation_hours_source",
+            "sick_hours_source",
+            "reserve_hours_source",
+            "pregnancy_hours_source",
+            "special_child_hours_source",
+            "absence_hours_source",
+        )
+        if mapping.get(field_name)
+    ]
+
+
+def write_matan_missing_summary(ws, filtered_rows, filters_used, mapping):
+    ws.title = safe_sheet_title("סיכום שעות חסר", "סיכום שעות חסר")
     ws.sheet_view.rightToLeft = True
     ws.sheet_view.showGridLines = False
     ws.freeze_panes = "A10"
@@ -1778,81 +1808,148 @@ def write_matan_missing_summary(ws, filtered_rows, filters_used):
     over_4 = sum(1 for row in filtered_rows if (row["missing_hours"] or 0.0) > 4.0)
     over_8 = sum(1 for row in filtered_rows if (row["missing_hours"] or 0.0) > 8.0)
 
-    ws["A1"] = "Matan Missing Hours Summary"
-    ws["A1"].font = Font(bold=True, size=18)
+    ws["A1"] = "דוח חוסר מול תקן"
+    ws["A1"].font = Font(bold=True, size=18, color="0F172A")
     ws["A1"].fill = PatternFill(fill_type="solid", fgColor="BFDBFE")
+    ws["A2"] = "סינון עובדים לפי שעות חוסר מול שעות תקן מתוך הדוח המרוכז"
+    ws["A2"].font = Font(italic=True, size=11, color="475569")
 
     metrics = [
-        ("Employees in result", len(filtered_rows)),
-        ("Total missing hours", format_hours(total_missing)),
-        ("Average missing hours", format_hours(avg_missing)),
-        ("Total attendance hours", format_hours(total_attendance)),
-        ("Total standard hours", format_hours(total_standard)),
-        ("Employees above 4 missing hours", over_4),
-        ("Employees above 8 missing hours", over_8),
+        ("עובדים בתוצאה", len(filtered_rows)),
+        ("סה\"כ שעות חוסר", format_hours(total_missing)),
+        ("ממוצע שעות חוסר", format_hours(avg_missing)),
+        ("סה\"כ שעות נוכחות", format_hours(total_attendance)),
+        ("סה\"כ שעות תקן", format_hours(total_standard)),
+        ("עובדים מעל 4 שעות חוסר", over_4),
+        ("עובדים מעל 8 שעות חוסר", over_8),
     ]
     for idx, (label, value) in enumerate(metrics, start=3):
         ws.cell(row=idx, column=1, value=label).font = Font(bold=True)
         ws.cell(row=idx, column=2, value=value)
 
-    ws["D3"] = "Filters used"
+    ws["D3"] = "פילטרים שהופעלו"
     ws["D3"].font = Font(bold=True)
     for idx, (label, value) in enumerate(filters_used.items(), start=4):
         ws.cell(row=idx, column=4, value=label).font = Font(bold=True)
-        ws.cell(row=idx, column=5, value=value or "All")
+        ws.cell(row=idx, column=5, value=value or "ללא")
 
     header_row = 10
-    headers = ["Employee Number", "Employee Name", "Month", "Missing Hours", "Attendance Hours", "Standard Hours", "Vacation", "Sick", "Reserve", "Absence"]
+    headers = ["שם עובד"]
+    if mapping.get("employee_number_source"):
+        headers.append("מספר עובד")
+    if mapping.get("id_number_source"):
+        headers.append("תעודת זהות")
+    if mapping.get("badge_number_source"):
+        headers.append("מספר תג")
+    if mapping.get("passport_number_source"):
+        headers.append("דרכון")
+    if mapping.get("month_source"):
+        headers.append("חודש")
+    headers.extend(["שעות חוסר", "שעות תקן"])
+    optional_columns = []
+    optional_map = {
+        "attendance_hours_source": "ש.נוכחות",
+        "vacation_hours_source": "חופשה",
+        "sick_hours_source": "מחלה",
+        "reserve_hours_source": "מילואים",
+        "pregnancy_hours_source": "שעות הריון",
+        "special_child_hours_source": "שעות ילד מיוחד",
+        "absence_hours_source": "היעדרות",
+    }
+    for field_name in get_matan_missing_selected_optional_fields(mapping):
+        label = optional_map.get(field_name)
+        if label:
+            optional_columns.append((field_name, label))
+            headers.append(label)
     for col, header in enumerate(headers, start=1):
         cell = ws.cell(row=header_row, column=col, value=header)
         cell.font = Font(bold=True, color="FFFFFF")
         cell.fill = PatternFill(fill_type="solid", fgColor="1E3A8A")
+        cell.alignment = Alignment(horizontal="right")
 
     for row_idx, row in enumerate(filtered_rows, start=header_row + 1):
-        values = [
-            row["employee_number"],
-            row["employee_name"],
-            row["month"],
-            format_hours(row["missing_hours"]),
-            format_hours(row["attendance_hours"]),
-            format_hours(row["standard_hours"]),
-            format_hours(row["vacation_hours"]),
-            format_hours(row["sick_hours"]),
-            format_hours(row["reserve_hours"]),
-            format_hours(row["absence_hours"]),
-        ]
+        values = [row["employee_name"]]
+        if mapping.get("employee_number_source"):
+            values.append(row["employee_number"])
+        if mapping.get("id_number_source"):
+            values.append(row["id_number"])
+        if mapping.get("badge_number_source"):
+            values.append(row["badge_number"])
+        if mapping.get("passport_number_source"):
+            values.append(row["passport_number"])
+        if mapping.get("month_source"):
+            values.append(row["month"])
+        values.extend([format_hours(row["missing_hours"]), format_hours(row["standard_hours"])])
+        for field_name, _ in optional_columns:
+            row_key = field_name.replace("_source", "")
+            values.append(format_hours(row.get(row_key, 0.0)))
         for col, value in enumerate(values, start=1):
-            ws.cell(row=row_idx, column=col, value=value)
+            cell = ws.cell(row=row_idx, column=col, value=value)
+            cell.alignment = Alignment(horizontal="right")
             if row_idx % 2 == 0:
-                ws.cell(row=row_idx, column=col).fill = PatternFill(fill_type="solid", fgColor="F8FAFC")
-    widths = [16, 24, 14, 14, 14, 14, 12, 12, 12, 12]
+                cell.fill = PatternFill(fill_type="solid", fgColor="F8FAFC")
+    widths = [24, 16, 18, 16, 16, 10, 14, 14] + [12] * len(optional_columns)
     for col, width in enumerate(widths, start=1):
         ws.column_dimensions[get_column_letter(col)].width = width
 
 
-def write_matan_missing_filtered(ws, filtered_rows):
-    ws.title = safe_sheet_title("Filtered Employees", "Filtered Employees")
+def write_matan_missing_filtered(ws, filtered_rows, mapping):
+    ws.title = safe_sheet_title("עובדים מסוננים", "עובדים מסוננים")
     ws.sheet_view.rightToLeft = True
     ws.sheet_view.showGridLines = False
     ws.freeze_panes = "A2"
-    headers = [
-        "Employee Number", "Employee Name", "Month", "Standard Hours", "Missing Hours", "Attendance Hours",
-        "Vacation", "Sick", "Reserve", "Pregnancy", "Special Child", "Absence"
-    ]
+    headers = ["שם עובד"]
+    if mapping.get("employee_number_source"):
+        headers.append("מספר עובד")
+    if mapping.get("id_number_source"):
+        headers.append("תעודת זהות")
+    if mapping.get("badge_number_source"):
+        headers.append("מספר תג")
+    if mapping.get("passport_number_source"):
+        headers.append("דרכון")
+    if mapping.get("month_source"):
+        headers.append("חודש")
+    headers.extend(["שעות תקן", "שעות חוסר"])
+    optional_columns = []
+    optional_map = {
+        "attendance_hours_source": "ש.נוכחות",
+        "vacation_hours_source": "חופשה",
+        "sick_hours_source": "מחלה",
+        "reserve_hours_source": "מילואים",
+        "pregnancy_hours_source": "שעות הריון",
+        "special_child_hours_source": "שעות ילד מיוחד",
+        "absence_hours_source": "היעדרות",
+    }
+    for field_name in get_matan_missing_selected_optional_fields(mapping):
+        label = optional_map.get(field_name)
+        if label:
+            optional_columns.append((field_name, label))
+            headers.append(label)
     for col, header in enumerate(headers, start=1):
         cell = ws.cell(row=1, column=col, value=header)
         cell.font = Font(bold=True, color="FFFFFF")
         cell.fill = PatternFill(fill_type="solid", fgColor="0F766E")
+        cell.alignment = Alignment(horizontal="right")
     for row_idx, row in enumerate(filtered_rows, start=2):
-        values = [
-            row["employee_number"], row["employee_name"], row["month"], format_hours(row["standard_hours"]), format_hours(row["missing_hours"]),
-            format_hours(row["attendance_hours"]), format_hours(row["vacation_hours"]), format_hours(row["sick_hours"]),
-            format_hours(row["reserve_hours"]), format_hours(row["pregnancy_hours"]), format_hours(row["special_child_hours"]),
-            format_hours(row["absence_hours"]),
-        ]
+        values = [row["employee_name"]]
+        if mapping.get("employee_number_source"):
+            values.append(row["employee_number"])
+        if mapping.get("id_number_source"):
+            values.append(row["id_number"])
+        if mapping.get("badge_number_source"):
+            values.append(row["badge_number"])
+        if mapping.get("passport_number_source"):
+            values.append(row["passport_number"])
+        if mapping.get("month_source"):
+            values.append(row["month"])
+        values.extend([format_hours(row["standard_hours"]), format_hours(row["missing_hours"])])
+        for field_name, _ in optional_columns:
+            row_key = field_name.replace("_source", "")
+            values.append(format_hours(row.get(row_key, 0.0)))
         for col, value in enumerate(values, start=1):
-            ws.cell(row=row_idx, column=col, value=value)
-    widths = [16, 24, 14, 14, 14, 14, 12, 12, 12, 12, 14, 12]
+            cell = ws.cell(row=row_idx, column=col, value=value)
+            cell.alignment = Alignment(horizontal="right")
+    widths = [24, 16, 18, 16, 16, 10, 14, 14] + [12] * len(optional_columns)
     for col, width in enumerate(widths, start=1):
         ws.column_dimensions[get_column_letter(col)].width = width
 
@@ -2733,19 +2830,23 @@ def run_matan_missing_filter(input_path, output_path, extension, options=None):
     if extension != "xls":
         raise ValueError("Matan missing-hours tool currently supports XLS export only")
     options = options or {}
-    rows = parse_matan_missing_report(input_path)
+    mapping = default_matan_missing_mapping()
+    mapping.update({key: value for key, value in options.items() if key.endswith("_source")})
+    rows = parse_matan_missing_report(input_path, mapping)
     filtered_rows = apply_matan_missing_filters(rows, options)
     wb = Workbook()
     write_matan_missing_summary(
         wb.active,
         filtered_rows,
         {
-            "Min missing hours": options.get("min_missing_hours", ""),
-            "Max missing hours": options.get("max_missing_hours", ""),
+            "מינימום שעות חוסר": options.get("min_missing_hours", ""),
+            "מקסימום שעות חוסר": options.get("max_missing_hours", ""),
         },
+        mapping,
     )
-    write_matan_missing_filtered(wb.create_sheet(), filtered_rows)
+    write_matan_missing_filtered(wb.create_sheet(), filtered_rows, mapping)
     wb.save(output_path)
+    return {"warnings": build_matan_missing_mapping_warnings(mapping)}
 
 
 def run_flamingo_payroll(input_path, output_path, extension, options=None):
@@ -2986,13 +3087,18 @@ FLOW_TEXTS = {
                 "file_picker_label": "בחירת קובץ דוח מפורט חודשי",
             },
             "matan_missing": {
-                "name": "דוח שעות חסר",
+                "name": "דוח חוסר מול תקן",
                 "desc": "אפשרות לסינון עובדים לפי כמות שעות החוסר החודשיות שלהם כולל סיכום ברור ונוח לטיפול",
                 "help_label": "דרישות לקובץ",
                 "help_title": "מה צריך להעלות?",
-                "help_intro": "יש להעלות דוח חודשי מרוכז של שעות תקן מול שעות החוסר.",
-                "help_items": ["המערכת מנתחת את הנתונים ומציגה רק את העובדים שעומדים בתנאי הסינון שהוגדרו", "יותר מ־X שעות חוסר", "פחות מ־Y שעות חוסר", "או שילוב של שני התנאים ביחס לתקן החודשי שלהם"],
-                "help_note": "הפלט מאפשר מיקוד מהיר בעובדים הרלוונטיים לטיפול",
+                "help_intro": "יש להעלות דוח מרוכז של חוסר מול תקן. לפני ההרצה המערכת תזהה את השדות ותבקש אישור.",
+                "help_items": ["המערכת מזהה שדות חובה ושדות משלימים מתוך הדוח", "מבקשת אישור שדות לפני יצירת הדוח", "ומציגה רק את העובדים שעומדים בתנאי הסינון שהוגדרו"],
+                "help_note": "אם הלקוח בוחר שדות משלימים כמו חופשה, מחלה, היעדרות או ש.נוכחות, הם יופיעו גם בפלט.",
+                "rules_label": "איך הסקריפט מחשב",
+                "rules_title": "מה חשוב לאשר לפני יצירת הדוח?",
+                "rules_intro": "הסקריפט לא מחשב מחדש את החוסר. הוא משתמש בערכים שכבר קיימים בדוח ומסנן לפיהם.",
+                "rules_items": ["השדות הקריטיים הם חוסר וש.תקן, ולכן חשוב לאשר שהם ממופים נכון", "יש לבחור שם עובד ולפחות מזהה נוסף אחד: מספר עובד, תעודת זהות, מספר תג או דרכון", "שדות כמו ש.נוכחות, חופשה, מחלה והיעדרות הם שדות משלימים בלבד", "היעדרות אינה חוסר. הדוח משתמש בשדה החוסר כפי שהוא מופיע בקובץ המקור"],
+                "rules_note": "לפני ההרצה המערכת תציע זיהוי אוטומטי, אבל הלקוח הוא זה שמאשר את השדות הסופיים.",
                 "success_title": "דוח שעות החסר מוכן",
                 "success_action": "הורדת הדוח",
                 "retry_action": "עיבוד קובץ נוסף",
@@ -3006,7 +3112,7 @@ FLOW_TEXTS = {
                 "processing_error": "לא ניתן היה ליצור את דוח שעות החסר מהקובץ הזה",
                 "processing_title": "הדוח בהכנה",
                 "processing_note": "המערכת מסננת את דוח שעות החסר. זה עשוי להימשך כמה דקות.",
-                "file_picker_label": "בחירת דוח שעות חסר",
+                "file_picker_label": "בחירת דוח חוסר מול תקן",
                 "filter_fields": [
                     {"label": "מינימום שעות חסר", "placeholder": "לדוגמה 4"},
                     {"label": "מקסימום שעות חסר", "placeholder": "לדוגמה 8"},
@@ -3144,8 +3250,23 @@ SCRIPT_REGISTRY["flamingo_payroll"] = {
 
 SCRIPTS["matan_missing"] = {
     "id": "matan_missing",
-    "name": "דוח שעות חסר",
+    "name": "דוח חוסר מול תקן",
     "desc": "אפשרות לסינון עובדים לפי כמות שעות החוסר החודשיות שלהם כולל סיכום ברור ונוח לטיפול",
+    "help_label": "דרישות לקובץ",
+    "help_title": "מה צריך להעלות?",
+    "help_intro": "יש להעלות דוח מרוכז של חוסר מול תקן. לפני ההרצה המערכת תזהה את השדות ותבקש אישור.",
+    "help_items": ["המערכת מזהה שדות חובה ושדות משלימים מתוך הדוח", "מבקשת אישור שדות לפני יצירת הדוח", "ומציגה רק את העובדים שעומדים בתנאי הסינון שהוגדרו"],
+    "help_note": "אם הלקוח בוחר שדות משלימים כמו חופשה, מחלה, היעדרות או ש.נוכחות, הם יופיעו גם בפלט.",
+    "rules_label": "איך הסקריפט מחשב",
+    "rules_title": "מה חשוב לאשר לפני יצירת הדוח?",
+    "rules_intro": "הסקריפט לא מחשב מחדש את החוסר. הוא משתמש בערכים שכבר קיימים בדוח ומסנן לפיהם.",
+    "rules_items": [
+        "השדות הקריטיים הם חוסר וש.תקן, ולכן חשוב לאשר שהם ממופים נכון",
+        "יש לבחור שם עובד ולפחות מזהה נוסף אחד: מספר עובד, תעודת זהות, מספר תג או דרכון",
+        "שדות כמו ש.נוכחות, חופשה, מחלה והיעדרות הם שדות משלימים בלבד",
+        "היעדרות אינה חוסר. הדוח משתמש בשדה החוסר כפי שהוא מופיע בקובץ המקור",
+    ],
+    "rules_note": "לפני ההרצה המערכת תציע זיהוי אוטומטי, אבל הלקוח הוא זה שמאשר את השדות הסופיים.",
     "accept": ".xls",
     "icon": "📊",
 }
@@ -3206,6 +3327,7 @@ SCRIPT_REGISTRY["matan_missing"] = {
     **SCRIPTS["matan_missing"],
     "processor": run_matan_missing_filter,
     "output_suffix": "matan_missing",
+    "requires_mapping_confirmation": True,
     "success_title": "Missing-hours report is ready",
     "success_action": "Download report",
     "retry_action": "Process another file",
@@ -3597,6 +3719,24 @@ FLAMINGO_MAPPING_FIELDS = [
     {"name": "start_date_source", "label": "תחילת עבודה", "required": False},
 ]
 
+MATAN_MISSING_MAPPING_FIELDS = [
+    {"name": "employee_name_source", "label": "שם עובד", "required": True},
+    {"name": "employee_number_source", "label": "מספר עובד", "required": False},
+    {"name": "id_number_source", "label": "תעודת זהות", "required": False},
+    {"name": "badge_number_source", "label": "מספר תג", "required": False},
+    {"name": "passport_number_source", "label": "דרכון", "required": False},
+    {"name": "month_source", "label": "חודש", "required": False},
+    {"name": "standard_hours_source", "label": "ש.תקן", "required": True, "critical": True},
+    {"name": "missing_hours_source", "label": "חוסר", "required": True, "critical": True},
+    {"name": "attendance_hours_source", "label": "ש.נוכחות", "required": False},
+    {"name": "vacation_hours_source", "label": "חופשה", "required": False},
+    {"name": "sick_hours_source", "label": "מחלה", "required": False},
+    {"name": "reserve_hours_source", "label": "מילואים", "required": False},
+    {"name": "pregnancy_hours_source", "label": "שעות הריון", "required": False},
+    {"name": "special_child_hours_source", "label": "שעות ילד מיוחד", "required": False},
+    {"name": "absence_hours_source", "label": "היעדרות", "required": False},
+]
+
 
 RIMON_SUGGESTION_KEYWORDS = {
     "employee_name_source": ["שםלתצוגה", "שםעובד", "עובד", "employee", "name"],
@@ -3625,6 +3765,24 @@ FLAMINGO_SUGGESTION_KEYWORDS = {
     "standard_hours_source": ["תקן"],
     "missing_hours_source": ["חוסר"],
     "start_date_source": ["תחילתעבודה"],
+}
+
+MATAN_MISSING_SUGGESTION_KEYWORDS = {
+    "employee_name_source": ["שםעובד", "שם", "עובד"],
+    "employee_number_source": ["מספרעובד", "מספר", "עובד"],
+    "id_number_source": ["תעודתזהות", "זהות"],
+    "badge_number_source": ["מספרתג", "תג"],
+    "passport_number_source": ["דרכון", "passport"],
+    "month_source": ["חודש"],
+    "standard_hours_source": ["ש.תקן", "תקן", "שעותתקן"],
+    "missing_hours_source": ["חוסר", "שעותחוסר"],
+    "attendance_hours_source": ["ש.נוכחות", "נוכחות"],
+    "vacation_hours_source": ["חופשה"],
+    "sick_hours_source": ["מחלה"],
+    "reserve_hours_source": ["מילואים"],
+    "pregnancy_hours_source": ["הריון"],
+    "special_child_hours_source": ["ילדמיחד", "ילדמיוחד"],
+    "absence_hours_source": ["היעדרות"],
 }
 
 RIMON_META_LABEL_TOKENS = {
@@ -3835,6 +3993,139 @@ def filter_rimon_options_for_field(field_name, options):
     if field_name == "date_source":
         return [option for option in options if looks_like_excel_date_sample(option.get("sample", ""))]
     return options
+
+
+def default_matan_missing_mapping():
+    return {
+        "employee_name_source": "col:2",
+        "employee_number_source": "col:0",
+        "id_number_source": "",
+        "badge_number_source": "",
+        "passport_number_source": "",
+        "month_source": "col:1",
+        "standard_hours_source": "col:3",
+        "missing_hours_source": "col:4",
+        "attendance_hours_source": "col:6",
+        "vacation_hours_source": "col:7",
+        "sick_hours_source": "col:8",
+        "reserve_hours_source": "col:9",
+        "pregnancy_hours_source": "col:10",
+        "special_child_hours_source": "col:13",
+        "absence_hours_source": "col:14",
+    }
+
+
+def build_matan_missing_mapping_warnings(mapping):
+    warnings = []
+    if not mapping.get("standard_hours_source"):
+        warnings.append("לא נבחר שדה שעות תקן. בלי השדה הזה הדוח לא יהיה אמין.")
+    if not mapping.get("missing_hours_source"):
+        warnings.append("לא נבחר שדה חוסר. בלי השדה הזה לא ניתן לסנן את העובדים נכון.")
+    identifier_sources = [
+        mapping.get("employee_number_source"),
+        mapping.get("id_number_source"),
+        mapping.get("badge_number_source"),
+        mapping.get("passport_number_source"),
+    ]
+    if not any(identifier_sources):
+        warnings.append("לא נבחר מזהה נוסף לעובד. מומלץ לבחור מספר עובד, תעודת זהות, מספר תג או דרכון.")
+    return warnings
+
+
+def extract_matan_missing_mapping_value(sheet, source, row_index):
+    text = str(source or "").strip()
+    if not text.startswith("col:"):
+        return ""
+    try:
+        col_index = int(text.split(":", 1)[1])
+    except ValueError:
+        return ""
+    return get_sheet_cell(sheet, row_index, col_index, "")
+
+
+def build_matan_missing_mapping_options(input_path, extension):
+    if extension != "xls":
+        raise ValueError("Matan missing-hours tool currently supports XLS export only")
+    wb = xlrd.open_workbook(input_path)
+    ws = wb.sheet_by_index(0)
+    header_row = detect_matan_missing_header_row(ws)
+    options = [{"value": "", "label": "לא נבחר", "source_kind": "empty"}]
+    for col_index in range(ws.ncols):
+        header = stringify_excel_value(get_sheet_cell(ws, header_row, col_index, ""))
+        if not header:
+            continue
+        sample = ""
+        for row_index in range(header_row + 1, ws.nrows):
+            candidate = stringify_excel_value(get_sheet_cell(ws, row_index, col_index, ""))
+            if candidate:
+                sample = candidate
+                break
+        options.append(
+            {
+                "value": f"col:{col_index}",
+                "label": f"עמודה {get_column_letter(col_index + 1)} - {header}" + (f" (לדוגמה: {sample})" if sample else ""),
+                "source_kind": "table_exact",
+                "match_token": normalize_token(header),
+                "header": header,
+                "sample": sample,
+            }
+        )
+
+    options_by_field = {}
+    suggestions = {}
+    preferred_tokens = {
+        "employee_name_source": ["שםעובד"],
+        "employee_number_source": ["מספרעובד"],
+        "id_number_source": ["תעודתזהות"],
+        "badge_number_source": ["מספרתג", "תג"],
+        "passport_number_source": ["דרכון"],
+        "month_source": ["חודש"],
+        "standard_hours_source": ["ש.תקן", "תקן"],
+        "missing_hours_source": ["חוסר"],
+        "attendance_hours_source": ["ש.נוכחות", "נוכחות"],
+        "vacation_hours_source": ["חופשה"],
+        "sick_hours_source": ["מחלה"],
+        "reserve_hours_source": ["מילואים"],
+        "pregnancy_hours_source": ["הריון"],
+        "special_child_hours_source": ["ילדמיחד", "ילדמיוחד"],
+        "absence_hours_source": ["היעדרות"],
+    }
+    for field in MATAN_MISSING_MAPPING_FIELDS:
+        field_name = field["name"]
+        field_options = [options[0]]
+        keywords = MATAN_MISSING_SUGGESTION_KEYWORDS.get(field_name, [])
+        for option in options[1:]:
+            token = option.get("match_token", "")
+            if any(keyword in token for keyword in keywords):
+                field_options.append(option)
+        for option in options[1:]:
+            if option["value"] not in {item["value"] for item in field_options}:
+                field_options.append(option)
+        options_by_field[field_name] = field_options
+
+        suggested = ""
+        for preferred in preferred_tokens.get(field_name, []):
+            for option in field_options[1:]:
+                token = option.get("match_token", "")
+                if preferred == token or preferred in token:
+                    suggested = option["value"]
+                    break
+            if suggested:
+                break
+        if not suggested:
+            for option in field_options[1:]:
+                token = option.get("match_token", "")
+                if any(keyword in token for keyword in keywords):
+                    suggested = option["value"]
+                    break
+        suggestions[field_name] = suggested
+
+    return {
+        "header_row": header_row,
+        "options_by_field": options_by_field,
+        "suggestions": suggestions,
+        "suggested_template_name": "תבנית שעות חסר",
+    }
 
 
 def default_flamingo_mapping():
@@ -4475,6 +4766,110 @@ def build_rimon_mapping_form(script_id, temp_upload_path, temp_upload_ext, inspe
     )
 
 
+def build_matan_missing_mapping_form(script_id, temp_upload_path, temp_upload_ext, inspection, current_mapping, templates, template_name_value, current_filters):
+    template_options = '<option value="">ללא תבנית שמורה</option>'
+    for template in templates:
+        template_options += '<option value="' + str(template["id"]) + '">' + esc(template["name"]) + '</option>'
+
+    mapping_labels = {field["name"]: field["label"] for field in MATAN_MISSING_MAPPING_FIELDS}
+    template_payload = {
+        str(template["id"]): {key: str(value or "") for key, value in template["mapping"].items()}
+        for template in templates
+    }
+
+    fields_html = ""
+    for field in MATAN_MISSING_MAPPING_FIELDS:
+        field_name = field["name"]
+        current_value = str(current_mapping.get(field_name, "") or "")
+        options = inspection["options_by_field"].get(field_name, [])
+
+        select_options = ""
+        for option in options:
+            selected = ' selected' if option["value"] == current_value else ""
+            select_options += (
+                '<option value="' + esc(option["value"]) + '" data-base-label="' + esc(option["label"]) + '" data-source-kind="' + esc(option.get("source_kind", "empty")) + '"' + selected + ">"
+                + esc(option["label"])
+                + "</option>"
+            )
+
+        required_badge = ' <span style="color:#dc2626">*</span>' if field["required"] else ' <span style="color:#94a3b8">(אופציונלי)</span>'
+        wrapper_style = ""
+        if field.get("critical"):
+            wrapper_style = 'background:#fff7ed;border:1px solid #fdba74;border-radius:12px;padding:10px 10px 12px'
+        fields_html += (
+            '<div style="' + wrapper_style + '"><label class="field-label">' + field["label"] + required_badge + '</label>'
+            + ('<div style="font-size:12px;color:#9a3412;line-height:1.6;margin:-4px 0 8px">שדה קריטי לסינון שעות החוסר. יש לוודא שזהו השדה הנכון.</div>' if field.get("critical") else '')
+            + '<select name="' + field_name + '" data-mapping-field="1" data-field-label="' + esc(field["label"]) + '" style="padding:9px 12px;border:1.5px solid #e2e8f0;border-radius:8px;font-size:13px;font-family:inherit;outline:none;width:100%;margin-bottom:0;background:white;transition:background-color .15s ease,border-color .15s ease,box-shadow .15s ease">'
+            + select_options
+            + '</select></div>'
+        )
+
+    return (
+        '<form method="POST" id="matanMappingConfirmForm">'
+        + '<input type="hidden" name="flow_mode" value="confirm_mapping">'
+        + '<input type="hidden" name="temp_upload_path" value="' + esc(temp_upload_path) + '">'
+        + '<input type="hidden" name="temp_upload_ext" value="' + esc(temp_upload_ext) + '">'
+        + '<div style="background:#fafcff;border:1px solid #dbeafe;border-radius:14px;padding:1rem;margin-bottom:1rem">'
+        + '<div style="font-size:15px;font-weight:700;color:#1e3a8a;margin-bottom:10px">אישור שדות לפני עיבוד</div>'
+        + '<div style="display:grid;grid-template-columns:260px minmax(0,1fr);gap:14px;align-items:start">'
+        + '<div style="background:#ffffff;border:1px solid #e2e8f0;border-radius:12px;padding:12px">'
+        + '<div style="font-size:14px;font-weight:700;color:#0f172a;margin-bottom:10px">תבניות שמורות</div>'
+        + '<label class="field-label">בחירת תבנית</label>'
+        + '<div style="display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:center;margin-bottom:12px">'
+        + '<select id="selectedMatanTemplateId" name="selected_template_id" style="padding:9px 12px;border:1.5px solid #e2e8f0;border-radius:8px;font-size:13px;font-family:inherit;outline:none;width:100%;background:white">' + template_options + '</select>'
+        + '<button type="submit" name="mapping_action" value="delete_template" class="btn btn-gray" style="min-width:104px;padding-inline:14px;white-space:nowrap">מחיקה</button>'
+        + '</div>'
+        + '<label style="display:flex;align-items:center;gap:6px;font-size:13px;color:#334155;margin-bottom:10px"><input type="checkbox" name="save_template" value="1"> שמור כתבנית חדשה</label>'
+        + '<label class="field-label">שם תבנית חדשה</label>'
+        + '<input type="text" name="template_name" value="' + esc(template_name_value) + '" placeholder="שם תבנית" style="margin-bottom:14px">'
+        + '<div style="font-size:14px;font-weight:700;color:#0f172a;margin-bottom:10px">תנאי סינון</div>'
+        + '<label class="field-label">מינימום שעות חוסר</label>'
+        + '<input type="text" name="min_missing_hours" value="' + esc(current_filters.get("min_missing_hours", "")) + '" placeholder="לדוגמה 4" style="margin-bottom:10px">'
+        + '<label class="field-label">מקסימום שעות חוסר</label>'
+        + '<input type="text" name="max_missing_hours" value="' + esc(current_filters.get("max_missing_hours", "")) + '" placeholder="לדוגמה 8" style="margin-bottom:0">'
+        + '<div style="font-size:12px;color:#64748b;line-height:1.7;margin-top:10px">בחירת תבנית תעדכן את השדות בלבד. תנאי הסינון נשארים לפי מה שהוזן במסך הנוכחי.</div>'
+        + '</div>'
+        + '<div>'
+        + '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">'
+        + '<span style="display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border-radius:999px;background:#fff7ed;border:1px solid #fdba74;font-size:12px;color:#9a3412">שדה קריטי לסינון</span>'
+        + '<span style="display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border-radius:999px;background:#ecfdf5;border:1px solid #86efac;font-size:12px;color:#166534">שדה מהדוח</span>'
+        + '</div>'
+        + '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-bottom:12px">' + fields_html + '</div>'
+        + '<div style="font-size:12px;color:#64748b;line-height:1.7;margin-bottom:12px">שדות חובה: שם עובד, שעות תקן וחוסר. בנוסף יש לבחור לפחות מזהה אחד נוסף: מספר עובד, תעודת זהות, מספר תג או דרכון.</div>'
+        + '<div style="display:flex;gap:10px;flex-wrap:wrap;justify-content:center"><button type="submit" id="matanMappingConfirmButton" name="mapping_action" value="confirm" class="btn btn-blue" style="min-width:220px">אשר הכל והפעל עיבוד</button><a href="/run/' + script_id + '" class="btn btn-gray" style="text-decoration:none;display:inline-flex;align-items:center;justify-content:center;min-width:150px">העלאת קובץ חדש</a></div>'
+        + '</div></div>'
+        + '</div>'
+        + '<div id="matanProcessingOverlay" style="display:none;position:fixed;inset:0;background:rgba(248,250,252,.78);backdrop-filter:blur(2px);z-index:80;align-items:center;justify-content:center;padding:20px">'
+        + '<div style="width:100%;max-width:320px;background:#ffffff;border:1px solid #dbeafe;border-radius:18px;box-shadow:0 20px 50px rgba(15,23,42,.14);padding:24px 20px;text-align:center">'
+        + '<div style="width:42px;height:42px;border-radius:999px;border:3px solid #bfdbfe;border-top-color:#2563eb;margin:0 auto 14px;animation:mappingSpin .9s linear infinite"></div>'
+        + '<div style="font-size:16px;font-weight:800;color:#1e3a8a;margin-bottom:6px">הדוח בהכנה</div>'
+        + '<div style="font-size:13px;line-height:1.7;color:#475569">המערכת מאשרת את השדות, מסננת את העובדים ובונה את הדוח. הפעולה יכולה להימשך מעט זמן.</div>'
+        + '</div></div>'
+        + '<script>'
+        + '(function(){'
+        + 'var templateSelect=document.getElementById("selectedMatanTemplateId");'
+        + 'var fieldSelects=Array.prototype.slice.call(document.querySelectorAll(\'select[data-mapping-field="1"]\'));'
+        + 'var form=document.getElementById("matanMappingConfirmForm");'
+        + 'var confirmButton=document.getElementById("matanMappingConfirmButton");'
+        + 'var overlay=document.getElementById("matanProcessingOverlay");'
+        + 'var templateMappings=' + json.dumps(template_payload, ensure_ascii=False) + ';'
+        + 'var fieldLabels=' + json.dumps(mapping_labels, ensure_ascii=False) + ';'
+        + 'var selectStyles={critical:{bg:"#fff7ed",border:"#fb923c",shadow:"rgba(249,115,22,.14)"},table_exact:{bg:"#ecfdf5",border:"#4ade80",shadow:"rgba(34,197,94,.14)"},empty:{bg:"#ffffff",border:"#e2e8f0",shadow:"rgba(148,163,184,.08)"}};'
+        + 'function applySelectVisual(sel){var fieldName=sel.name;var isCritical=(fieldName==="standard_hours_source"||fieldName==="missing_hours_source");var kind=isCritical?"critical":(((sel.options[sel.selectedIndex]||{}).getAttribute&&sel.options[sel.selectedIndex].getAttribute("data-source-kind"))||"table_exact");var style=selectStyles[kind]||selectStyles.empty;sel.style.backgroundColor=style.bg;sel.style.borderColor=style.border;sel.style.boxShadow="0 0 0 3px "+style.shadow;}'
+        + 'function refreshOptionLabels(){var assignments={};fieldSelects.forEach(function(sel){if(sel.value){assignments[sel.value]=sel.name;}});fieldSelects.forEach(function(sel){Array.prototype.forEach.call(sel.options,function(opt){var base=opt.getAttribute("data-base-label")||opt.text;var assigned=assignments[opt.value];var suffix="";if(opt.value && assigned && assigned!==sel.name){suffix=" [נבחר עבור "+(fieldLabels[assigned]||assigned)+"]";}opt.text=base+suffix;});applySelectVisual(sel);});}'
+        + 'function clearDuplicateSelections(changedSelect){if(!changedSelect.value){refreshOptionLabels();return;}fieldSelects.forEach(function(sel){if(sel!==changedSelect && sel.value===changedSelect.value){sel.value="";}});refreshOptionLabels();}'
+        + 'function applyTemplate(templateId){var mapping=templateMappings[templateId]||{};if(!templateId){refreshOptionLabels();return;}fieldSelects.forEach(function(sel){sel.value=mapping[sel.name]||"";});var seen={};fieldSelects.forEach(function(sel){if(sel.value && seen[sel.value]){sel.value="";}else if(sel.value){seen[sel.value]=true;}});refreshOptionLabels();}'
+        + 'fieldSelects.forEach(function(sel){sel.addEventListener("change",function(){clearDuplicateSelections(sel);});});'
+        + 'if(templateSelect){templateSelect.addEventListener("change",function(){applyTemplate(this.value);});}'
+        + 'if(form){form.addEventListener("submit",function(event){var submitter=event.submitter||document.activeElement;if(!submitter||submitter.value!=="confirm"){return;}if(confirmButton){confirmButton.disabled=true;confirmButton.textContent="העיבוד התחיל...";}if(overlay){overlay.style.display="flex";}document.body.style.overflow="hidden";});}'
+        + 'refreshOptionLabels();'
+        + '})();'
+        + '</script>'
+        + '<style>@keyframes mappingSpin{from{transform:rotate(0deg);}to{transform:rotate(360deg);}}</style>'
+        + '</form>'
+    )
+
+
 def build_flamingo_mapping_form(script_id, temp_upload_path, temp_upload_ext, inspection, current_mapping, templates, template_name_value, manual_hourly_rate_value):
     template_options = '<option value="">ללא תבנית שמורה</option>'
     for template in templates:
@@ -4944,6 +5339,10 @@ def run_script(script_id):
                     inspection = build_flamingo_mapping_options(inp, ext)
                     selected_mapping = dict(default_flamingo_mapping())
                     selected_mapping.update(inspection["suggestions"])
+                elif script_id == "matan_missing":
+                    inspection = build_matan_missing_mapping_options(inp, ext)
+                    selected_mapping = dict(default_matan_missing_mapping())
+                    selected_mapping.update(inspection["suggestions"])
                 else:
                     inspection = build_rimon_mapping_options(inp, ext)
                     selected_mapping = dict(inspection["suggestions"])
@@ -4960,6 +5359,20 @@ def run_script(script_id):
                         get_next_mapping_template_name(mapping_templates),
                         "",
                     )
+                elif script_id == "matan_missing":
+                    mapping_confirmation_html = build_matan_missing_mapping_form(
+                        script_id,
+                        inp,
+                        ext,
+                        inspection,
+                        selected_mapping,
+                        mapping_templates,
+                        get_next_mapping_template_name(mapping_templates),
+                        {
+                            "min_missing_hours": request.form.get("min_missing_hours", "").strip(),
+                            "max_missing_hours": request.form.get("max_missing_hours", "").strip(),
+                        },
+                    )
                 else:
                     mapping_confirmation_html = build_rimon_mapping_form(
                         script_id,
@@ -4974,10 +5387,14 @@ def run_script(script_id):
             inp = request.form.get("temp_upload_path", "").strip()
             ext = request.form.get("temp_upload_ext", "").strip().lower()
             mapping = {}
-            mapping_fields = FLAMINGO_MAPPING_FIELDS if script_id == "flamingo_payroll" else RIMON_MAPPING_FIELDS
+            mapping_fields = FLAMINGO_MAPPING_FIELDS if script_id == "flamingo_payroll" else MATAN_MISSING_MAPPING_FIELDS if script_id == "matan_missing" else RIMON_MAPPING_FIELDS
             for field in mapping_fields:
                 mapping[field["name"]] = request.form.get(field["name"], "").strip()
             manual_hourly_rate = request.form.get("manual_hourly_rate", "").strip() if script_id == "flamingo_payroll" else ""
+            matan_filters = {
+                "min_missing_hours": request.form.get("min_missing_hours", "").strip(),
+                "max_missing_hours": request.form.get("max_missing_hours", "").strip(),
+            }
             mapping_templates = get_mapping_templates(session["user_id"], script_id)
             mapping_action = request.form.get("mapping_action", "confirm").strip() or "confirm"
             selected_template_id = request.form.get("selected_template_id", "").strip()
@@ -4990,7 +5407,7 @@ def run_script(script_id):
                         info_message = '<div class="flash" style="background:#eff6ff;border-color:#bfdbfe;color:#1d4ed8">התבנית נמחקה.</div>'
                     else:
                         info_message = '<div class="flash-err">לא נבחרה תבנית למחיקה.</div>'
-                    inspection = build_flamingo_mapping_options(inp, ext) if script_id == "flamingo_payroll" else build_rimon_mapping_options(inp, ext)
+                    inspection = build_flamingo_mapping_options(inp, ext) if script_id == "flamingo_payroll" else build_matan_missing_mapping_options(inp, ext) if script_id == "matan_missing" else build_rimon_mapping_options(inp, ext)
                     mapping_templates = get_mapping_templates(session["user_id"], script_id)
                     if script_id == "flamingo_payroll":
                         mapping_confirmation_html = build_flamingo_mapping_form(
@@ -5003,6 +5420,17 @@ def run_script(script_id):
                             get_next_mapping_template_name(mapping_templates),
                             manual_hourly_rate,
                         )
+                    elif script_id == "matan_missing":
+                        mapping_confirmation_html = build_matan_missing_mapping_form(
+                            script_id,
+                            inp,
+                            ext,
+                            inspection,
+                            mapping,
+                            mapping_templates,
+                            get_next_mapping_template_name(mapping_templates),
+                            matan_filters,
+                        )
                     else:
                         mapping_confirmation_html = build_rimon_mapping_form(
                             script_id,
@@ -5014,9 +5442,9 @@ def run_script(script_id):
                             get_next_mapping_template_name(mapping_templates),
                         )
             elif mapping_action == "apply_template":
-                inspection = build_flamingo_mapping_options(inp, ext) if script_id == "flamingo_payroll" else build_rimon_mapping_options(inp, ext)
+                inspection = build_flamingo_mapping_options(inp, ext) if script_id == "flamingo_payroll" else build_matan_missing_mapping_options(inp, ext) if script_id == "matan_missing" else build_rimon_mapping_options(inp, ext)
                 selected_mapping, selected_template = apply_selected_template(
-                    dict(default_flamingo_mapping()) if script_id == "flamingo_payroll" else dict(inspection["suggestions"]),
+                    dict(default_flamingo_mapping()) if script_id == "flamingo_payroll" else dict(default_matan_missing_mapping()) if script_id == "matan_missing" else dict(inspection["suggestions"]),
                     mapping_templates,
                     selected_template_id,
                 )
@@ -5034,6 +5462,17 @@ def run_script(script_id):
                         mapping_templates,
                         request.form.get("template_name", "").strip() or get_next_mapping_template_name(mapping_templates),
                         manual_hourly_rate,
+                    )
+                elif script_id == "matan_missing":
+                    mapping_confirmation_html = build_matan_missing_mapping_form(
+                        script_id,
+                        inp,
+                        ext,
+                        inspection,
+                        selected_mapping,
+                        mapping_templates,
+                        request.form.get("template_name", "").strip() or get_next_mapping_template_name(mapping_templates),
+                        matan_filters,
                     )
                 else:
                     mapping_confirmation_html = build_rimon_mapping_form(
@@ -5095,10 +5534,88 @@ def run_script(script_id):
                             logout_label=text["logout"],
                             show_lang_switch=True,
                         )
+                elif script_id == "matan_missing":
+                    identifier_values = [
+                        mapping.get("employee_number_source"),
+                        mapping.get("id_number_source"),
+                        mapping.get("badge_number_source"),
+                        mapping.get("passport_number_source"),
+                    ]
+                    if not mapping.get("employee_name_source"):
+                        inspection = build_matan_missing_mapping_options(inp, ext)
+                        error = '<div class="flash-err">יש לבחור שדה שם עובד לפני יצירת הדוח.</div>'
+                        mapping_confirmation_html = build_matan_missing_mapping_form(
+                            script_id,
+                            inp,
+                            ext,
+                            inspection,
+                            mapping,
+                            mapping_templates,
+                            request.form.get("template_name", "").strip() or get_next_mapping_template_name(mapping_templates),
+                            matan_filters,
+                        )
+                        return render(
+                            scr["name"],
+                            '<a href="/dashboard" style="color:#2563eb;font-size:13px;text-decoration:none;display:block;margin-bottom:1rem">' + text["back_arrow"] + ' ' + scr["back_label"] + '</a>'
+                            + '<div class="card"><div style="font-size:40px;margin-bottom:.5rem">' + scr["icon"] + '</div><div style="font-size:20px;font-weight:700;color:#1e3a8a;margin-bottom:4px">' + scr["name"] + '</div>'
+                            + error + mapping_confirmation_html + '</div>',
+                            lang=lang,
+                            topbar_greeting=text["topbar_greeting"],
+                            logout_label=text["logout"],
+                            show_lang_switch=True,
+                        )
+                    if not mapping.get("standard_hours_source") or not mapping.get("missing_hours_source"):
+                        inspection = build_matan_missing_mapping_options(inp, ext)
+                        error = '<div class="flash-err">יש לבחור שדה שעות תקן ושדה חוסר לפני יצירת הדוח.</div>'
+                        mapping_confirmation_html = build_matan_missing_mapping_form(
+                            script_id,
+                            inp,
+                            ext,
+                            inspection,
+                            mapping,
+                            mapping_templates,
+                            request.form.get("template_name", "").strip() or get_next_mapping_template_name(mapping_templates),
+                            matan_filters,
+                        )
+                        return render(
+                            scr["name"],
+                            '<a href="/dashboard" style="color:#2563eb;font-size:13px;text-decoration:none;display:block;margin-bottom:1rem">' + text["back_arrow"] + ' ' + scr["back_label"] + '</a>'
+                            + '<div class="card"><div style="font-size:40px;margin-bottom:.5rem">' + scr["icon"] + '</div><div style="font-size:20px;font-weight:700;color:#1e3a8a;margin-bottom:4px">' + scr["name"] + '</div>'
+                            + error + mapping_confirmation_html + '</div>',
+                            lang=lang,
+                            topbar_greeting=text["topbar_greeting"],
+                            logout_label=text["logout"],
+                            show_lang_switch=True,
+                        )
+                    if not any(identifier_values):
+                        inspection = build_matan_missing_mapping_options(inp, ext)
+                        error = '<div class="flash-err">יש לבחור לפחות מזהה אחד נוסף: מספר עובד, תעודת זהות, מספר תג או דרכון.</div>'
+                        mapping_confirmation_html = build_matan_missing_mapping_form(
+                            script_id,
+                            inp,
+                            ext,
+                            inspection,
+                            mapping,
+                            mapping_templates,
+                            request.form.get("template_name", "").strip() or get_next_mapping_template_name(mapping_templates),
+                            matan_filters,
+                        )
+                        return render(
+                            scr["name"],
+                            '<a href="/dashboard" style="color:#2563eb;font-size:13px;text-decoration:none;display:block;margin-bottom:1rem">' + text["back_arrow"] + ' ' + scr["back_label"] + '</a>'
+                            + '<div class="card"><div style="font-size:40px;margin-bottom:.5rem">' + scr["icon"] + '</div><div style="font-size:20px;font-weight:700;color:#1e3a8a;margin-bottom:4px">' + scr["name"] + '</div>'
+                            + error + mapping_confirmation_html + '</div>',
+                            lang=lang,
+                            topbar_greeting=text["topbar_greeting"],
+                            logout_label=text["logout"],
+                            show_lang_switch=True,
+                        )
                 uid = str(uuid.uuid4())[:8]
                 options = {key: value for key, value in mapping.items()}
                 if script_id == "flamingo_payroll":
                     options["manual_hourly_rate"] = manual_hourly_rate
+                elif script_id == "matan_missing":
+                    options.update(matan_filters)
                 result_name = build_output_filename(scr, uid, options)
                 out = str(OUTPUT_FOLDER / result_name)
                 try:
