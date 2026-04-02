@@ -2273,16 +2273,16 @@ def write_inactive_workers_summary(ws, inactive_rows, meta, mapping):
     ws.title = safe_sheet_title("עובדים לא פעילים", "עובדים לא פעילים")
     ws.sheet_view.rightToLeft = True
     ws.sheet_view.showGridLines = False
-    ws.freeze_panes = "A16"
+    ws.freeze_panes = "A10"
 
     ws.merge_cells("A1:H1")
     ws["A1"] = "דוח עובדים לא פעילים"
-    ws["A1"].font = Font(bold=True, size=18, color="0F172A")
+    ws["A1"].font = Font(bold=True, size=16, color="0F172A")
     ws["A1"].fill = PatternFill(fill_type="solid", fgColor="BFD9FF")
     ws["A1"].alignment = Alignment(horizontal="center")
     ws.merge_cells("A2:H2")
     ws["A2"] = "איתור עובדים ללא פעילות בטווח שנבדק לפי דוח יומי"
-    ws["A2"].font = Font(italic=True, size=11, color="475569")
+    ws["A2"].font = Font(italic=True, size=10, color="475569")
     ws["A2"].alignment = Alignment(horizontal="center")
 
     unit_label = "ימים אחרונים" if meta.get("threshold_unit") == "days" else "חודשים אחרונים"
@@ -2295,24 +2295,23 @@ def write_inactive_workers_summary(ws, inactive_rows, meta, mapping):
         ("מספר ימים שנכללו בקובץ", meta.get("span_days", 0), "FDE68A"),
     ]
     metric_blocks = [
-        (4, "A4:B5", metrics[0]),
-        (4, "D4:E5", metrics[1]),
-        (4, "G4:H5", metrics[2]),
-        (7, "A7:B8", metrics[3]),
-        (7, "D7:E8", metrics[4]),
-        (7, "G7:H8", metrics[5]),
+        (4, "A4:B4", metrics[0]),
+        (4, "D4:E4", metrics[1]),
+        (4, "G4:H4", metrics[2]),
+        (6, "A6:B6", metrics[3]),
+        (6, "D6:E6", metrics[4]),
+        (6, "G6:H6", metrics[5]),
     ]
     for start_row, cell_range, (label, value, fill_color) in metric_blocks:
         start_cell = cell_range.split(":")[0]
         ws.merge_cells(cell_range)
         ws[start_cell] = f"{label}\n{value}"
-        ws[start_cell].font = Font(bold=True, color="0F172A", size=13)
+        ws[start_cell].font = Font(bold=True, color="0F172A", size=11)
         ws[start_cell].alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
         ws[start_cell].fill = PatternFill(fill_type="solid", fgColor=fill_color)
-        ws.row_dimensions[start_row].height = 42
-        ws.row_dimensions[start_row + 1].height = 42
+        ws.row_dimensions[start_row].height = 34
 
-    header_row = 15
+    header_row = 9
     headers = ["שם עובד"]
     if mapping.get("employee_number_source"):
         headers.append("מספר עובד")
@@ -5794,15 +5793,18 @@ def build_inactive_workers_mapping_form(script_id, temp_upload_path, temp_upload
         + '<label style="display:flex;align-items:center;gap:6px;font-size:13px;color:#334155;margin-bottom:10px"><input type="checkbox" name="save_template" value="1"> שמור כתבנית חדשה</label>'
         + '<label class="field-label">שם תבנית חדשה</label>'
         + '<input type="text" name="template_name" value="' + esc(template_name_value) + '" placeholder="שם תבנית" style="margin-bottom:14px">'
+        + '<div style="margin-top:14px;background:linear-gradient(180deg,#f8fbff 0%,#eef6ff 100%);border:1px solid #bfdbfe;border-radius:14px;padding:12px 12px 14px;box-shadow:inset 0 1px 0 rgba(255,255,255,.7)">'
+        + '<div style="font-size:13px;font-weight:800;color:#1d4ed8;margin-bottom:4px">סינון הסקריפט</div>'
         + '<div style="font-size:14px;font-weight:700;color:#0f172a;margin-bottom:10px">טווח הבדיקה</div>'
         + '<label class="field-label">סוג בדיקה</label>'
-        + '<select name="inactive_period_unit" style="padding:9px 12px;border:1.5px solid #e2e8f0;border-radius:8px;font-size:13px;font-family:inherit;outline:none;width:100%;margin-bottom:10px;background:white">'
+        + '<select name="inactive_period_unit" style="padding:9px 12px;border:1.5px solid #bfdbfe;border-radius:10px;font-size:13px;font-family:inherit;outline:none;width:100%;margin-bottom:10px;background:white">'
         + '<option value="days"' + (' selected' if unit_value == "days" else '') + '>ימים אחרונים</option>'
         + '<option value="months"' + (' selected' if unit_value == "months" else '') + '>חודשים אחרונים</option>'
         + '</select>'
         + '<label class="field-label">ערך הבדיקה</label>'
-        + '<input type="text" name="inactive_period_value" value="' + esc(threshold_value) + '" placeholder="לדוגמה 30 או 3" style="margin-bottom:0">'
-        + '<div style="font-size:12px;color:#64748b;line-height:1.7;margin-top:10px">המערכת תבדוק האם לעובד הייתה פעילות בטווח שנבחר, לפי תאריך הייחוס האחרון שקיים בקובץ.</div>'
+        + '<input type="text" name="inactive_period_value" value="' + esc(threshold_value) + '" placeholder="לדוגמה 30 או 3" style="margin-bottom:0;border-color:#bfdbfe;background:#ffffff">'
+        + '<div style="font-size:12px;color:#475569;line-height:1.7;margin-top:10px">המערכת תבדוק האם לעובד הייתה פעילות בטווח שנבחר, לפי תאריך הייחוס האחרון שקיים בקובץ.</div>'
+        + '</div>'
         + '</div>'
         + '<div>'
         + '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">'
