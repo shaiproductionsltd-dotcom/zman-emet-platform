@@ -12,6 +12,7 @@ import sqlite3
 import string
 import uuid
 import re
+from urllib.parse import urlencode
 
 from flask import Flask, redirect, request, send_file, session
 from werkzeug.security import check_password_hash, generate_password_hash
@@ -3266,7 +3267,7 @@ SCRIPTS["flamingo_payroll"] = {
 SCRIPT_REGISTRY["flamingo_payroll"] = {
     **SCRIPTS["flamingo_payroll"],
     "processor": run_flamingo_payroll,
-    "output_suffix": "flamingo_payroll",
+    "output_suffix": "payment_report",
     "requires_mapping_confirmation": True,
     "success_title": "Payroll file is ready",
     "success_action": "Download payroll summary",
@@ -3373,7 +3374,7 @@ SCRIPTS["org_hierarchy_report"] = {
 SCRIPT_REGISTRY["matan_missing"] = {
     **SCRIPTS["matan_missing"],
     "processor": run_matan_missing_filter,
-    "output_suffix": "matan_missing",
+    "output_suffix": "missing_vs_standard_report",
     "requires_mapping_confirmation": True,
     "success_title": "Missing-hours report is ready",
     "success_action": "Download report",
@@ -6324,10 +6325,15 @@ def activity():
 @login_required
 @admin_required
 def admin():
-    activity_user_query = request.args.get("activity_user", "").strip()
+    activity_user_id = request.args.get("activity_user_id", "").strip()
     activity_range = request.args.get("activity_range", "all").strip() or "all"
     activity_from = request.args.get("activity_from", "").strip()
     activity_to = request.args.get("activity_to", "").strip()
+    activity_event = request.args.get("activity_event", "all").strip() or "all"
+    activity_limit_raw = request.args.get("activity_limit", "50").strip() or "50"
+    activity_limit = 50
+    if activity_limit_raw.isdigit():
+        activity_limit = max(50, min(500, int(activity_limit_raw)))
     with get_db() as db:
         users = db.execute("SELECT * FROM users WHERE is_admin=0").fetchall()
         perms = db.execute("SELECT * FROM permissions").fetchall()
@@ -6382,6 +6388,15 @@ def admin():
         + "</tbody></table>"
     ) if users else '<p style="color:#94a3b8;text-align:center;padding:2rem">No users yet</p>'
 
+    user_lookup = {str(user["id"]): user for user in users}
+    customer_options = ""
+    for user in sorted(users, key=lambda item: ((item["company_name"] or item["full_name"] or item["username"] or "").lower(), str(item["id"]))):
+        option_label = user["company_name"] or user["full_name"] or user["username"]
+        if user["company_name"] and user["full_name"]:
+            option_label += " — " + user["full_name"]
+        option_label += " @" + (user["username"] or "")
+        customer_options += '<option value="' + str(user["id"]) + '"' + (' selected' if activity_user_id == str(user["id"]) else '') + '>' + esc(option_label) + '</option>'
+
     filtered_activity_logs = []
     today = date.today()
     range_start = None
@@ -6398,12 +6413,10 @@ def admin():
             range_end = datetime.combine(parsed_to, datetime.max.time())
 
     for entry in all_activity_logs:
-        username_text = str(entry["username"] or "")
-        full_name_text = str(entry["full_name"] or "")
-        if activity_user_query:
-            query = activity_user_query.lower()
-            if query not in username_text.lower() and query not in full_name_text.lower():
-                continue
+        if activity_user_id and str(entry["user_id"] or "") != activity_user_id:
+            continue
+        if activity_event != "all" and str(entry["event_type"] or "") != activity_event:
+            continue
         created_at = parse_datetime_value(entry["created_at"])
         if range_start and created_at and created_at < range_start:
             continue
@@ -6421,8 +6434,30 @@ def admin():
     help_opens = sum(1 for entry in filtered_activity_logs if entry["event_type"] == "open_help_popup")
     terms_opens = sum(1 for entry in filtered_activity_logs if entry["event_type"] == "open_service_terms")
 
+    displayed_activity_logs = filtered_activity_logs[:activity_limit]
+
+    def build_activity_link(event_type):
+        query = {
+            "activity_user_id": activity_user_id,
+            "activity_range": activity_range,
+            "activity_from": activity_from,
+            "activity_to": activity_to,
+            "activity_event": event_type,
+            "activity_limit": str(activity_limit),
+        }
+        filtered_query = {key: value for key, value in query.items() if value and not (key == "activity_event" and value == "all")}
+        return "/admin" + ("?" + urlencode(filtered_query) if filtered_query else "")
+
+    def build_summary_card(label, value, event_type):
+        return (
+            '<a href="' + esc(build_activity_link(event_type)) + '" style="background:#f8fafc;border:1px solid ' + ("#93c5fd" if activity_event == event_type or (event_type == "all" and activity_event == "all") else "#e2e8f0") + ';border-radius:12px;padding:12px;text-decoration:none;display:block">'
+            + '<div style="font-size:12px;color:#64748b;margin-bottom:6px">' + label + '</div>'
+            + '<div style="font-size:20px;font-weight:800;color:#0f172a">' + str(value) + '</div>'
+            + '</a>'
+        )
+
     activity_rows = ""
-    for entry in filtered_activity_logs:
+    for entry in displayed_activity_logs:
         user_label = entry["full_name"] or entry["username"] or ("User #" + str(entry["user_id"]))
         activity_rows += (
             "<tr>"
@@ -6437,19 +6472,19 @@ def admin():
         "<table><thead><tr><th>When</th><th>User</th><th>Action</th><th>Tool</th><th>Details</th></tr></thead><tbody>"
         + activity_rows
         + "</tbody></table>"
-    ) if filtered_activity_logs else '<p style="color:#94a3b8;text-align:center;padding:2rem">No activity matches the current filters</p>'
+    ) if displayed_activity_logs else '<p style="color:#94a3b8;text-align:center;padding:2rem">No activity matches the current filters</p>'
     activity_summary = (
         '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;margin-bottom:1rem">'
-        + '<div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;padding:12px"><div style="font-size:12px;color:#64748b;margin-bottom:6px">Total events</div><div style="font-size:20px;font-weight:800;color:#0f172a">' + str(total_activity) + '</div></div>'
-        + '<div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;padding:12px"><div style="font-size:12px;color:#64748b;margin-bottom:6px">Tools opened</div><div style="font-size:20px;font-weight:800;color:#0f172a">' + str(opened_tools) + '</div></div>'
-        + '<div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;padding:12px"><div style="font-size:12px;color:#64748b;margin-bottom:6px">Reports generated</div><div style="font-size:20px;font-weight:800;color:#0f172a">' + str(generated_reports) + '</div></div>'
-        + '<div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;padding:12px"><div style="font-size:12px;color:#64748b;margin-bottom:6px">Help opened</div><div style="font-size:20px;font-weight:800;color:#0f172a">' + str(help_opens) + '</div></div>'
-        + '<div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;padding:12px"><div style="font-size:12px;color:#64748b;margin-bottom:6px">Terms opened</div><div style="font-size:20px;font-weight:800;color:#0f172a">' + str(terms_opens) + '</div></div>'
+        + build_summary_card("Total events", total_activity, "all")
+        + build_summary_card("Tools opened", opened_tools, "open_script")
+        + build_summary_card("Reports generated", generated_reports, "generate_report")
+        + build_summary_card("Help opened", help_opens, "open_help_popup")
+        + build_summary_card("Terms opened", terms_opens, "open_service_terms")
         + '</div>'
     )
     activity_filter_bar = (
         '<form method="GET" action="/admin" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;margin-bottom:1rem">'
-        '<div><label class="field-label">User</label><input type="text" name="activity_user" value="' + esc(activity_user_query) + '" placeholder="Name or username" style="margin-bottom:0"></div>'
+        '<div><label class="field-label">Customer</label><select name="activity_user_id" style="padding:9px 12px;border:1.5px solid #e2e8f0;border-radius:8px;font-size:13px;font-family:inherit;outline:none;width:100%;margin-bottom:0;background:white"><option value="">All customers</option>' + customer_options + '</select></div>'
         '<div><label class="field-label">Date range</label><select name="activity_range" style="padding:9px 12px;border:1.5px solid #e2e8f0;border-radius:8px;font-size:13px;font-family:inherit;outline:none;width:100%;margin-bottom:0;background:white">'
         + '<option value="all"' + (' selected' if activity_range == "all" else '') + '>All activity</option>'
         + '<option value="last_30"' + (' selected' if activity_range == "last_30" else '') + '>Last 30 days</option>'
@@ -6457,9 +6492,17 @@ def admin():
         + '</select></div>'
         '<div><label class="field-label">From date</label><input type="text" name="activity_from" value="' + esc(activity_from) + '" placeholder="YYYY-MM-DD" style="margin-bottom:0"></div>'
         '<div><label class="field-label">To date</label><input type="text" name="activity_to" value="' + esc(activity_to) + '" placeholder="YYYY-MM-DD" style="margin-bottom:0"></div>'
+        '<div><label class="field-label">Show rows</label><select name="activity_limit" style="padding:9px 12px;border:1.5px solid #e2e8f0;border-radius:8px;font-size:13px;font-family:inherit;outline:none;width:100%;margin-bottom:0;background:white">'
+        + '<option value="50"' + (' selected' if activity_limit == 50 else '') + '>50</option>'
+        + '<option value="100"' + (' selected' if activity_limit == 100 else '') + '>100</option>'
+        + '<option value="200"' + (' selected' if activity_limit == 200 else '') + '>200</option>'
+        + '<option value="500"' + (' selected' if activity_limit == 500 else '') + '>500</option>'
+        + '</select></div>'
+        '<input type="hidden" name="activity_event" value="' + esc(activity_event) + '">'
         '<div style="display:flex;gap:8px;align-items:flex-end"><button type="submit" class="btn btn-blue" style="height:40px">Filter</button><a href="/admin" class="btn btn-gray" style="height:40px;display:inline-flex;align-items:center;text-decoration:none">Reset</a></div>'
         '</form>'
         '<div style="font-size:12px;color:#64748b;margin-bottom:1rem">Activity is available from the moment logging was enabled. Older button clicks and opens cannot be reconstructed retroactively.</div>'
+        + ('<div style="font-size:12px;color:#1d4ed8;margin-bottom:1rem">Showing ' + str(len(displayed_activity_logs)) + ' of ' + str(total_activity) + ' matching log entries.</div>' if total_activity > activity_limit else "")
     )
 
     body = (
