@@ -2268,6 +2268,7 @@ def parse_rimon_home_office_report(input_path, extension, mapping):
         office_days = 0
         home_office_days = 0
         missing_absence_days = 0
+        left_days = 0
         error_days = 0
         standard_hours_total = 0.0
         missing_hours_total = 0.0
@@ -2276,6 +2277,7 @@ def parse_rimon_home_office_report(input_path, extension, mapping):
             grouped = grouped_dates[day_key]
             has_home_event = grouped["home_office"]
             normalized_events = [str(event).strip() for event in grouped["events"] if str(event).strip()]
+            has_leave_event = any("פיטור" in event for event in normalized_events)
             has_absence_event = any(
                 keyword in event
                 for event in normalized_events
@@ -2291,8 +2293,9 @@ def parse_rimon_home_office_report(input_path, extension, mapping):
             has_complete_attendance = has_entry and has_exit
             has_partial_attendance = (has_entry and not has_exit) or (has_exit and not has_entry)
             office_work = has_other_work_event or (has_complete_attendance and not has_home_event)
-            grouped["missing_absence"] = has_absence_event and not office_work and not has_home_event and not has_complete_attendance
-            missing_day_error = not has_complete_attendance and not has_partial_attendance and not normalized_events and not grouped["missing_absence"]
+            left_employee = has_leave_event and not office_work and not has_home_event and not has_complete_attendance
+            grouped["missing_absence"] = has_absence_event and not left_employee and not office_work and not has_home_event and not has_complete_attendance
+            missing_day_error = not has_complete_attendance and not has_partial_attendance and not normalized_events and not grouped["missing_absence"] and not left_employee
             if has_partial_attendance and "חסר דיווח" not in grouped["errors"]:
                 grouped["errors"].append("חסר דיווח")
             if missing_day_error and "יום חסר" not in grouped["errors"]:
@@ -2305,6 +2308,8 @@ def parse_rimon_home_office_report(input_path, extension, mapping):
                 office_days += 1
             if grouped["missing_absence"]:
                 missing_absence_days += 1
+            if left_employee:
+                left_days += 1
             if grouped["error"]:
                 error_days += 1
             standard_hours_total += parse_hours_or_zero(grouped["standard_hours"])
@@ -2340,6 +2345,7 @@ def parse_rimon_home_office_report(input_path, extension, mapping):
                 "office_work_days": office_days,
                 "home_office_days": home_office_days,
                 "missing_absence_days": missing_absence_days,
+                "left_days": left_days,
                 "error_days": error_days,
                 "total_grouped_dates": len(grouped_dates),
                 "standard_hours_total": standard_hours_total,
@@ -2379,7 +2385,6 @@ def write_rimon_home_office_summary(ws, employee_rows, report_meta):
     ws.title = safe_sheet_title("סיכום כולל", "Overall Summary")
     ws.sheet_view.rightToLeft = True
     ws.sheet_view.showGridLines = False
-    ws.freeze_panes = "A13"
 
     headers = [
         "שם עובד",
@@ -2389,6 +2394,7 @@ def write_rimon_home_office_summary(ws, employee_rows, report_meta):
         "ימי עבודה מהמשרד",
         "ימי עבודה מהבית",
         "ימי היעדרות",
+        "ימי עזיבה",
         "ימי שגיאה",
         "סה\"כ שעות תקן",
         "סה\"כ שעות חוסר",
@@ -2437,7 +2443,8 @@ def write_rimon_home_office_summary(ws, employee_rows, report_meta):
         label_cell.alignment = Alignment(horizontal="right")
         value_cell.alignment = Alignment(horizontal="right")
 
-    header_row = 12
+    header_row = len(metrics) + 5
+    ws.freeze_panes = "A" + str(header_row + 1)
     for col, header in enumerate(headers, start=1):
         cell = ws.cell(row=header_row, column=col, value=header)
         cell.font = Font(bold=True, color="FFFFFF")
@@ -2454,6 +2461,7 @@ def write_rimon_home_office_summary(ws, employee_rows, report_meta):
             row["office_work_days"],
             row["home_office_days"],
             row["missing_absence_days"],
+            row.get("left_days", 0),
             row["error_days"],
             format_hours(row.get("standard_hours_total", 0.0)),
             format_hours(row.get("missing_hours_total", 0.0)),
@@ -2465,7 +2473,7 @@ def write_rimon_home_office_summary(ws, employee_rows, report_meta):
             if row_idx % 2 == 0:
                 cell.fill = PatternFill(fill_type="solid", fgColor="F8FAFC")
 
-    widths = [24, 16, 16, 24, 18, 18, 18, 14, 16, 16, 28]
+    widths = [24, 16, 16, 24, 18, 18, 18, 14, 14, 16, 16, 28]
     for col, width in enumerate(widths, start=1):
         ws.column_dimensions[get_column_letter(col)].width = width
 
@@ -2954,12 +2962,12 @@ SCRIPTS["matan_manual_corrections"] = {
 SCRIPTS["rimon_home_office_summary"] = {
     "id": "rimon_home_office_summary",
     "name": "סיכום עבודה מהבית והמשרד",
-    "desc": "סיכום ימי עבודה מהבית, ימי עבודה מהמשרד, היעדרויות ושגיאות מתוך דוח הנוכחות",
+    "desc": "סיכום חכם של עבודה מהבית, עבודה מהמשרד, היעדרויות, עזיבות ושגיאות מתוך דוח הנוכחות",
     "help_label": "דרישות לקובץ",
     "help_title": "מה צריך להעלות?",
     "help_intro": "יש להעלות דוח מפורט חודשי.",
-    "help_items": ["המערכת מזהה ימי עבודה מהבית", "ימי עבודה מהמשרד", "היעדרויות", "ושגיאות בדיווח"],
-    "help_note": "הפלט מחזיר סיכום ברור לפי עובד",
+    "help_items": ["המערכת מזהה אוטומטית ימי עבודה מהבית וימי עבודה מהמשרד", "מזהה היעדרויות, עזיבות ושגיאות בדיווח", "ומסכמת גם שעות תקן ושעות חוסר לכל עובד"],
+    "help_note": "הפלט מחזיר סיכום כולל ופירוט יומי ברור, נוח לבדיקה ולטיפול",
     "rules_label": "איך הסקריפט מחשב",
     "rules_title": "איך הסקריפט מחשב את הימים?",
     "rules_intro": "הסקריפט מסכם כל יום לפי כללי ההכרעה הבאים:",
@@ -2969,8 +2977,10 @@ SCRIPTS["rimon_home_office_summary"] = {
         "אם יש שעת כניסה ושעת יציאה, היום נחשב לנוכחות",
         "אם יש רק שעת כניסה או רק שעת יציאה, היום מסומן כשגיאה מסוג חסר דיווח",
         "אם אין נוכחות ואין אירוע, היום מסומן כשגיאה מסוג יום חסר",
+        "אם מזוהה אירוע פיטורין, היום נספר בקטגוריית עובדים שעזבו ולא כהיעדרות",
+        "הפלט כולל גם סיכום של שעות תקן ושעות חוסר לכל עובד",
     ],
-    "rules_note": "כך אפשר להבין בדיוק איך כל יום מסווג בפלט הסופי.",
+    "rules_note": "כך אפשר להבין בדיוק איך כל יום מסווג ואיך הסיכומים מחושבים בפלט הסופי.",
     "accept": ".xls,.xlsx",
     "icon": "🏠",
 }
