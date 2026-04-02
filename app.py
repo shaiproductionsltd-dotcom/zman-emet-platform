@@ -1,6 +1,7 @@
 ﻿from pathlib import Path
 from zipfile import BadZipFile, ZIP_DEFLATED, ZipFile
 from collections import defaultdict
+from io import BytesIO
 import calendar
 import csv
 from datetime import date, datetime, timedelta
@@ -10,6 +11,7 @@ import os
 import secrets
 import sqlite3
 import string
+import threading
 import uuid
 import re
 from urllib.parse import urlencode
@@ -71,6 +73,19 @@ def detect_excel_signature(file_storage):
     return ""
 
 
+def detect_excel_file_signature(path_text):
+    try:
+        with open(path_text, "rb") as handle:
+            header = handle.read(8)
+    except OSError:
+        return ""
+    if header.startswith(b"PK\x03\x04"):
+        return "xlsx"
+    if header.startswith(b"\xD0\xCF\x11\xE0\xA1\xB1\x1A\xE1"):
+        return "xls"
+    return ""
+
+
 def validate_upload(file_storage):
     if not file_storage or file_storage.filename == "":
         return "missing", None
@@ -113,8 +128,14 @@ def widen_known_columns(ws):
 
 
 def process_legacy_xls(input_path, output_path):
-    wb_in = xlrd.open_workbook(input_path, formatting_info=True)
-    cmap = wb_in.colour_map
+    try:
+        wb_in = xlrd.open_workbook(input_path, formatting_info=True)
+        cmap = wb_in.colour_map
+        preserve_formatting = True
+    except NotImplementedError:
+        wb_in = xlrd.open_workbook(input_path)
+        cmap = {}
+        preserve_formatting = False
     wb_out = Workbook()
     wb_out.remove(wb_out.active)
 
@@ -143,35 +164,39 @@ def process_legacy_xls(input_path, output_path):
         for r in range(ws_in.nrows):
             for c in range(ws_in.ncols):
                 val = clean(ws_in.cell_value(r, c))
-                xf = wb_in.xf_list[ws_in.cell_xf_index(r, c)]
-                fi = wb_in.font_list[xf.font_index]
                 cell = ws_out.cell(row=r + 1, column=c + 1, value=val)
-                fc = idx_to_hex(cmap, fi.colour_index)
-                cell.font = Font(
-                    bold=bool(fi.bold),
-                    italic=bool(fi.italic),
-                    size=fi.height / 20,
-                    name=fi.name or "Arial",
-                    color=fc or "000000",
-                )
-                bg = idx_to_hex(cmap, xf.background.pattern_colour_index)
-                if bg and xf.background.fill_pattern != 0:
-                    cell.fill = PatternFill(fill_type="solid", fgColor=bg)
-                cell.alignment = Alignment(
-                    horizontal=H_ALIGN.get(xf.alignment.hor_align, "general"),
-                    vertical=V_ALIGN.get(xf.alignment.vert_align, "bottom"),
-                    wrapText=bool(xf.alignment.text_wrapped),
-                    shrinkToFit=bool(xf.alignment.shrink_to_fit),
-                    readingOrder=2,
-                )
+                if preserve_formatting:
+                    xf = wb_in.xf_list[ws_in.cell_xf_index(r, c)]
+                    fi = wb_in.font_list[xf.font_index]
+                    fc = idx_to_hex(cmap, fi.colour_index)
+                    cell.font = Font(
+                        bold=bool(fi.bold),
+                        italic=bool(fi.italic),
+                        size=fi.height / 20,
+                        name=fi.name or "Arial",
+                        color=fc or "000000",
+                    )
+                    bg = idx_to_hex(cmap, xf.background.pattern_colour_index)
+                    if bg and xf.background.fill_pattern != 0:
+                        cell.fill = PatternFill(fill_type="solid", fgColor=bg)
+                    cell.alignment = Alignment(
+                        horizontal=H_ALIGN.get(xf.alignment.hor_align, "general"),
+                        vertical=V_ALIGN.get(xf.alignment.vert_align, "bottom"),
+                        wrapText=bool(xf.alignment.text_wrapped),
+                        shrinkToFit=bool(xf.alignment.shrink_to_fit),
+                        readingOrder=2,
+                    )
+                else:
+                    cell.alignment = Alignment(horizontal="right", vertical="center", readingOrder=2)
                 cell.border = NO_BORDER
 
-        for r1, r2, c1, c2 in ws_in.merged_cells:
-            if r2 > r1 or c2 > c1:
-                try:
-                    ws_out.merge_cells(start_row=r1 + 1, start_column=c1 + 1, end_row=r2, end_column=c2)
-                except Exception:
-                    pass
+        if preserve_formatting:
+            for r1, r2, c1, c2 in ws_in.merged_cells:
+                if r2 > r1 or c2 > c1:
+                    try:
+                        ws_out.merge_cells(start_row=r1 + 1, start_column=c1 + 1, end_row=r2, end_column=c2)
+                    except Exception:
+                        pass
 
     for ws in wb_out.worksheets:
         widen_known_columns(ws)
@@ -193,10 +218,11 @@ def process_xlsx(input_path, output_path):
 
 
 def process_spreadsheet(input_path, output_path, extension):
-    if extension == "xls":
+    actual_extension = detect_excel_file_signature(input_path) or extension
+    if actual_extension == "xls":
         process_legacy_xls(input_path, output_path)
         return
-    if extension == "xlsx":
+    if actual_extension == "xlsx":
         process_xlsx(input_path, output_path)
         return
     raise ValueError("Unsupported file type")
@@ -3390,9 +3416,9 @@ FLOW_TEXTS = {
                 "desc": "ניקוי סימני כוכביות וסימני שאלה מדוח נוכחות מפורט חודשי",
                 "help_label": "דרישות לקובץ",
                 "help_title": "מה צריך להעלות?",
-                "help_intro": "יש להעלות דוח נוכחות מפורט חודשי הכולל סימני * או ?.",
-                "help_items": ["המערכת תחזיר את אותו הדוח לאחר ניקוי הסימנים"],
-                "help_note": "הפלט מתקבל מוכן להמשך עבודה",
+                "help_intro": "יש להעלות דוח נוכחות מפורט חודשי. המערכת תנקה אוטומטית סימני * וגם סימני ? מתוך הדוח.",
+                "help_items": ["אפשר להמשיך לעבוד בפלטפורמה בזמן שהדוח בעיבוד", "כשהדוח מוכן הוא יופיע בדוחות המוכנים להורדה", "העיבוד עשוי להימשך מספר דקות וזה תקין גם בדוחות גדולים"],
+                "help_note": "דוחות בעיבוד ברקע נשמרים עד להורדה או עד 3 ימים, המוקדם מביניהם.",
                 "success_title": "הקובץ מוכן",
                 "success_action": "הורדת הקובץ הנקי",
                 "retry_action": "עיבוד קובץ נוסף",
@@ -3405,7 +3431,7 @@ FLOW_TEXTS = {
                 "too_large_error": "הקובץ שהועלה גדול מדי",
                 "processing_error": "לא ניתן היה לעבד את הקובץ שהועלה",
                 "processing_title": "הקובץ נמצא בעיבוד",
-                "processing_note": "הכנת הדוח הנקי עשויה להימשך כמה דקות. נא להשאיר את הדף פתוח.",
+                "processing_note": "הכנת הדוח הנקי עשויה להימשך כמה דקות. אפשר להמשיך לעבוד בפלטפורמה, וכשהדוח יהיה מוכן הוא יופיע בדוחות המוכנים להורדה.",
                 "file_picker_label": "בחירת קובץ",
             },
             "flamingo_payroll": {
@@ -3537,6 +3563,7 @@ SCRIPT_REGISTRY = {
         **SCRIPTS["nikuy"],
         "processor": run_attendance_cleanup,
         "output_suffix": "cleaned",
+        "background_queue": True,
         "success_title": "File is ready",
         "success_action": "Download cleaned file",
         "retry_action": "Process another file",
@@ -4031,6 +4058,29 @@ def init_db():
             created_at TEXT NOT NULL)"""
         )
         db.execute("CREATE INDEX IF NOT EXISTS idx_support_requests_created_at ON support_requests(created_at)")
+        db.execute(
+            """CREATE TABLE IF NOT EXISTS report_jobs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            username TEXT,
+            full_name TEXT,
+            company_name TEXT,
+            script_id TEXT NOT NULL,
+            script_name TEXT NOT NULL,
+            original_filename TEXT,
+            input_path TEXT,
+            input_ext TEXT,
+            output_filename TEXT,
+            status TEXT NOT NULL,
+            status_note TEXT,
+            created_at TEXT NOT NULL,
+            started_at TEXT,
+            completed_at TEXT,
+            expires_at TEXT,
+            downloaded_at TEXT)"""
+        )
+        db.execute("CREATE INDEX IF NOT EXISTS idx_report_jobs_user_created_at ON report_jobs(user_id, created_at)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_report_jobs_status ON report_jobs(status)")
         existing_columns = get_table_columns(db, "users")
         desired_columns = {
             "company_name": "TEXT",
@@ -4178,6 +4228,141 @@ def create_support_request(user_row, request_type, message, script_id="", script
             ),
         )
         db.commit()
+
+
+def now_text():
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def report_job_status_label(status):
+    labels = {
+        "pending": "ממתין",
+        "processing": "בעיבוד",
+        "ready": "מוכן להורדה",
+        "failed": "נכשל",
+        "downloaded": "הורד",
+        "expired": "פג תוקף",
+    }
+    return labels.get(str(status or "").strip().lower(), str(status or ""))
+
+
+def cleanup_report_file(path_text):
+    path = Path(str(path_text or "").strip())
+    if not path:
+        return
+    try:
+        if path.exists():
+            path.unlink()
+    except OSError:
+        pass
+
+
+def expire_report_jobs():
+    current = now_text()
+    with get_db() as db:
+        expired_jobs = db.execute(
+            "SELECT * FROM report_jobs WHERE status='ready' AND expires_at IS NOT NULL AND expires_at<=?",
+            (current,),
+        ).fetchall()
+        for job in expired_jobs:
+            cleanup_report_file(job["output_filename"])
+            db.execute(
+                "UPDATE report_jobs SET status='expired', status_note=? WHERE id=?",
+                ("הדוח נשמר למשך 3 ימים ולאחר מכן פג תוקפו.", job["id"]),
+            )
+        if expired_jobs:
+            db.commit()
+
+
+def create_report_job(user_row, script_id, script_name, original_filename, input_path, input_ext, output_filename):
+    with get_db() as db:
+        created_at = now_text()
+        params = (
+            user_row["id"],
+            user_row["username"] or "",
+            user_row["full_name"] or "",
+            user_row["company_name"] or "",
+            script_id,
+            script_name,
+            original_filename or "",
+            input_path,
+            input_ext,
+            output_filename,
+            "pending",
+            "הדוח ממתין לתחילת עיבוד.",
+            created_at,
+        )
+        if db.is_postgres:
+            job_row = db.execute(
+                """INSERT INTO report_jobs(
+                user_id, username, full_name, company_name, script_id, script_name, original_filename,
+                input_path, input_ext, output_filename, status, status_note, created_at
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id""",
+                params,
+            ).fetchone()
+        else:
+            db.execute(
+                """INSERT INTO report_jobs(
+                user_id, username, full_name, company_name, script_id, script_name, original_filename,
+                input_path, input_ext, output_filename, status, status_note, created_at
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                params,
+            )
+            job_row = db.execute("SELECT last_insert_rowid() AS id").fetchone()
+        db.commit()
+        return int(job_row["id"])
+
+
+def get_user_report_jobs(user_id):
+    expire_report_jobs()
+    with get_db() as db:
+        return db.execute(
+            "SELECT * FROM report_jobs WHERE user_id=? ORDER BY created_at DESC, id DESC",
+            (user_id,),
+        ).fetchall()
+
+
+def start_cleanup_report_job(job_id):
+    def worker():
+        with get_db() as db:
+            job = db.execute("SELECT * FROM report_jobs WHERE id=?", (job_id,)).fetchone()
+            if not job or job["status"] not in {"pending", "processing"}:
+                return
+            db.execute(
+                "UPDATE report_jobs SET status='processing', status_note=?, started_at=? WHERE id=?",
+                ("הקובץ נמצא בעיבוד. אפשר להמשיך לעבוד בפלטפורמה ובסיומו הוא יופיע בדוחות המוכנים להורדה.", now_text(), job_id),
+            )
+            db.commit()
+        try:
+            execute_script(
+                SCRIPT_REGISTRY["nikuy"],
+                job["input_path"],
+                str(OUTPUT_FOLDER / job["output_filename"]),
+                job["input_ext"],
+                {},
+            )
+            with get_db() as db:
+                db.execute(
+                    "UPDATE report_jobs SET status='ready', status_note=?, completed_at=?, expires_at=? WHERE id=?",
+                    (
+                        "הדוח מוכן להורדה. הוא יישמר עד להורדה או עד 3 ימים, המוקדם מביניהם.",
+                        now_text(),
+                        (datetime.now() + timedelta(days=3)).strftime("%Y-%m-%d %H:%M:%S"),
+                        job_id,
+                    ),
+                )
+                db.commit()
+        except Exception:
+            with get_db() as db:
+                db.execute(
+                    "UPDATE report_jobs SET status='failed', status_note=?, completed_at=? WHERE id=?",
+                    ("הדוח לא הושלם. מומלץ לנסות שוב עם הקובץ המקורי.", now_text(), job_id),
+                )
+                db.commit()
+        finally:
+            cleanup_report_file(job["input_path"])
+
+    threading.Thread(target=worker, daemon=True).start()
 
 
 def support_status_meta(status_value):
@@ -6271,9 +6456,11 @@ def dashboard():
 
     lang = get_flow_lang()
     text = get_flow_text(lang)
+    expire_report_jobs()
     with get_db() as db:
         user = db.execute("SELECT * FROM users WHERE id=?", (session["user_id"],)).fetchone()
         perms = db.execute("SELECT script_id FROM permissions WHERE user_id=?", (session["user_id"],)).fetchall()
+        report_jobs = db.execute("SELECT * FROM report_jobs WHERE user_id=? AND status<>'downloaded' ORDER BY created_at DESC, id DESC LIMIT 8", (session["user_id"],)).fetchall()
     if user is None:
         session.clear()
         return redirect("/")
@@ -6334,70 +6521,110 @@ def dashboard():
         "</div>"
         for label, value in info_items
     )
+    status_styles = {
+        "pending": ("#eff6ff", "#1d4ed8"),
+        "processing": ("#fff7ed", "#c2410c"),
+        "ready": ("#ecfdf5", "#047857"),
+        "failed": ("#fef2f2", "#b91c1c"),
+        "expired": ("#f8fafc", "#475569"),
+        "downloaded": ("#f8fafc", "#475569"),
+    }
+    report_job_rows = ""
+    for job in report_jobs:
+        pill_bg, pill_fg = status_styles.get(job["status"], ("#f8fafc", "#475569"))
+        action_html = (
+            '<a href="/report-jobs/' + str(job["id"]) + '/download" class="btn btn-blue" style="text-decoration:none;display:inline-flex;align-items:center;justify-content:center;min-width:140px">הורדת הדוח</a>'
+            if job["status"] == "ready"
+            else ""
+        )
+        report_job_rows += (
+            '<div style="border:1px solid #e2e8f0;border-radius:14px;padding:14px 16px;background:#ffffff">'
+            '<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:14px;flex-wrap:wrap">'
+            '<div>'
+            '<div style="font-size:15px;font-weight:800;color:#0f172a;margin-bottom:6px">' + esc(job["script_name"]) + '</div>'
+            '<div style="font-size:13px;color:#64748b;margin-bottom:6px">' + esc(job["original_filename"]) + '</div>'
+            '<div style="display:inline-flex;align-items:center;padding:6px 10px;border-radius:999px;background:' + pill_bg + ';color:' + pill_fg + ';font-size:12px;font-weight:800">' + esc(report_job_status_label(job["status"])) + '</div>'
+            + ('<div style="font-size:12px;color:#475569;margin-top:8px;line-height:1.7">' + esc(job["status_note"]) + '</div>' if job["status_note"] else '')
+            + '</div>'
+            '<div style="display:flex;flex-direction:column;align-items:flex-end;gap:8px">'
+            '<div style="font-size:12px;color:#64748b">' + esc(format_ui_datetime(job["created_at"])) + '</div>'
+            + action_html
+            + '</div>'
+            '</div></div>'
+        )
+    report_jobs_html = (
+        '<div class="card" style="margin-top:1rem;background:linear-gradient(135deg,#ffffff 0%,#f8fbff 100%);border:1px solid #dbeafe">'
+        '<div style="display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap;margin-bottom:12px">'
+        '<div><div style="font-size:18px;font-weight:800;color:#1e3a8a;margin-bottom:6px">דוחות בעיבוד והורדה</div>'
+        '<div style="font-size:14px;color:#475569;line-height:1.7">דוחות ניקוי שנשלחו לעיבוד ברקע יופיעו כאן. הדוח נשמר עד להורדה או עד 3 ימים, המוקדם מביניהם.</div></div>'
+        '</div>'
+        + (report_job_rows if report_job_rows else '<div style="text-align:center;padding:1rem 0;color:#94a3b8">עדיין אין דוחות בעיבוד או דוחות מוכנים להורדה</div>')
+        + '</div>'
+    )
     body = (
         '<h2 style="font-size:24px;font-weight:800;color:#1e3a8a;margin-bottom:.4rem">' + text["dashboard_greeting"]
         + esc(session["name"])
         + ' &#128075;</h2>'
         + ('<p style="font-size:14px;color:#64748b;margin-bottom:1.5rem">' + text["dashboard_intro"] + "</p>" if text["dashboard_intro"] else "")
-        +
-        '<div style="display:grid;grid-template-columns:1.15fr .85fr;gap:1rem;margin-bottom:1rem">'
-        '<details class="card" style="margin:0;padding:0;overflow:hidden" id="accountDetailsCard">'
-        '<summary style="list-style:none;cursor:pointer;padding:18px 20px;display:flex;align-items:center;justify-content:space-between;gap:12px">'
-        '<div><div style="font-size:18px;font-weight:800;color:#0f172a;margin-bottom:6px">' + ("פרטי חשבון ולקוח" if lang == "he" else "Account and company details") + '</div>'
-        '<div style="font-size:14px;color:#334155;font-weight:700">' + esc(collapsed_company_name) + '</div></div>'
-        '<span style="font-size:18px;color:#64748b">+</span>'
-        '</summary>'
-        '<div style="padding:0 20px 20px"><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px">'
+        + '<div style="display:grid;grid-template-columns:1.15fr .85fr;gap:1rem;margin-bottom:1rem">'
+        + '<details class="card" style="margin:0;padding:0;overflow:hidden" id="accountDetailsCard">'
+        + '<summary style="list-style:none;cursor:pointer;padding:18px 20px;display:flex;align-items:center;justify-content:space-between;gap:12px">'
+        + '<div><div style="font-size:18px;font-weight:800;color:#0f172a;margin-bottom:6px">' + ("פרטי חשבון ולקוח" if lang == "he" else "Account and company details") + '</div>'
+        + '<div style="font-size:14px;color:#334155;font-weight:700">' + esc(collapsed_company_name) + '</div></div>'
+        + '<span style="font-size:18px;color:#64748b">+</span>'
+        + '</summary>'
+        + '<div style="padding:0 20px 20px"><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px">'
         + info_grid
         + '</div></div></details>'
-        '<details class="card" style="margin:0;padding:0;overflow:hidden;background:linear-gradient(180deg,#ffffff 0%,#f8fbff 100%)" id="serviceStatusCard">'
-        '<summary style="list-style:none;cursor:pointer;padding:18px 20px;display:flex;align-items:center;justify-content:space-between;gap:12px">'
-        '<div><div style="font-size:18px;font-weight:800;color:#0f172a;margin-bottom:6px">' + ("סטטוס שירות" if lang == "he" else "Service status") + '</div>'
-        '<div style="display:inline-flex;align-items:center;padding:8px 12px;border-radius:999px;background:' + status_bg + ';color:' + status_fg + ';font-size:14px;font-weight:800;margin-bottom:8px">' + esc(status_label) + '</div>'
-        '<div style="font-size:13px;color:#475569">' + esc(service_compact) + '</div></div>'
-        '<span style="font-size:18px;color:#64748b">+</span>'
-        '</summary>'
-        '<div style="padding:0 20px 20px">'
-        '<div style="font-size:14px;color:#334155;margin-bottom:8px">' + esc(service_note) + '</div>'
-        '<div style="font-size:12px;color:#64748b;margin-bottom:4px">' + ("מסלול חיוב" if lang == "he" else "Billing mode") + '</div>'
-        '<div style="font-size:15px;font-weight:700;color:#0f172a">' + esc(billing_mode_label(user["billing_mode"], lang)) + '</div>'
-        '</div></details>'
-        '</div>'
-        '<div class="card" style="margin:0"><div style="font-size:18px;font-weight:800;color:#0f172a;margin-bottom:14px">'
+        + '<details class="card" style="margin:0;padding:0;overflow:hidden;background:linear-gradient(180deg,#ffffff 0%,#f8fbff 100%)" id="serviceStatusCard">'
+        + '<summary style="list-style:none;cursor:pointer;padding:18px 20px;display:flex;align-items:center;justify-content:space-between;gap:12px">'
+        + '<div><div style="font-size:18px;font-weight:800;color:#0f172a;margin-bottom:6px">' + ("סטטוס שירות" if lang == "he" else "Service status") + '</div>'
+        + '<div style="display:inline-flex;align-items:center;padding:8px 12px;border-radius:999px;background:' + status_bg + ';color:' + status_fg + ';font-size:14px;font-weight:800;margin-bottom:8px">' + esc(status_label) + '</div>'
+        + '<div style="font-size:13px;color:#475569">' + esc(service_compact) + '</div></div>'
+        + '<span style="font-size:18px;color:#64748b">+</span>'
+        + '</summary>'
+        + '<div style="padding:0 20px 20px">'
+        + '<div style="font-size:14px;color:#334155;margin-bottom:8px">' + esc(service_note) + '</div>'
+        + '<div style="font-size:12px;color:#64748b;margin-bottom:4px">' + ("מסלול חיוב" if lang == "he" else "Billing mode") + '</div>'
+        + '<div style="font-size:15px;font-weight:700;color:#0f172a">' + esc(billing_mode_label(user["billing_mode"], lang)) + '</div>'
+        + '</div></details>'
+        + '</div>'
+        + '<div class="card" style="margin:0"><div style="font-size:18px;font-weight:800;color:#0f172a;margin-bottom:14px">'
         + ("הכלים הזמינים לך" if lang == "he" else "Your available tools")
         + '</div><div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:1rem">'
         + cards
         + '</div></div>'
-        '<div class="card" style="margin-top:1rem;background:linear-gradient(135deg,#ffffff 0%,#f8fbff 100%);border:1px solid #dbeafe">'
-        '<div style="display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap">'
-        '<div><div style="font-size:18px;font-weight:800;color:#1e3a8a;margin-bottom:6px">' + ("שירות לקוחות" if lang == "he" else "Customer support") + '</div>'
-        '<div style="font-size:14px;color:#475569;line-height:1.7">' + ("לבקשה לכלי חדש או לדיווח על תקלה בכלי קיים" if lang == "he" else "Request a new tool or report an issue in an existing tool") + '</div></div>'
-        '<a href="/support" class="btn btn-blue" style="text-decoration:none;display:inline-flex;align-items:center;justify-content:center;min-width:180px">' + ("פתיחת פנייה" if lang == "he" else "Open request") + '</a>'
-        '</div></div>'
-        '<div class="card" style="margin-top:1rem;background:linear-gradient(135deg,#eff6ff 0%,#f8fafc 100%);border:1px solid #bfdbfe">'
-        '<div style="font-size:18px;font-weight:800;color:#1e3a8a;margin-bottom:8px">' + ("אבטחת מידע ופרטיות" if lang == "he" else "Security and privacy") + '</div>'
-        '<div style="font-size:14px;line-height:1.8;color:#334155">'
+        + report_jobs_html
+        + '<div class="card" style="margin-top:1rem;background:linear-gradient(135deg,#ffffff 0%,#f8fbff 100%);border:1px solid #dbeafe">'
+        + '<div style="display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap">'
+        + '<div><div style="font-size:18px;font-weight:800;color:#1e3a8a;margin-bottom:6px">' + ("שירות לקוחות" if lang == "he" else "Customer support") + '</div>'
+        + '<div style="font-size:14px;color:#475569;line-height:1.7">' + ("לבקשה לכלי חדש או לדיווח על תקלה בכלי קיים" if lang == "he" else "Request a new tool or report an issue in an existing tool") + '</div></div>'
+        + '<a href="/support" class="btn btn-blue" style="text-decoration:none;display:inline-flex;align-items:center;justify-content:center;min-width:180px">' + ("פתיחת פנייה" if lang == "he" else "Open request") + '</a>'
+        + '</div></div>'
+        + '<div class="card" style="margin-top:1rem;background:linear-gradient(135deg,#eff6ff 0%,#f8fafc 100%);border:1px solid #bfdbfe">'
+        + '<div style="font-size:18px;font-weight:800;color:#1e3a8a;margin-bottom:8px">' + ("אבטחת מידע ופרטיות" if lang == "he" else "Security and privacy") + '</div>'
+        + '<div style="font-size:14px;line-height:1.8;color:#334155">'
         + (
-            "הדוחות שאתם מעלים משמשים לעיבוד בלבד ואינם נשמרים כחלק ממאגר קבוע. קבצי העבודה ותוצרי העיבוד נשמרים זמנית לצורך השלמת התהליך וההורדה, ולאחר מכן מנוקים באופן אוטומטי."
+            "הדוחות שאתם מעלים משמשים לעיבוד בלבד ואינם נשמרים כחלק ממאגר קבוע. ברוב הכלים קבצי העבודה ותוצרי העיבוד נמחקים אוטומטית מיד לאחר ההורדה. בכלי ניקוי דוח נוכחות, אם הדוח נשלח לעיבוד ברקע, הוא נשמר עד להורדה או עד 3 ימים, המוקדם מביניהם, ולאחר מכן נמחק אוטומטית."
             if lang == "he"
-            else "Uploaded reports are used only for processing and are not kept as part of a permanent data store. Working files and generated outputs are kept temporarily for processing and download, and are cleaned up automatically afterward."
+            else "Uploaded reports are used only for processing and are not kept as part of a permanent data store. In most tools, working files and outputs are deleted immediately after download. For the attendance cleanup tool, when a report is sent to background processing it is kept until download or for up to 3 days, whichever comes first."
         )
         + '</div></div>'
-        '<details id="serviceTerms" style="margin-top:1rem;background:#ffffff;border:1px solid #e2e8f0;border-radius:16px;box-shadow:0 2px 16px rgba(0,0,0,.04);overflow:hidden">'
-        '<summary style="list-style:none;cursor:pointer;padding:16px 18px;font-size:15px;font-weight:800;color:#0f172a;display:flex;align-items:center;justify-content:space-between;background:linear-gradient(180deg,#ffffff 0%,#f8fafc 100%);direction:rtl;text-align:right">'
-        '<span>פירוט השירות והמנוי</span><span style="font-size:18px;color:#64748b">+</span></summary>'
-        '<div style="padding:0 18px 18px;font-size:14px;line-height:1.9;color:#334155;direction:rtl;text-align:right">'
-        'הפלטפורמה מרכזת כלים ודוחות שפותחו מתוך צרכים אמיתיים שעלו מהשטח.<br>'
-        'לקוחות מנויים נהנים מגישה לכלל הכלים הזמינים במערכת.<br>'
-        'פיתוח של כלי חדש מתבצע בתמחור חד־פעמי נפרד, בהתאם להיקף העבודה ובהצעת מחיר מראש.<br>'
-        'לקוחות בתקופת ניסיון אינם כלולים בשירות המלא.<br>'
-        'עלות השירות: 250 ש&quot;ח לחודש, בחיוב שנתי מראש, בתוספת מע&quot;מ.'
-        '<br>ליצירת קשר ומענה: בוואטסאפ 0525776994 או במייל shaiproductionsltd@gmail.com'
-        '</div></details>'
-        '<script>'
-        'function trackUserActivity(eventType, actionLabel, scriptId, scriptName, details){try{var data=new FormData();data.append("event_type",eventType||"");data.append("action_label",actionLabel||"");data.append("script_id",scriptId||"");data.append("script_name",scriptName||"");data.append("details",details||"");if(navigator.sendBeacon){navigator.sendBeacon("/activity",data);}else{fetch("/activity",{method:"POST",body:data,credentials:"same-origin",keepalive:true});}}catch(e){}}'
-        'var serviceTerms=document.getElementById("serviceTerms");if(serviceTerms){serviceTerms.addEventListener("toggle",function(){if(this.open){trackUserActivity("open_service_terms","פתח פירוט שירות ומחיר","","","פירוט השירות והמנוי");}});}'
-        '</script>'
+        + '<details id="serviceTerms" style="margin-top:1rem;background:#ffffff;border:1px solid #e2e8f0;border-radius:16px;box-shadow:0 2px 16px rgba(0,0,0,.04);overflow:hidden">'
+        + '<summary style="list-style:none;cursor:pointer;padding:16px 18px;font-size:15px;font-weight:800;color:#0f172a;display:flex;align-items:center;justify-content:space-between;background:linear-gradient(180deg,#ffffff 0%,#f8fafc 100%);direction:rtl;text-align:right">'
+        + '<span>פירוט השירות והמנוי</span><span style="font-size:18px;color:#64748b">+</span></summary>'
+        + '<div style="padding:0 18px 18px;font-size:14px;line-height:1.9;color:#334155;direction:rtl;text-align:right">'
+        + 'הפלטפורמה מרכזת כלים ודוחות שפותחו מתוך צרכים אמיתיים שעלו מהשטח.<br>'
+        + 'לקוחות מנויים נהנים מגישה לכלל הכלים הזמינים במערכת.<br>'
+        + 'פיתוח של כלי חדש מתבצע בתמחור חד־פעמי נפרד, בהתאם להיקף העבודה ובהצעת מחיר מראש.<br>'
+        + 'לקוחות בתקופת ניסיון אינם כלולים בשירות המלא.<br>'
+        + 'עלות השירות: 250 ש&quot;ח לחודש, בחיוב שנתי מראש, בתוספת מע&quot;מ.'
+        + '<br>ליצירת קשר ומענה: בוואטסאפ 0525776994 או במייל shaiproductionsltd@gmail.com'
+        + '</div></details>'
+        + '<script>'
+        + 'function trackUserActivity(eventType, actionLabel, scriptId, scriptName, details){try{var data=new FormData();data.append("event_type",eventType||"");data.append("action_label",actionLabel||"");data.append("script_id",scriptId||"");data.append("script_name",scriptName||"");data.append("details",details||"");if(navigator.sendBeacon){navigator.sendBeacon("/activity",data);}else{fetch("/activity",{method:"POST",body:data,credentials:"same-origin",keepalive:true});}}catch(e){}}'
+        + 'var serviceTerms=document.getElementById("serviceTerms");if(serviceTerms){serviceTerms.addEventListener("toggle",function(){if(this.open){trackUserActivity("open_service_terms","פתח פירוט שירות ומחיר","","","פירוט השירות והמנוי");}});}'
+        + '</script>'
     )
     return render(
         text["dashboard_page_title"],
@@ -7206,25 +7433,41 @@ def run_script(script_id):
                             pass
                 else:
                     file_obj.save(inp)
-                    try:
-                        execution_result = execute_script(scr, inp, out, ext, options) or {}
-                        result = result_name
-                        processing_warnings = execution_result.get("warnings", [])
-                        log_user_activity("generate_report", "הפיק דוח", script_id, scr["name"], result_name)
-                    except (xlrd.biffh.XLRDError, BadZipFile, OSError, ValueError):
-                        error = '<div class="flash-err">' + scr["processing_error"] + '</div>'
-                    except Exception as e:
-                        error = '<div class="flash-err">' + text["run_unexpected_error_prefix"] + str(e) + "</div>"
-                    finally:
-                        try:
-                            os.remove(inp)
-                        except OSError:
-                            pass
-                        for path in extra_paths:
+                    if scr.get("background_queue"):
+                        with get_db() as db:
+                            user_row = db.execute("SELECT * FROM users WHERE id=?", (session["user_id"],)).fetchone()
+                        if user_row is None:
                             try:
-                                os.remove(path)
+                                os.remove(inp)
                             except OSError:
                                 pass
+                            error = '<div class="flash-err">המשתמש לא נמצא. יש להתחבר מחדש.</div>'
+                        else:
+                            job_id = create_report_job(user_row, script_id, scr["name"], file_obj.filename, inp, ext, result_name)
+                            start_cleanup_report_job(job_id)
+                            log_user_activity("queue_report", "שלח דוח לעיבוד ברקע", script_id, scr["name"], result_name)
+                            add_flash("הדוח נקלט לעיבוד ברקע. אפשר להמשיך לעבוד בפלטפורמה, וכשהוא יהיה מוכן הוא יופיע בדוחות המוכנים להורדה.")
+                            return redirect("/dashboard")
+                    else:
+                        try:
+                            execution_result = execute_script(scr, inp, out, ext, options) or {}
+                            result = result_name
+                            processing_warnings = execution_result.get("warnings", [])
+                            log_user_activity("generate_report", "הפיק דוח", script_id, scr["name"], result_name)
+                        except (xlrd.biffh.XLRDError, BadZipFile, OSError, ValueError):
+                            error = '<div class="flash-err">' + scr["processing_error"] + '</div>'
+                        except Exception as e:
+                            error = '<div class="flash-err">' + text["run_unexpected_error_prefix"] + str(e) + "</div>"
+                        finally:
+                            try:
+                                os.remove(inp)
+                            except OSError:
+                                pass
+                            for path in extra_paths:
+                                try:
+                                    os.remove(path)
+                                except OSError:
+                                    pass
 
     if result:
         warning_html = ""
@@ -7403,6 +7646,37 @@ def download(filename):
     if script:
         log_user_activity("download_report", "הוריד דוח", script.get("id", ""), script.get("name", ""), download_name)
     return send_file(path, as_attachment=True, download_name=download_name)
+
+
+@app.route("/report-jobs/<int:job_id>/download")
+@login_required
+def download_report_job(job_id):
+    expire_report_jobs()
+    with get_db() as db:
+        job = db.execute("SELECT * FROM report_jobs WHERE id=?", (job_id,)).fetchone()
+    if not job or job["user_id"] != session.get("user_id"):
+        add_flash("הדוח לא נמצא")
+        return redirect("/dashboard")
+    if job["status"] != "ready":
+        add_flash("הדוח עדיין לא מוכן להורדה")
+        return redirect("/dashboard")
+    path = OUTPUT_FOLDER / job["output_filename"]
+    if not path.exists():
+        with get_db() as db:
+            db.execute("UPDATE report_jobs SET status='expired', status_note=? WHERE id=?", ("הדוח אינו זמין יותר להורדה.", job_id))
+            db.commit()
+        add_flash("הדוח אינו זמין יותר להורדה")
+        return redirect("/dashboard")
+    data = path.read_bytes()
+    cleanup_report_file(path)
+    with get_db() as db:
+        db.execute(
+            "UPDATE report_jobs SET status='downloaded', downloaded_at=?, status_note=? WHERE id=?",
+            (now_text(), "הדוח הורד ונמחק אוטומטית מהמערכת.", job_id),
+        )
+        db.commit()
+    log_user_activity("download_report", "הוריד דוח", job["script_id"], job["script_name"], job["output_filename"])
+    return send_file(BytesIO(data), as_attachment=True, download_name=job["output_filename"].split("_", 1)[-1] if "_" in job["output_filename"] else job["output_filename"])
 
 
 @app.route("/activity", methods=["POST"])
