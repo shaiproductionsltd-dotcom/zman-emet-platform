@@ -2185,8 +2185,6 @@ def parse_inactive_workers_report(input_path, extension, mapping, options):
         total_hours_text = clean_daily_activity_value(extract_inactive_workers_mapping_value(sheet, workbook_kind, mapping.get("total_hours_source"), row_index))
         event_text = clean_daily_activity_value(extract_inactive_workers_mapping_value(sheet, workbook_kind, mapping.get("event_source"), row_index))
         department = stringify_excel_value(extract_inactive_workers_mapping_value(sheet, workbook_kind, mapping.get("department_source"), row_index))
-        error_text = stringify_excel_value(extract_inactive_workers_mapping_value(sheet, workbook_kind, mapping.get("error_text_source"), row_index))
-
         has_attendance_pair = bool(entry_time and exit_time)
         total_hours_value = parse_hours_or_zero(total_hours_text)
         has_total_hours = bool(total_hours_text and total_hours_value > 0)
@@ -2212,14 +2210,16 @@ def parse_inactive_workers_report(input_path, extension, mapping, options):
                 "last_seen_date": date_value,
                 "activity_days": 0,
                 "event_only_days": 0,
-                "error_notes": set(),
+                "system_notes": set(),
             }
         employee = employees[employee_key]
         employee["last_seen_date"] = max(employee["last_seen_date"], date_value)
         if department and not employee["department"]:
             employee["department"] = department
-        if error_text:
-            employee["error_notes"].add(error_text)
+        if not employee_number and not badge_number and not id_number and not passport_number:
+            employee["system_notes"].add("חסר מזהה עובד נוסף")
+        if not employee_name:
+            employee["system_notes"].add("חסר שם עובד")
         if has_activity:
             employee["activity_days"] += 1
             if has_event and not (has_attendance_pair or has_total_hours):
@@ -2253,7 +2253,7 @@ def parse_inactive_workers_report(input_path, extension, mapping, options):
                 "activity_days": employee["activity_days"],
                 "event_only_days": employee["event_only_days"],
                 "status_reason": "לא זוהתה פעילות בכלל" if last_active_date is None else "לא זוהתה פעילות בטווח שנבדק",
-                "error_text": " | ".join(sorted(employee["error_notes"])),
+                "system_notes": " | ".join(sorted(employee["system_notes"])),
             }
         )
 
@@ -2273,27 +2273,46 @@ def write_inactive_workers_summary(ws, inactive_rows, meta, mapping):
     ws.title = safe_sheet_title("עובדים לא פעילים", "עובדים לא פעילים")
     ws.sheet_view.rightToLeft = True
     ws.sheet_view.showGridLines = False
+    ws.freeze_panes = "A16"
 
+    ws.merge_cells("A1:H1")
     ws["A1"] = "דוח עובדים לא פעילים"
     ws["A1"].font = Font(bold=True, size=18, color="0F172A")
-    ws["A1"].fill = PatternFill(fill_type="solid", fgColor="BFDBFE")
+    ws["A1"].fill = PatternFill(fill_type="solid", fgColor="BFD9FF")
+    ws["A1"].alignment = Alignment(horizontal="center")
+    ws.merge_cells("A2:H2")
     ws["A2"] = "איתור עובדים ללא פעילות בטווח שנבדק לפי דוח יומי"
     ws["A2"].font = Font(italic=True, size=11, color="475569")
+    ws["A2"].alignment = Alignment(horizontal="center")
 
     unit_label = "ימים אחרונים" if meta.get("threshold_unit") == "days" else "חודשים אחרונים"
     metrics = [
-        ("עובדים שנבדקו", meta.get("employee_count", 0)),
-        ("עובדים לא פעילים", meta.get("inactive_count", 0)),
-        ("תאריך ייחוס אחרון בקובץ", meta.get("reference_date").strftime("%d/%m/%Y") if meta.get("reference_date") else "—"),
-        ("טווח בדיקה", f"{meta.get('threshold_value', 0)} {unit_label}"),
-        ("תאריך חיתוך", meta.get("cutoff_date").strftime("%d/%m/%Y") if meta.get("cutoff_date") else "—"),
-        ("מספר ימים שנכללו בקובץ", meta.get("span_days", 0)),
+        ("עובדים שנבדקו", meta.get("employee_count", 0), "DBEAFE"),
+        ("עובדים לא פעילים", meta.get("inactive_count", 0), "FEE2E2"),
+        ("תאריך ייחוס אחרון בקובץ", meta.get("reference_date").strftime("%d/%m/%Y") if meta.get("reference_date") else "—", "DCFCE7"),
+        ("טווח בדיקה", f"{meta.get('threshold_value', 0)} {unit_label}", "FEF3C7"),
+        ("תאריך חיתוך", meta.get("cutoff_date").strftime("%d/%m/%Y") if meta.get("cutoff_date") else "—", "E9D5FF"),
+        ("מספר ימים שנכללו בקובץ", meta.get("span_days", 0), "FDE68A"),
     ]
-    for idx, (label, value) in enumerate(metrics, start=4):
-        ws.cell(row=idx, column=1, value=label).font = Font(bold=True)
-        ws.cell(row=idx, column=2, value=value)
+    metric_blocks = [
+        (4, "A4:B5", metrics[0]),
+        (4, "D4:E5", metrics[1]),
+        (4, "G4:H5", metrics[2]),
+        (7, "A7:B8", metrics[3]),
+        (7, "D7:E8", metrics[4]),
+        (7, "G7:H8", metrics[5]),
+    ]
+    for start_row, cell_range, (label, value, fill_color) in metric_blocks:
+        start_cell = cell_range.split(":")[0]
+        ws.merge_cells(cell_range)
+        ws[start_cell] = f"{label}\n{value}"
+        ws[start_cell].font = Font(bold=True, color="0F172A", size=13)
+        ws[start_cell].alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        ws[start_cell].fill = PatternFill(fill_type="solid", fgColor=fill_color)
+        ws.row_dimensions[start_row].height = 42
+        ws.row_dimensions[start_row + 1].height = 42
 
-    header_row = 12
+    header_row = 15
     headers = ["שם עובד"]
     if mapping.get("employee_number_source"):
         headers.append("מספר עובד")
@@ -2308,14 +2327,13 @@ def write_inactive_workers_summary(ws, inactive_rows, meta, mapping):
     headers.extend(["תאריך אחרון שזוהתה פעילות", "סיבת סימון", "ימי פעילות שזוהו"])
     if mapping.get("event_source"):
         headers.append("ימי אירוע ללא נוכחות")
-    if mapping.get("error_text_source"):
-        headers.append("שגיאות")
+    headers.append("הערות מערכת")
 
     for col, header in enumerate(headers, start=1):
         cell = ws.cell(row=header_row, column=col, value=header)
         cell.font = Font(bold=True, color="FFFFFF")
         cell.fill = PatternFill(fill_type="solid", fgColor="1E3A8A")
-        cell.alignment = Alignment(horizontal="right")
+        cell.alignment = Alignment(horizontal="right", vertical="center")
 
     for row_idx, row in enumerate(inactive_rows, start=header_row + 1):
         values = [row["employee_name"]]
@@ -2332,16 +2350,71 @@ def write_inactive_workers_summary(ws, inactive_rows, meta, mapping):
         values.extend([row["last_active_display"], row["status_reason"], row["activity_days"]])
         if mapping.get("event_source"):
             values.append(row["event_only_days"])
-        if mapping.get("error_text_source"):
-            values.append(row["error_text"])
+        values.append(row.get("system_notes", ""))
         for col, value in enumerate(values, start=1):
             cell = ws.cell(row=row_idx, column=col, value=value)
-            cell.alignment = Alignment(horizontal="right")
+            cell.alignment = Alignment(horizontal="right", vertical="top", wrap_text=True)
             if row_idx % 2 == 0:
                 cell.fill = PatternFill(fill_type="solid", fgColor="F8FAFC")
+        ws.row_dimensions[row_idx].height = 28
 
-    widths = [24, 14, 14, 16, 16, 22, 22, 22, 14, 18, 24]
+    widths = [26, 14, 14, 16, 16, 20, 22, 22, 14, 18, 28]
     for col, width in enumerate(widths[:len(headers)], start=1):
+        ws.column_dimensions[get_column_letter(col)].width = width
+
+
+def write_inactive_workers_by_department(ws, inactive_rows, mapping):
+    ws.title = safe_sheet_title("לפי מחלקה", "לפי מחלקה")
+    ws.sheet_view.rightToLeft = True
+    ws.sheet_view.showGridLines = False
+
+    ws.merge_cells("A1:F1")
+    ws["A1"] = "עובדים לא פעילים לפי מחלקה"
+    ws["A1"].font = Font(bold=True, size=17, color="0F172A")
+    ws["A1"].fill = PatternFill(fill_type="solid", fgColor="C7D2FE")
+    ws["A1"].alignment = Alignment(horizontal="center")
+
+    grouped = {}
+    for row in inactive_rows:
+        department_name = row.get("department") or "ללא מחלקה"
+        grouped.setdefault(department_name, []).append(row)
+
+    current_row = 3
+    for department_name in sorted(grouped):
+        department_rows = grouped[department_name]
+        ws.merge_cells(start_row=current_row, start_column=1, end_row=current_row, end_column=6)
+        ws.cell(row=current_row, column=1, value=f"מחלקה: {department_name} | עובדים לא פעילים: {len(department_rows)}")
+        ws.cell(row=current_row, column=1).font = Font(bold=True, color="0F172A")
+        ws.cell(row=current_row, column=1).fill = PatternFill(fill_type="solid", fgColor="E0F2FE")
+        ws.cell(row=current_row, column=1).alignment = Alignment(horizontal="right")
+        current_row += 1
+
+        headers = ["שם עובד", "מספר עובד", "מספר תג", "תאריך אחרון שזוהתה פעילות", "ימי פעילות שזוהו", "סיבת סימון"]
+        for col, header in enumerate(headers, start=1):
+            cell = ws.cell(row=current_row, column=col, value=header)
+            cell.font = Font(bold=True, color="FFFFFF")
+            cell.fill = PatternFill(fill_type="solid", fgColor="2563EB")
+            cell.alignment = Alignment(horizontal="right")
+        current_row += 1
+
+        for row in department_rows:
+            values = [
+                row["employee_name"],
+                row.get("employee_number", ""),
+                row.get("badge_number", ""),
+                row["last_active_display"],
+                row["activity_days"],
+                row["status_reason"],
+            ]
+            for col, value in enumerate(values, start=1):
+                cell = ws.cell(row=current_row, column=col, value=value)
+                cell.alignment = Alignment(horizontal="right", vertical="top", wrap_text=True)
+                if current_row % 2 == 0:
+                    cell.fill = PatternFill(fill_type="solid", fgColor="F8FAFC")
+            current_row += 1
+        current_row += 1
+
+    for col, width in enumerate([26, 14, 14, 22, 16, 26], start=1):
         ws.column_dimensions[get_column_letter(col)].width = width
 
 
@@ -3122,6 +3195,7 @@ def run_inactive_workers_report(input_path, output_path, extension, options=None
     inactive_rows, meta = parse_inactive_workers_report(input_path, extension, mapping, options)
     wb = Workbook()
     write_inactive_workers_summary(wb.active, inactive_rows, meta, mapping)
+    write_inactive_workers_by_department(wb.create_sheet(), inactive_rows, mapping)
     wb.save(output_path)
     return {"warnings": build_inactive_workers_mapping_warnings(mapping, options)}
 
@@ -4200,7 +4274,6 @@ INACTIVE_WORKERS_MAPPING_FIELDS = [
     {"name": "total_hours_source", "label": "סה\"כ שעות", "required": False, "critical": True},
     {"name": "event_source", "label": "אירוע", "required": False},
     {"name": "department_source", "label": "מחלקה", "required": False},
-    {"name": "error_text_source", "label": "שגיאות", "required": False},
 ]
 
 ORG_HIERARCHY_MAPPING_FIELDS = [
@@ -4279,7 +4352,6 @@ INACTIVE_WORKERS_SUGGESTION_KEYWORDS = {
     "total_hours_source": ["סהכ", "סה\"כ", "שעות", "total"],
     "event_source": ["אירוע", "event"],
     "department_source": ["מחלקה", "department"],
-    "error_text_source": ["שגיאה", "שגיאות", "error"],
 }
 
 ORG_HIERARCHY_SUGGESTION_KEYWORDS = {
@@ -4558,7 +4630,6 @@ def default_inactive_workers_mapping():
         "total_hours_source": "col:15",
         "event_source": "col:9",
         "department_source": "col:30",
-        "error_text_source": "col:31",
     }
 
 
@@ -4666,7 +4737,6 @@ def build_inactive_workers_mapping_options(input_path, extension):
         "total_hours_source": ["סהכ", "שעות"],
         "event_source": ["אירוע"],
         "department_source": ["מחלקה"],
-        "error_text_source": ["שגיאות", "שגיאה"],
     }
 
     options_by_field = {}
