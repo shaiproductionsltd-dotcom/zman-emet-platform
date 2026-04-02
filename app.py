@@ -2285,6 +2285,7 @@ def parse_rimon_home_office_report(input_path, extension, mapping):
             )
             has_other_work_event = any(
                 event != "עבודה מהבית"
+                and "פיטור" not in event
                 and not any(keyword in event for keyword in ("חופשה", "מחלה", "היעדר", "חג", "אבל", "מילואים"))
                 for event in normalized_events
             )
@@ -2394,11 +2395,11 @@ def write_rimon_home_office_summary(ws, employee_rows, report_meta):
         "ימי עבודה מהמשרד",
         "ימי עבודה מהבית",
         "ימי היעדרות",
-        "ימי עזיבה",
         "ימי שגיאה",
+        "ימי עזיבה",
+        "סה\"כ ימי עבודה שזוהו",
         "סה\"כ שעות תקן",
         "סה\"כ שעות חוסר",
-        "סה\"כ ימי עבודה שזוהו",
     ]
 
     ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(headers))
@@ -2461,11 +2462,11 @@ def write_rimon_home_office_summary(ws, employee_rows, report_meta):
             row["office_work_days"],
             row["home_office_days"],
             row["missing_absence_days"],
-            row.get("left_days", 0),
             row["error_days"],
+            row.get("left_days", 0),
+            row["office_work_days"] + row["home_office_days"],
             format_hours(row.get("standard_hours_total", 0.0)),
             format_hours(row.get("missing_hours_total", 0.0)),
-            row["office_work_days"] + row["home_office_days"],
         ]
         for col, value in enumerate(values, start=1):
             cell = ws.cell(row=row_idx, column=col, value=value)
@@ -2473,7 +2474,7 @@ def write_rimon_home_office_summary(ws, employee_rows, report_meta):
             if row_idx % 2 == 0:
                 cell.fill = PatternFill(fill_type="solid", fgColor="F8FAFC")
 
-    widths = [24, 16, 16, 24, 18, 18, 18, 14, 14, 16, 16, 28]
+    widths = [24, 16, 16, 24, 18, 18, 18, 14, 14, 28, 16, 16]
     for col, width in enumerate(widths, start=1):
         ws.column_dimensions[get_column_letter(col)].width = width
 
@@ -3968,8 +3969,10 @@ def build_rimon_mapping_form(script_id, temp_upload_path, temp_upload_ext, inspe
         + '<div style="background:#ffffff;border:1px solid #e2e8f0;border-radius:12px;padding:12px">'
         + '<div style="font-size:14px;font-weight:700;color:#0f172a;margin-bottom:10px">תבניות שמורות</div>'
         + '<label class="field-label">בחירת תבנית</label>'
-        + '<select id="selectedTemplateId" name="selected_template_id" style="padding:9px 12px;border:1.5px solid #e2e8f0;border-radius:8px;font-size:13px;font-family:inherit;outline:none;width:100%;margin-bottom:10px;background:white">' + template_options + '</select>'
-        + '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px"><button type="submit" name="mapping_action" value="delete_template" class="btn btn-gray" style="flex:1;min-width:110px">מחיקת תבנית</button></div>'
+        + '<div style="display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:center;margin-bottom:12px">'
+        + '<select id="selectedTemplateId" name="selected_template_id" style="padding:9px 12px;border:1.5px solid #e2e8f0;border-radius:8px;font-size:13px;font-family:inherit;outline:none;width:100%;background:white">' + template_options + '</select>'
+        + '<button type="submit" name="mapping_action" value="delete_template" class="btn btn-gray" style="min-width:104px;padding-inline:14px;white-space:nowrap">מחיקה</button>'
+        + '</div>'
         + '<label style="display:flex;align-items:center;gap:6px;font-size:13px;color:#334155;margin-bottom:10px"><input type="checkbox" name="save_template" value="1"> שמור כתבנית חדשה</label>'
         + '<label class="field-label">שם תבנית חדשה</label>'
         + '<input type="text" name="template_name" value="' + esc(template_name_value) + '" placeholder="שם תבנית" style="margin-bottom:0">'
