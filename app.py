@@ -11,6 +11,7 @@ import secrets
 import sqlite3
 import string
 import uuid
+import re
 
 from flask import Flask, redirect, request, send_file, session
 from werkzeug.security import check_password_hash, generate_password_hash
@@ -254,6 +255,11 @@ def parse_float_or_none(value):
     if not text:
         return None
     return float(text.replace(",", "."))
+
+
+def normalize_token(text):
+    value = str(text or "").strip().lower()
+    return re.sub(r"[\s_\-\"'`]+", "", value)
 
 
 def safe_sheet_title(title, fallback):
@@ -2108,36 +2114,86 @@ def is_rimon_error_text(error_text):
     return text not in {"יום חסר"}
 
 
-def parse_rimon_home_office_report(input_path):
-    workbook = xlrd.open_workbook(input_path)
+def extract_rimon_mapping_value(sheet, workbook_kind, mapping_value, row_index=None):
+    source = str(mapping_value or "").strip()
+    if not source:
+        return ""
+    if source == "meta:employee_name":
+        return find_rimon_meta_value(sheet, workbook_kind, ["שם לתצוגה", "שם עובד"], [(5, 5)])
+    if source == "meta:payroll_number":
+        return find_rimon_meta_value(sheet, workbook_kind, ["מספר שכר", "מספר עובד", "שכר"], [(5, 48), (5, 50)])
+    if source == "meta:department":
+        return find_rimon_meta_value(sheet, workbook_kind, ["מחלקה"], [(5, 21), (5, 23)])
+    if source == "meta:id_number":
+        return find_rimon_meta_value(sheet, workbook_kind, ["תעודת זהות", "דרכון"], [(7, 5)])
+    if source.startswith("col:") and row_index is not None:
+        try:
+            col_index = int(source.split(":", 1)[1])
+        except ValueError:
+            return ""
+        return stringify_excel_value(get_excel_cell(sheet, workbook_kind, row_index, col_index, ""))
+    return ""
+
+
+def default_rimon_mapping():
+    return {
+        "employee_name_source": "meta:employee_name",
+        "payroll_number_source": "meta:payroll_number",
+        "date_source": "col:0",
+        "event_source": "col:17",
+        "error_text_source": "col:51",
+        "department_source": "meta:department",
+        "id_number_source": "meta:id_number",
+    }
+
+
+def build_rimon_mapping_warnings(mapping):
+    warnings = []
+    if not mapping.get("error_text_source"):
+        warnings.append("לא נקלט שדה שגיאות. הדוח יורץ ללא זיהוי ימי שגיאה.")
+    if not mapping.get("event_source"):
+        warnings.append("לא נקלט שדה אירוע. הדוח יורץ, אך לקבלת תוצאה מדויקת יש לייצר מחדש עם שדה האירוע.")
+    if not mapping.get("date_source"):
+        warnings.append("לא נקלט שדה תאריך. הדוח יורץ, אך לקבלת דוח תקין ומדויק יש לייצר מחדש עם שדה התאריך.")
+    if not mapping.get("payroll_number_source"):
+        warnings.append("לא נקלט שדה מספר עובד. הדוח יורץ, אך לקבלת דוח תקין ומדויק יש לייצר מחדש עם שדה מספר העובד.")
+    if not mapping.get("employee_name_source"):
+        warnings.append("לא נקלט שדה שם עובד. הדוח יורץ, אך יהיה פחות ברור לקריאה.")
+    return warnings
+
+
+def parse_rimon_home_office_report(input_path, extension, mapping):
+    workbook_kind, workbook = open_excel_workbook(input_path, extension)
     employee_rows = []
     daily_rows = []
 
-    for sheet in workbook.sheets():
-        employee_name = str(get_sheet_cell(sheet, 5, 5, "")).strip() or sheet.name
-        department = str(get_sheet_cell(sheet, 5, 21, "")).strip()
-        payroll_number = str(get_sheet_cell(sheet, 5, 48, "")).strip()
-        id_number = str(get_sheet_cell(sheet, 7, 5, "")).strip()
+    for sheet in iter_excel_sheets(workbook_kind, workbook):
+        rows, _ = get_excel_dims(sheet, workbook_kind)
+        header_row = detect_rimon_header_row(sheet, workbook_kind)
+        employee_name = extract_rimon_mapping_value(sheet, workbook_kind, mapping.get("employee_name_source"))
+        department = extract_rimon_mapping_value(sheet, workbook_kind, mapping.get("department_source"))
+        payroll_number = extract_rimon_mapping_value(sheet, workbook_kind, mapping.get("payroll_number_source"))
+        id_number = extract_rimon_mapping_value(sheet, workbook_kind, mapping.get("id_number_source"))
+        if not employee_name:
+            employee_name = getattr(sheet, "name", "עובד")
 
         grouped_dates = {}
         current_date = None
 
-        for row_index in range(11, sheet.nrows):
-            row_date = parse_excel_date(workbook, get_sheet_cell(sheet, row_index, 0, ""))
+        for row_index in range(header_row + 1, rows):
+            row_date = parse_excel_date_generic(
+                workbook_kind,
+                workbook,
+                extract_rimon_mapping_value(sheet, workbook_kind, mapping.get("date_source"), row_index),
+            )
             if row_date:
                 current_date = row_date
             if current_date is None:
                 continue
 
-            entry_value = str(get_sheet_cell(sheet, row_index, 8, "")).strip()
-            exit_value = str(get_sheet_cell(sheet, row_index, 12, "")).strip()
-            event_value = str(get_sheet_cell(sheet, row_index, 17, "")).strip()
-            total_hours = str(get_sheet_cell(sheet, row_index, 20, "")).strip()
-            standard_hours = str(get_sheet_cell(sheet, row_index, 25, "")).strip()
-            missing_hours = str(get_sheet_cell(sheet, row_index, 30, "")).strip()
-            error_text = str(get_sheet_cell(sheet, row_index, 51, "")).strip()
-
-            if not any([row_date, entry_value, exit_value, event_value, total_hours, standard_hours, missing_hours, error_text]):
+            event_value = extract_rimon_mapping_value(sheet, workbook_kind, mapping.get("event_source"), row_index)
+            error_text = extract_rimon_mapping_value(sheet, workbook_kind, mapping.get("error_text_source"), row_index)
+            if not any([row_date, event_value, error_text]):
                 continue
 
             day_key = current_date.isoformat()
@@ -2149,37 +2205,20 @@ def parse_rimon_home_office_report(input_path):
                     "department": department,
                     "date": day_key,
                     "home_office": False,
-                    "work_activity": False,
                     "missing_absence": False,
                     "error": False,
                     "events": [],
-                    "total_hours_value": None,
-                    "standard_hours_value": None,
-                    "missing_hours_value": None,
                     "errors": [],
                 }
 
             grouped = grouped_dates[day_key]
-            grouped["home_office"] = grouped["home_office"] or event_value == "עבודה מהבית"
-            grouped["work_activity"] = grouped["work_activity"] or has_rimon_work_activity(entry_value, exit_value, total_hours)
-            grouped["error"] = grouped["error"] or is_rimon_error_text(error_text)
-
-            parsed_total = parse_hours_value(total_hours)
-            if parsed_total is not None:
-                grouped["total_hours_value"] = max(grouped["total_hours_value"] or 0.0, parsed_total)
-
-            parsed_standard = parse_hours_value(standard_hours)
-            if parsed_standard is not None:
-                grouped["standard_hours_value"] = max(grouped["standard_hours_value"] or 0.0, parsed_standard)
-
-            parsed_missing = parse_hours_value(missing_hours)
-            if parsed_missing is not None:
-                grouped["missing_hours_value"] = max(grouped["missing_hours_value"] or 0.0, parsed_missing)
-
+            normalized_event = str(event_value or "").strip()
+            grouped["home_office"] = grouped["home_office"] or normalized_event == "עבודה מהבית"
             if event_value and event_value not in grouped["events"]:
                 grouped["events"].append(event_value)
             if error_text and error_text not in grouped["errors"]:
                 grouped["errors"].append(error_text)
+            grouped["error"] = grouped["error"] or bool(error_text)
 
         office_days = 0
         home_office_days = 0
@@ -2188,11 +2227,12 @@ def parse_rimon_home_office_report(input_path):
 
         for day_key in sorted(grouped_dates):
             grouped = grouped_dates[day_key]
-            absence_signal = bool(grouped["events"] or grouped["errors"] or (grouped["missing_hours_value"] or 0.0) > 0)
-            grouped["missing_absence"] = (not grouped["work_activity"]) and absence_signal
-            office_work = grouped["work_activity"] and not grouped["home_office"]
+            has_home_event = grouped["home_office"]
+            has_other_event = any(event and str(event).strip() != "עבודה מהבית" for event in grouped["events"])
+            office_work = has_other_event or not grouped["events"]
+            grouped["missing_absence"] = False
 
-            if grouped["home_office"]:
+            if has_home_event and not office_work:
                 home_office_days += 1
             if office_work:
                 office_days += 1
@@ -2210,9 +2250,9 @@ def parse_rimon_home_office_report(input_path):
                     "missing_absence": grouped["missing_absence"],
                     "error": grouped["error"],
                     "event": " | ".join(grouped["events"]),
-                    "total_hours": format_hours(grouped["total_hours_value"]),
-                    "standard_hours": format_hours(grouped["standard_hours_value"]),
-                    "missing_hours": format_hours(grouped["missing_hours_value"]),
+                    "total_hours": "",
+                    "standard_hours": "",
+                    "missing_hours": "",
                     "error_text": " | ".join(grouped["errors"]),
                 }
             )
@@ -2231,6 +2271,8 @@ def parse_rimon_home_office_report(input_path):
             }
         )
 
+    if workbook_kind == "xlsx":
+        workbook.close()
     return employee_rows, daily_rows
 
 
@@ -2347,13 +2389,17 @@ def write_rimon_home_office_daily(ws, daily_rows):
 
 
 def run_rimon_home_office_summary(input_path, output_path, extension, options=None):
-    if extension != "xls":
-        raise ValueError("Rimon home-office summary currently supports original XLS exports only")
-    employee_rows, daily_rows = parse_rimon_home_office_report(input_path)
+    if extension not in {"xls", "xlsx"}:
+        raise ValueError("Rimon home-office summary currently supports XLS and XLSX uploads only")
+    options = options or {}
+    mapping = default_rimon_mapping()
+    mapping.update({key: value for key, value in options.items() if key.endswith("_source")})
+    employee_rows, daily_rows = parse_rimon_home_office_report(input_path, extension, mapping)
     wb = Workbook()
     write_rimon_home_office_summary(wb.active, employee_rows)
     write_rimon_home_office_daily(wb.create_sheet(), daily_rows)
     wb.save(output_path)
+    return {"warnings": build_rimon_mapping_warnings(mapping)}
 
 
 def run_matan_missing_filter(input_path, output_path, extension, options=None):
@@ -2775,7 +2821,7 @@ SCRIPTS["rimon_home_office_summary"] = {
     "help_intro": "יש להעלות דוח מפורט חודשי.",
     "help_items": ["המערכת מזהה ימי עבודה מהבית", "ימי עבודה מהמשרד", "היעדרויות", "ושגיאות בדיווח"],
     "help_note": "הפלט מחזיר סיכום ברור לפי עובד",
-    "accept": ".xls",
+    "accept": ".xls,.xlsx",
     "icon": "🏠",
 }
 
@@ -2850,7 +2896,7 @@ SCRIPT_REGISTRY["rimon_home_office_summary"] = {
     "submit_label": "יצירת דוח סיכום",
     "back_label": "חזרה לכלים",
     "empty_error": "לא נבחר קובץ",
-    "unsupported_error": "יש להעלות את דוח רימון החודשי המפורט המקורי מסוג XLS",
+    "unsupported_error": "יש להעלות דוח מפורט חודשי מסוג XLS או XLSX",
     "invalid_error": "הקובץ שהועלה אינו קובץ אקסל תקין",
     "empty_file_error": "הקובץ שהועלה ריק",
     "too_large_error": "הקובץ שהועלה גדול מדי",
@@ -2858,6 +2904,7 @@ SCRIPT_REGISTRY["rimon_home_office_summary"] = {
     "processing_title": "דוח הסיכום בהכנה",
     "processing_note": "המערכת מקבצת תאריכים וסופרת ימי משרד, עבודה מהבית, היעדרות ושגיאות. הפעולה עשויה להימשך כמה דקות.",
     "file_picker_label": "בחירת דוח מפורט חודשי",
+    "requires_mapping_confirmation": True,
 }
 
 SCRIPT_REGISTRY["org_hierarchy_report"] = {
@@ -2919,7 +2966,7 @@ def execute_script(script, input_path, output_path, extension, options=None):
     processor = script.get("processor")
     if processor is None:
         raise ValueError("Script processor is not configured")
-    processor(input_path, output_path, extension, options)
+    return processor(input_path, output_path, extension, options)
 
 
 CSS = """
@@ -3015,6 +3062,17 @@ def init_db():
             created_at TEXT NOT NULL)"""
         )
         db.execute("CREATE INDEX IF NOT EXISTS idx_activity_logs_created_at ON activity_logs(created_at)")
+        db.execute(
+            """CREATE TABLE IF NOT EXISTS mapping_templates (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            script_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            mapping_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL)"""
+        )
+        db.execute("CREATE INDEX IF NOT EXISTS idx_mapping_templates_user_script ON mapping_templates(user_id, script_id)")
         existing_columns = get_table_columns(db, "users")
         desired_columns = {
             "company_name": "TEXT",
@@ -3144,6 +3202,266 @@ def resolve_script_from_output_name(filename):
         if suffix and logical_name.startswith(suffix + "."):
             return script
     return None
+
+
+RIMON_MAPPING_FIELDS = [
+    {"name": "employee_name_source", "label": "שם עובד", "required": True},
+    {"name": "payroll_number_source", "label": "מספר עובד", "required": True},
+    {"name": "date_source", "label": "תאריך", "required": True},
+    {"name": "event_source", "label": "אירוע", "required": True},
+    {"name": "error_text_source", "label": "שדה שגיאה", "required": False},
+    {"name": "department_source", "label": "מחלקה", "required": False},
+    {"name": "id_number_source", "label": "תעודת זהות", "required": False},
+]
+
+
+RIMON_SUGGESTION_KEYWORDS = {
+    "employee_name_source": ["שםלתצוגה", "שםעובד", "עובד", "employee", "name"],
+    "payroll_number_source": ["מספרשכר", "מספרעובד", "שכר", "עובד", "payroll", "employeeid"],
+    "date_source": ["תאריך", "date"],
+    "event_source": ["אירוע", "event", "סטטוס"],
+    "error_text_source": ["שגיאה", "שגיאות", "error", "errors"],
+    "department_source": ["מחלקה", "department"],
+    "id_number_source": ["תעודתזהות", "זהות", "דרכון", "id", "identity"],
+}
+
+
+def open_excel_workbook(input_path, extension):
+    ext = str(extension or get_extension(input_path)).lower()
+    if ext == "xlsx":
+        return "xlsx", load_workbook(input_path, data_only=True, read_only=True)
+    return "xls", xlrd.open_workbook(input_path)
+
+
+def iter_excel_sheets(workbook_kind, workbook):
+    if workbook_kind == "xlsx":
+        return list(workbook.worksheets)
+    return workbook.sheets()
+
+
+def get_excel_dims(sheet, workbook_kind):
+    if workbook_kind == "xlsx":
+        return int(sheet.max_row or 0), int(sheet.max_column or 0)
+    return sheet.nrows, sheet.ncols
+
+
+def get_excel_cell(sheet, workbook_kind, row_index, col_index, default=""):
+    rows, cols = get_excel_dims(sheet, workbook_kind)
+    if row_index < 0 or col_index < 0 or row_index >= rows or col_index >= cols:
+        return default
+    if workbook_kind == "xlsx":
+        value = sheet.cell(row=row_index + 1, column=col_index + 1).value
+        return default if value is None else value
+    return get_sheet_cell(sheet, row_index, col_index, default)
+
+
+def stringify_excel_value(value):
+    if value is None:
+        return ""
+    if isinstance(value, datetime):
+        return value.strftime("%Y-%m-%d %H:%M:%S")
+    if isinstance(value, date):
+        return value.strftime("%Y-%m-%d")
+    return str(value).strip()
+
+
+def parse_excel_date_generic(workbook_kind, workbook, value):
+    if value in ("", None):
+        return None
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    if workbook_kind == "xls":
+        return parse_excel_date(workbook, value)
+    return None
+
+
+def detect_rimon_header_row(sheet, workbook_kind):
+    rows, cols = get_excel_dims(sheet, workbook_kind)
+    best_row = 11 if rows > 11 else 0
+    best_score = -1
+    for row_index in range(min(rows, 25)):
+        score = 0
+        for col_index in range(cols):
+            token = normalize_token(stringify_excel_value(get_excel_cell(sheet, workbook_kind, row_index, col_index, "")))
+            if token in {"תאריך", "אירוע", "כניסה", "יציאה", "סהכ", "שגיאות", "שגיאה"}:
+                score += 3
+            elif token:
+                score += 1
+        if score > best_score:
+            best_score = score
+            best_row = row_index
+    return best_row
+
+
+def find_rimon_first_sample(sheet, workbook_kind, col_index, start_row):
+    rows, _ = get_excel_dims(sheet, workbook_kind)
+    for row_index in range(start_row + 1, min(rows, start_row + 10)):
+        text = stringify_excel_value(get_excel_cell(sheet, workbook_kind, row_index, col_index, ""))
+        if text:
+            return text
+    return ""
+
+
+def find_rimon_meta_value(sheet, workbook_kind, labels, fallback_cells=()):
+    rows, cols = get_excel_dims(sheet, workbook_kind)
+    normalized_labels = {normalize_token(label) for label in labels}
+    for row_index in range(min(rows, 12)):
+        for col_index in range(cols):
+            token = normalize_token(stringify_excel_value(get_excel_cell(sheet, workbook_kind, row_index, col_index, "")))
+            if token in normalized_labels:
+                for next_col in range(col_index + 1, min(cols, col_index + 6)):
+                    candidate = stringify_excel_value(get_excel_cell(sheet, workbook_kind, row_index, next_col, ""))
+                    if candidate:
+                        return candidate
+    for row_index, col_index in fallback_cells:
+        candidate = stringify_excel_value(get_excel_cell(sheet, workbook_kind, row_index, col_index, ""))
+        if candidate:
+            return candidate
+    return ""
+
+
+def build_rimon_mapping_options(input_path, extension):
+    workbook_kind, workbook = open_excel_workbook(input_path, extension)
+    sheets = iter_excel_sheets(workbook_kind, workbook)
+    first_sheet = sheets[0]
+    header_row = detect_rimon_header_row(first_sheet, workbook_kind)
+    _, cols = get_excel_dims(first_sheet, workbook_kind)
+    table_options = []
+    for col_index in range(cols):
+        header_text = stringify_excel_value(get_excel_cell(first_sheet, workbook_kind, header_row, col_index, ""))
+        if not header_text:
+            continue
+        sample = find_rimon_first_sample(first_sheet, workbook_kind, col_index, header_row)
+        column_letter = get_column_letter(col_index + 1)
+        label = f"עמודה {column_letter} - {header_text}"
+        if sample:
+            label += f" (לדוגמה: {sample})"
+        table_options.append(
+            {
+                "value": f"col:{col_index}",
+                "label": label,
+                "header": header_text,
+                "sample": sample,
+            }
+        )
+
+    meta_options = {
+        "employee_name_source": [
+            {
+                "value": "meta:employee_name",
+                "label": "שדה עליון: שם עובד"
+                + (f" (לדוגמה: {find_rimon_meta_value(first_sheet, workbook_kind, ['שם לתצוגה', 'שם עובד'], [(5, 5)])})" if find_rimon_meta_value(first_sheet, workbook_kind, ['שם לתצוגה', 'שם עובד'], [(5, 5)]) else ""),
+            }
+        ],
+        "payroll_number_source": [
+            {
+                "value": "meta:payroll_number",
+                "label": "שדה עליון: מספר עובד"
+                + (f" (לדוגמה: {find_rimon_meta_value(first_sheet, workbook_kind, ['מספר שכר', 'מספר עובד', 'שכר'], [(5, 48), (5, 50)])})" if find_rimon_meta_value(first_sheet, workbook_kind, ['מספר שכר', 'מספר עובד', 'שכר'], [(5, 48), (5, 50)]) else ""),
+            }
+        ],
+        "department_source": [
+            {
+                "value": "meta:department",
+                "label": "שדה עליון: מחלקה"
+                + (f" (לדוגמה: {find_rimon_meta_value(first_sheet, workbook_kind, ['מחלקה'], [(5, 21), (5, 23)])})" if find_rimon_meta_value(first_sheet, workbook_kind, ['מחלקה'], [(5, 21), (5, 23)]) else ""),
+            }
+        ],
+        "id_number_source": [
+            {
+                "value": "meta:id_number",
+                "label": "שדה עליון: תעודת זהות"
+                + (f" (לדוגמה: {find_rimon_meta_value(first_sheet, workbook_kind, ['תעודת זהות', 'דרכון'], [(7, 5)])})" if find_rimon_meta_value(first_sheet, workbook_kind, ['תעודת זהות', 'דרכון'], [(7, 5)]) else ""),
+            }
+        ],
+    }
+
+    options_by_field = {}
+    suggestions = {}
+    for field in RIMON_MAPPING_FIELDS:
+        field_name = field["name"]
+        options = [{"value": "", "label": "לא נבחר"}]
+        options.extend(meta_options.get(field_name, []))
+        options.extend(table_options)
+        options_by_field[field_name] = options
+
+        suggested = ""
+        if meta_options.get(field_name):
+            suggested = meta_options[field_name][0]["value"]
+        if not suggested:
+            keywords = RIMON_SUGGESTION_KEYWORDS.get(field_name, [])
+            for option in table_options:
+                token = normalize_token(option["header"])
+                if any(keyword in token for keyword in keywords):
+                    suggested = option["value"]
+                    break
+        suggestions[field_name] = suggested
+
+    if workbook_kind == "xlsx":
+        workbook.close()
+    suggested_name_parts = []
+    for source in (suggestions.get("employee_name_source", ""), suggestions.get("event_source", ""), suggestions.get("date_source", "")):
+        for options in options_by_field.values():
+            for option in options:
+                if option["value"] == source and option["label"] != "לא נבחר":
+                    raw = option["label"].split(" - ", 1)[-1].split(" (", 1)[0]
+                    if raw and raw not in suggested_name_parts:
+                        suggested_name_parts.append(raw)
+                    break
+    suggested_template_name = " / ".join(suggested_name_parts[:2]) or "תבנית רימון"
+    return {
+        "header_row": header_row,
+        "options_by_field": options_by_field,
+        "suggestions": suggestions,
+        "suggested_template_name": suggested_template_name,
+    }
+
+
+def get_mapping_templates(user_id, script_id):
+    with get_db() as db:
+        rows = db.execute(
+            "SELECT * FROM mapping_templates WHERE user_id=? AND script_id=? ORDER BY updated_at DESC, id DESC",
+            (user_id, script_id),
+        ).fetchall()
+    templates = []
+    for row in rows:
+        try:
+            mapping = json.loads(row["mapping_json"] or "{}")
+        except Exception:
+            mapping = {}
+        templates.append({"id": row["id"], "name": row["name"], "mapping": mapping})
+    return templates
+
+
+def save_mapping_template(user_id, script_id, template_name, mapping, template_id=""):
+    now_text = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    mapping_json = json.dumps(mapping, ensure_ascii=False)
+    with get_db() as db:
+        if str(template_id or "").strip():
+            db.execute(
+                "UPDATE mapping_templates SET name=?, mapping_json=?, updated_at=? WHERE id=? AND user_id=? AND script_id=?",
+                (template_name, mapping_json, now_text, int(template_id), user_id, script_id),
+            )
+        else:
+            db.execute(
+                "INSERT INTO mapping_templates(user_id, script_id, name, mapping_json, created_at, updated_at) VALUES (?,?,?,?,?,?)",
+                (user_id, script_id, template_name, mapping_json, now_text, now_text),
+            )
+        db.commit()
+
+
+def apply_selected_template(default_mapping, templates, template_id):
+    selected_id = str(template_id or "").strip()
+    if not selected_id:
+        return dict(default_mapping), None
+    for template in templates:
+        if str(template["id"]) == selected_id:
+            merged = dict(default_mapping)
+            merged.update(template["mapping"])
+            return merged, template
+    return dict(default_mapping), None
 
 
 def get_account_status(user_row):
@@ -3440,56 +3758,142 @@ def run_script(script_id):
         log_user_activity("open_script", "פתח כלי", script_id, scr["name"], "")
     result = None
     error = ""
+    info_message = ""
+    processing_warnings = []
+    mapping_confirmation_html = ""
+    mapping_templates = []
+    selected_template = None
 
     if request.method == "POST":
-        file_obj = request.files.get("file")
-        validation_error, ext = validate_upload(file_obj)
-        if validation_error == "missing":
-            error = '<div class="flash-err">' + scr["empty_error"] + '</div>'
-        elif validation_error == "unsupported":
-            error = '<div class="flash-err">' + scr["unsupported_error"] + '</div>'
-        elif validation_error == "invalid_excel":
-            error = '<div class="flash-err">' + scr["invalid_error"] + '</div>'
-        elif validation_error == "empty":
-            error = '<div class="flash-err">' + scr["empty_file_error"] + '</div>'
-        elif validation_error == "too_large":
-            error = '<div class="flash-err">' + scr["too_large_error"] + '</div>'
-        else:
-            uid = str(uuid.uuid4())[:8]
-            inp = str(UPLOAD_FOLDER / f"{uid}.{ext}")
-            options = {}
-            extra_paths = []
-            for field in scr.get("filter_fields", []):
-                options[field["name"]] = request.form.get(field["name"], "").strip()
-            result_name = build_output_filename(scr, uid, options)
-            out = str(OUTPUT_FOLDER / result_name)
-            for upload in scr.get("extra_uploads", []):
-                extra_file = request.files.get(upload["name"])
-                if extra_file and extra_file.filename:
-                    extra_ext = get_extension(extra_file.filename)
-                    expected = upload.get("accept", "").lstrip(".").lower()
-                    if expected and extra_ext != expected:
-                        error = '<div class="flash-err">' + text["run_extra_file_type_error"] + "</div>"
-                        break
-                    extra_path = str(UPLOAD_FOLDER / f"{uid}_{upload['name']}.{extra_ext or 'dat'}")
-                    extra_file.save(extra_path)
-                    options[f"{upload['name']}_path"] = extra_path
-                    extra_paths.append(extra_path)
-                elif upload.get("required"):
-                    error = '<div class="flash-err">' + text["run_missing_extra_file_error"] + "</div>"
-                    break
-            if error:
-                for path in extra_paths:
-                    try:
-                        os.remove(path)
-                    except OSError:
-                        pass
+        flow_mode = request.form.get("flow_mode", "").strip()
+        if scr.get("requires_mapping_confirmation") and flow_mode != "confirm_mapping":
+            file_obj = request.files.get("file")
+            validation_error, ext = validate_upload(file_obj)
+            if validation_error == "missing":
+                error = '<div class="flash-err">' + scr["empty_error"] + '</div>'
+            elif validation_error == "unsupported":
+                error = '<div class="flash-err">' + scr["unsupported_error"] + '</div>'
+            elif validation_error == "invalid_excel":
+                error = '<div class="flash-err">' + scr["invalid_error"] + '</div>'
+            elif validation_error == "empty":
+                error = '<div class="flash-err">' + scr["empty_file_error"] + '</div>'
+            elif validation_error == "too_large":
+                error = '<div class="flash-err">' + scr["too_large_error"] + '</div>'
             else:
+                uid = str(uuid.uuid4())[:8]
+                inp = str(UPLOAD_FOLDER / f"{uid}_mapping.{ext}")
                 file_obj.save(inp)
+                inspection = build_rimon_mapping_options(inp, ext)
+                mapping_templates = get_mapping_templates(session["user_id"], script_id)
+                selected_template_id = request.form.get("selected_template_id", "").strip()
+                base_mapping = dict(inspection["suggestions"])
+                if mapping_templates and not selected_template_id:
+                    selected_template_id = str(mapping_templates[0]["id"])
+                selected_mapping, selected_template = apply_selected_template(base_mapping, mapping_templates, selected_template_id)
+                info_message = '<div class="flash" style="background:#eff6ff;border-color:#bfdbfe;color:#1d4ed8">המערכת זיהתה שדות אפשריים. נא לאשר או לתקן לפני הרצת הדוח.</div>'
+                mapping_fields_html = ""
+                for field in RIMON_MAPPING_FIELDS:
+                    field_name = field["name"]
+                    select_options = ""
+                    current_value = selected_mapping.get(field_name, "")
+                    for option in inspection["options_by_field"].get(field_name, []):
+                        selected = ' selected' if option["value"] == current_value else ""
+                        select_options += '<option value="' + esc(option["value"]) + '"' + selected + '>' + esc(option["label"]) + '</option>'
+                    required_badge = ' <span style="color:#dc2626">*</span>' if field["required"] else ' <span style="color:#94a3b8">(אופציונלי)</span>'
+                    mapping_fields_html += (
+                        '<div><label class="field-label">' + field["label"] + required_badge + '</label>'
+                        + '<select name="' + field_name + '" style="padding:9px 12px;border:1.5px solid #e2e8f0;border-radius:8px;font-size:13px;font-family:inherit;outline:none;width:100%;margin-bottom:0;background:white">'
+                        + select_options
+                        + '</select></div>'
+                    )
+                template_options = '<option value="">ללא תבנית שמורה</option>'
+                for template in mapping_templates:
+                    selected = ' selected' if selected_template and str(template["id"]) == str(selected_template["id"]) else ""
+                    template_options += '<option value="' + str(template["id"]) + '"' + selected + '>' + esc(template["name"]) + '</option>'
+                template_name_value = selected_template["name"] if selected_template else inspection["suggested_template_name"]
+                mapping_confirmation_html = (
+                    '<form method="POST" id="mappingConfirmForm">'
+                    + '<input type="hidden" name="flow_mode" value="confirm_mapping">'
+                    + '<input type="hidden" name="temp_upload_path" value="' + esc(inp) + '">'
+                    + '<input type="hidden" name="temp_upload_ext" value="' + esc(ext) + '">'
+                    + '<div style="background:#fafcff;border:1px solid #dbeafe;border-radius:14px;padding:1rem;margin-bottom:1rem">'
+                    + '<div style="font-size:15px;font-weight:700;color:#1e3a8a;margin-bottom:10px">אישור שדות לפני עיבוד</div>'
+                    + '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;margin-bottom:10px">'
+                    + '<div><label class="field-label">תבנית שמורה</label><select name="selected_template_id" style="padding:9px 12px;border:1.5px solid #e2e8f0;border-radius:8px;font-size:13px;font-family:inherit;outline:none;width:100%;margin-bottom:0;background:white">' + template_options + '</select></div>'
+                    + '<div><label class="field-label">שם תבנית</label><input type="text" name="template_name" value="' + esc(template_name_value) + '" placeholder="שם תבנית" style="margin-bottom:0"></div>'
+                    + '<div style="display:flex;align-items:flex-end;gap:8px"><label style="display:flex;align-items:center;gap:6px;font-size:13px;color:#334155"><input type="checkbox" name="save_template" value="1" checked> שמור / עדכן תבנית</label><button type="submit" name="mapping_action" value="apply_template" class="btn btn-gray">טען תבנית</button></div>'
+                    + '</div>'
+                    + '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-bottom:12px">' + mapping_fields_html + '</div>'
+                    + '<div style="font-size:12px;color:#64748b;line-height:1.7;margin-bottom:12px">שדות חובה: שם עובד, מספר עובד, תאריך ואירוע. גם אם חסר שדה חובה ניתן להמשיך, אבל המערכת תציג אזהרה בהתאם.</div>'
+                    + '<div style="display:flex;gap:10px;flex-wrap:wrap;justify-content:center"><button type="submit" name="mapping_action" value="confirm" class="btn btn-blue" style="min-width:220px">אשר הכל והפעל עיבוד</button><a href="/run/' + script_id + '" class="btn btn-gray" style="text-decoration:none;display:inline-flex;align-items:center;justify-content:center;min-width:150px">העלאת קובץ חדש</a></div>'
+                    + '</div></form>'
+                )
+        elif scr.get("requires_mapping_confirmation") and flow_mode == "confirm_mapping":
+            inp = request.form.get("temp_upload_path", "").strip()
+            ext = request.form.get("temp_upload_ext", "").strip().lower()
+            mapping = {}
+            for field in RIMON_MAPPING_FIELDS:
+                mapping[field["name"]] = request.form.get(field["name"], "").strip()
+            mapping_templates = get_mapping_templates(session["user_id"], script_id)
+            mapping_action = request.form.get("mapping_action", "confirm").strip() or "confirm"
+            selected_template_id = request.form.get("selected_template_id", "").strip()
+            if mapping_action == "apply_template":
+                inspection = build_rimon_mapping_options(inp, ext)
+                selected_mapping, selected_template = apply_selected_template(dict(inspection["suggestions"]), mapping_templates, selected_template_id)
+                selected_mapping.update({key: value for key, value in mapping.items() if value})
+                info_message = '<div class="flash" style="background:#eff6ff;border-color:#bfdbfe;color:#1d4ed8">התבנית נטענה. אפשר לבדוק את השדות ואז להריץ.</div>'
+                mapping_fields_html = ""
+                for field in RIMON_MAPPING_FIELDS:
+                    field_name = field["name"]
+                    select_options = ""
+                    current_value = selected_mapping.get(field_name, "")
+                    for option in inspection["options_by_field"].get(field_name, []):
+                        selected = ' selected' if option["value"] == current_value else ""
+                        select_options += '<option value="' + esc(option["value"]) + '"' + selected + '>' + esc(option["label"]) + '</option>'
+                    required_badge = ' <span style="color:#dc2626">*</span>' if field["required"] else ' <span style="color:#94a3b8">(אופציונלי)</span>'
+                    mapping_fields_html += (
+                        '<div><label class="field-label">' + field["label"] + required_badge + '</label>'
+                        + '<select name="' + field_name + '" style="padding:9px 12px;border:1.5px solid #e2e8f0;border-radius:8px;font-size:13px;font-family:inherit;outline:none;width:100%;margin-bottom:0;background:white">'
+                        + select_options
+                        + '</select></div>'
+                    )
+                template_options = '<option value="">ללא תבנית שמורה</option>'
+                for template in mapping_templates:
+                    selected = ' selected' if selected_template and str(template["id"]) == str(selected_template["id"]) else ""
+                    template_options += '<option value="' + str(template["id"]) + '"' + selected + '>' + esc(template["name"]) + '</option>'
+                template_name_value = request.form.get("template_name", "").strip() or (selected_template["name"] if selected_template else inspection["suggested_template_name"])
+                mapping_confirmation_html = (
+                    '<form method="POST" id="mappingConfirmForm">'
+                    + '<input type="hidden" name="flow_mode" value="confirm_mapping">'
+                    + '<input type="hidden" name="temp_upload_path" value="' + esc(inp) + '">'
+                    + '<input type="hidden" name="temp_upload_ext" value="' + esc(ext) + '">'
+                    + '<div style="background:#fafcff;border:1px solid #dbeafe;border-radius:14px;padding:1rem;margin-bottom:1rem">'
+                    + '<div style="font-size:15px;font-weight:700;color:#1e3a8a;margin-bottom:10px">אישור שדות לפני עיבוד</div>'
+                    + '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;margin-bottom:10px">'
+                    + '<div><label class="field-label">תבנית שמורה</label><select name="selected_template_id" style="padding:9px 12px;border:1.5px solid #e2e8f0;border-radius:8px;font-size:13px;font-family:inherit;outline:none;width:100%;margin-bottom:0;background:white">' + template_options + '</select></div>'
+                    + '<div><label class="field-label">שם תבנית</label><input type="text" name="template_name" value="' + esc(template_name_value) + '" placeholder="שם תבנית" style="margin-bottom:0"></div>'
+                    + '<div style="display:flex;align-items:flex-end;gap:8px"><label style="display:flex;align-items:center;gap:6px;font-size:13px;color:#334155"><input type="checkbox" name="save_template" value="1" checked> שמור / עדכן תבנית</label><button type="submit" name="mapping_action" value="apply_template" class="btn btn-gray">טען תבנית</button></div>'
+                    + '</div>'
+                    + '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-bottom:12px">' + mapping_fields_html + '</div>'
+                    + '<div style="font-size:12px;color:#64748b;line-height:1.7;margin-bottom:12px">שדות חובה: שם עובד, מספר עובד, תאריך ואירוע. גם אם חסר שדה חובה ניתן להמשיך, אבל המערכת תציג אזהרה בהתאם.</div>'
+                    + '<div style="display:flex;gap:10px;flex-wrap:wrap;justify-content:center"><button type="submit" name="mapping_action" value="confirm" class="btn btn-blue" style="min-width:220px">אשר הכל והפעל עיבוד</button><a href="/run/' + script_id + '" class="btn btn-gray" style="text-decoration:none;display:inline-flex;align-items:center;justify-content:center;min-width:150px">העלאת קובץ חדש</a></div>'
+                    + '</div></form>'
+                )
+            elif not inp or not os.path.exists(inp):
+                error = '<div class="flash-err">הקובץ הזמני לא נמצא. יש להעלות את הדוח מחדש.</div>'
+            else:
+                uid = str(uuid.uuid4())[:8]
+                options = {key: value for key, value in mapping.items()}
+                result_name = build_output_filename(scr, uid, options)
+                out = str(OUTPUT_FOLDER / result_name)
                 try:
-                    execute_script(scr, inp, out, ext, options)
+                    execution_result = execute_script(scr, inp, out, ext, options) or {}
                     result = result_name
+                    processing_warnings = execution_result.get("warnings", [])
                     log_user_activity("generate_report", "הפיק דוח", script_id, scr["name"], result_name)
+                    if request.form.get("save_template") == "1":
+                        template_name = request.form.get("template_name", "").strip() or "תבנית רימון"
+                        save_mapping_template(session["user_id"], script_id, template_name, mapping, selected_template_id)
                 except (xlrd.biffh.XLRDError, BadZipFile, OSError, ValueError):
                     error = '<div class="flash-err">' + scr["processing_error"] + '</div>'
                 except Exception as e:
@@ -3499,15 +3903,78 @@ def run_script(script_id):
                         os.remove(inp)
                     except OSError:
                         pass
+        else:
+            file_obj = request.files.get("file")
+            validation_error, ext = validate_upload(file_obj)
+            if validation_error == "missing":
+                error = '<div class="flash-err">' + scr["empty_error"] + '</div>'
+            elif validation_error == "unsupported":
+                error = '<div class="flash-err">' + scr["unsupported_error"] + '</div>'
+            elif validation_error == "invalid_excel":
+                error = '<div class="flash-err">' + scr["invalid_error"] + '</div>'
+            elif validation_error == "empty":
+                error = '<div class="flash-err">' + scr["empty_file_error"] + '</div>'
+            elif validation_error == "too_large":
+                error = '<div class="flash-err">' + scr["too_large_error"] + '</div>'
+            else:
+                uid = str(uuid.uuid4())[:8]
+                inp = str(UPLOAD_FOLDER / f"{uid}.{ext}")
+                options = {}
+                extra_paths = []
+                for field in scr.get("filter_fields", []):
+                    options[field["name"]] = request.form.get(field["name"], "").strip()
+                result_name = build_output_filename(scr, uid, options)
+                out = str(OUTPUT_FOLDER / result_name)
+                for upload in scr.get("extra_uploads", []):
+                    extra_file = request.files.get(upload["name"])
+                    if extra_file and extra_file.filename:
+                        extra_ext = get_extension(extra_file.filename)
+                        expected = upload.get("accept", "").lstrip(".").lower()
+                        if expected and extra_ext != expected:
+                            error = '<div class="flash-err">' + text["run_extra_file_type_error"] + "</div>"
+                            break
+                        extra_path = str(UPLOAD_FOLDER / f"{uid}_{upload['name']}.{extra_ext or 'dat'}")
+                        extra_file.save(extra_path)
+                        options[f"{upload['name']}_path"] = extra_path
+                        extra_paths.append(extra_path)
+                    elif upload.get("required"):
+                        error = '<div class="flash-err">' + text["run_missing_extra_file_error"] + "</div>"
+                        break
+                if error:
                     for path in extra_paths:
                         try:
                             os.remove(path)
                         except OSError:
                             pass
+                else:
+                    file_obj.save(inp)
+                    try:
+                        execution_result = execute_script(scr, inp, out, ext, options) or {}
+                        result = result_name
+                        processing_warnings = execution_result.get("warnings", [])
+                        log_user_activity("generate_report", "הפיק דוח", script_id, scr["name"], result_name)
+                    except (xlrd.biffh.XLRDError, BadZipFile, OSError, ValueError):
+                        error = '<div class="flash-err">' + scr["processing_error"] + '</div>'
+                    except Exception as e:
+                        error = '<div class="flash-err">' + text["run_unexpected_error_prefix"] + str(e) + "</div>"
+                    finally:
+                        try:
+                            os.remove(inp)
+                        except OSError:
+                            pass
+                        for path in extra_paths:
+                            try:
+                                os.remove(path)
+                            except OSError:
+                                pass
 
     if result:
+        warning_html = ""
+        if processing_warnings:
+            warning_html = '<div style="text-align:right;background:#fff7ed;border:1px solid #fdba74;color:#9a3412;border-radius:12px;padding:12px 14px;margin-bottom:14px;line-height:1.8">' + "<br>".join(esc(item) for item in processing_warnings) + "</div>"
         content = (
-            '<div class="success-box">'
+            warning_html
+            + '<div class="success-box">'
             '<div style="font-size:32px;margin-bottom:6px">&#9989;</div>'
             '<div style="font-size:16px;font-weight:700;color:#15803d;margin-bottom:10px">' + scr["success_title"] + '</div>'
             '<a href="/download/' + result + '" class="dl-btn">&#8681; ' + scr["success_action"] + '</a>'
@@ -3546,25 +4013,29 @@ def run_script(script_id):
                         + '<input type="text" name="' + field["name"] + '" placeholder="' + field.get("placeholder", "") + '" style="margin-bottom:0"></div>'
                     )
             filter_fields_html += '</div>'
-        content = (
-            error
-            + '<form method="POST" enctype="multipart/form-data" id="uploadForm">'
-            + filter_fields_html
-            + '<div style="background:#fafcff;border:2px dashed #c7d7f5;border-radius:14px;padding:1.5rem;margin-bottom:1rem;text-align:center">'
-            + '<div style="font-size:32px;margin-bottom:8px">&#128194;</div>'
-            + '<div style="font-size:15px;font-weight:600;color:#1e40af;margin-bottom:12px">' + scr["file_picker_label"] + '</div>'
-            + '<input type="file" name="file" id="fi" accept="' + scr["accept"] + '" style="width:100%;max-width:420px;margin:0 auto 10px;display:block;font-family:inherit">'
-            + '<div style="font-size:12px;color:#94a3b8" id="lbl">' + scr["accept"] + '</div>'
-            + extra_uploads_html
-            + '</div>'
-            + '<button type="submit" class="btn btn-blue" id="gb" style="width:100%;padding:13px;font-size:15px;font-weight:700">' + scr["icon"] + ' ' + scr["submit_label"] + '</button>'
-            + '<div class="processing-box" id="processingBox">'
-            + '<div class="processing-note">' + scr["processing_title"] + '</div>'
-            + '<div class="progress-track"><div class="progress-bar"></div></div>'
-            + '<div class="processing-subnote">' + scr["processing_note"] + '</div>'
-            + '</div>'
-            + '</form>'
-        )
+        if mapping_confirmation_html:
+            content = error + info_message + mapping_confirmation_html
+        else:
+            content = (
+                error
+                + info_message
+                + '<form method="POST" enctype="multipart/form-data" id="uploadForm">'
+                + filter_fields_html
+                + '<div style="background:#fafcff;border:2px dashed #c7d7f5;border-radius:14px;padding:1.5rem;margin-bottom:1rem;text-align:center">'
+                + '<div style="font-size:32px;margin-bottom:8px">&#128194;</div>'
+                + '<div style="font-size:15px;font-weight:600;color:#1e40af;margin-bottom:12px">' + scr["file_picker_label"] + '</div>'
+                + '<input type="file" name="file" id="fi" accept="' + scr["accept"] + '" style="width:100%;max-width:420px;margin:0 auto 10px;display:block;font-family:inherit">'
+                + '<div style="font-size:12px;color:#94a3b8" id="lbl">' + scr["accept"] + '</div>'
+                + extra_uploads_html
+                + '</div>'
+                + '<button type="submit" class="btn btn-blue" id="gb" style="width:100%;padding:13px;font-size:15px;font-weight:700">' + scr["icon"] + ' ' + scr["submit_label"] + '</button>'
+                + '<div class="processing-box" id="processingBox">'
+                + '<div class="processing-note">' + scr["processing_title"] + '</div>'
+                + '<div class="progress-track"><div class="progress-bar"></div></div>'
+                + '<div class="processing-subnote">' + scr["processing_note"] + '</div>'
+                + '</div>'
+                + '</form>'
+            )
 
     help_trigger_html = ""
     help_modal_html = ""
