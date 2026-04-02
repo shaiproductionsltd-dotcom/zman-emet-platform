@@ -3524,6 +3524,9 @@ input:focus { border-color: #2563eb; }
 .btn-gray { background: #f1f5f9; color: #475569; }
 .flash { background: #f0fdf4; border: 1px solid #86efac; color: #15803d; border-radius: 8px; padding: 10px 14px; font-size: 13px; margin-bottom: 1rem; }
 .flash-err { background: #fef2f2; border: 1px solid #fecaca; color: #dc2626; border-radius: 8px; padding: 10px 14px; font-size: 13px; margin-bottom: 1rem; }
+.flash-stack { position: fixed; top: 92px; right: max(14px, calc((100vw - 900px)/2 - 110px)); z-index: 120; display: flex; flex-direction: column; gap: 10px; width: min(340px, calc(100vw - 28px)); }
+.flash-toast { background: #f0fdf4; border: 1px solid #86efac; color: #15803d; border-radius: 14px; padding: 12px 16px; font-size: 13px; line-height: 1.7; box-shadow: 0 14px 34px rgba(15,23,42,.14); opacity: 0; transform: translateY(-8px); animation: flashToastIn .22s ease-out forwards; }
+.flash-toast.dismiss { animation: flashToastOut .22s ease-in forwards; }
 table { width: 100%; border-collapse: collapse; font-size: 13px; }
 th { text-align: start; padding: 10px 12px; background: #f8fafc; color: #64748b; font-weight: 600; border-bottom: 1.5px solid #e2e8f0; }
 td { padding: 12px; border-bottom: 1px solid #f1f5f9; vertical-align: middle; }
@@ -3550,6 +3553,14 @@ td { padding: 12px; border-bottom: 1px solid #f1f5f9; vertical-align: middle; }
   0% { transform: translateX(0); }
   50% { transform: translateX(120%); }
   100% { transform: translateX(0); }
+}
+@keyframes flashToastIn {
+  from { opacity: 0; transform: translateY(-8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes flashToastOut {
+  from { opacity: 1; transform: translateY(0); }
+  to { opacity: 0; transform: translateY(-8px); }
 }
 .modal-bg { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.4); z-index: 100; align-items: center; justify-content: center; }
 .modal-box { background: white; border-radius: 16px; padding: 1.75rem; width: 320px; }
@@ -3588,8 +3599,8 @@ td { padding: 12px; border-bottom: 1px solid #f1f5f9; vertical-align: middle; }
 .admin-support-summary-box { background:#f8fafc; border:1px solid #e2e8f0; border-radius:14px; padding:12px; }
 .admin-support-summary-box .k { font-size:12px; color:#64748b; margin-bottom:4px; }
 .admin-support-summary-box .v { font-size:20px; font-weight:800; color:#0f172a; }
-@media (max-width: 1280px) { .admin-float-nav { right:10px; } .admin-float-nav a { min-width:64px; font-size:11px; padding:8px 9px; } }
-@media (max-width: 1100px) { .admin-float-nav { position:static; margin-bottom:1rem; flex-direction:row; flex-wrap:wrap; } .admin-float-nav a { min-width:unset; } }
+@media (max-width: 1280px) { .admin-float-nav { right:10px; } .admin-float-nav a { min-width:64px; font-size:11px; padding:8px 9px; } .flash-stack { right: 10px; } }
+@media (max-width: 1100px) { .admin-float-nav { position:static; margin-bottom:1rem; flex-direction:row; flex-wrap:wrap; } .admin-float-nav a { min-width:unset; } .flash-stack { top: 74px; right: 12px; } }
 """
 
 
@@ -3693,7 +3704,9 @@ def add_flash(msg):
 
 def pop_flashes():
     msgs = session.pop("msgs", [])
-    return "".join('<div class="flash">' + m + "</div>" for m in msgs)
+    if not msgs:
+        return ""
+    return '<div class="flash-stack" id="flashStack">' + "".join('<div class="flash-toast">' + m + "</div>" for m in msgs) + "</div>"
 
 
 def generate_temp_password(length=10):
@@ -5492,7 +5505,22 @@ def render(title, body, nav=True, lang="en", topbar_greeting="Hello, ", logout_l
         + 'document.querySelectorAll(".modal-bg").forEach(function(el){el.style.display="none";});'
         + 'document.body.style.removeProperty("overflow");'
         + '}'
+        + 'function initFlashToasts(){'
+        + 'var stack=document.getElementById("flashStack");'
+        + 'if(!stack){return;}'
+        + 'var toasts=stack.querySelectorAll(".flash-toast");'
+        + 'toasts.forEach(function(toast,index){'
+        + 'window.setTimeout(function(){'
+        + 'toast.classList.add("dismiss");'
+        + 'window.setTimeout(function(){'
+        + 'if(toast&&toast.parentNode){toast.parentNode.removeChild(toast);}'
+        + 'if(stack && !stack.children.length && stack.parentNode){stack.parentNode.removeChild(stack);}'
+        + '},220);'
+        + '},5000+(index*150));'
+        + '});'
+        + '}'
         + 'if(document.readyState==="loading"){document.addEventListener("DOMContentLoaded",resetTransientUi);}else{resetTransientUi();}'
+        + 'if(document.readyState==="loading"){document.addEventListener("DOMContentLoaded",initFlashToasts);}else{initFlashToasts();}'
         + 'window.addEventListener("pageshow",resetTransientUi);'
         + '})();'
         + "</script></body></html>"
