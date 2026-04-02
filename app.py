@@ -3452,6 +3452,70 @@ def looks_like_day_name_sample(sample_text):
     return text in {"א", "ב", "ג", "ד", "ה", "ו", "שבת", "יום שישי", "ראשון", "שני", "שלישי", "רביעי", "חמישי", "שישי"}
 
 
+def is_rimon_option_relevant_for_field(field_name, option):
+    header_token = normalize_token(option.get("header", ""))
+    exact_token = normalize_token(option.get("exact_header", ""))
+    sample_text = option.get("sample", "")
+    resolved_token = exact_token or header_token
+
+    if field_name == "date_source":
+        return looks_like_excel_date_sample(sample_text) or "תאריך" in resolved_token or "date" in resolved_token
+    if field_name == "day_name_source":
+        return looks_like_day_name_sample(sample_text) or resolved_token == "יום" or "day" in resolved_token
+    if field_name == "entry_time_source":
+        return looks_like_time_sample(sample_text) and ("כניסה" in resolved_token or "entry" in resolved_token or "checkin" in resolved_token)
+    if field_name == "exit_time_source":
+        return looks_like_time_sample(sample_text) and ("יציאה" in resolved_token or "exit" in resolved_token or "checkout" in resolved_token)
+    if field_name == "total_hours_source":
+        return looks_like_time_sample(sample_text) and ("סהכ" in resolved_token or "שעות" in resolved_token or "total" in resolved_token or "hours" in resolved_token)
+    if field_name == "event_source":
+        sample_token = normalize_token(str(sample_text))
+        return "אירוע" in resolved_token or "event" in resolved_token or "סטטוס" in resolved_token or any(
+            keyword in sample_token for keyword in ("עבודהמהבית", "חופשה", "מחלה", "מילואים", "היעדר")
+        )
+    if field_name == "error_text_source":
+        sample_token = normalize_token(str(sample_text))
+        return "שגיאה" in resolved_token or "error" in resolved_token or any(
+            keyword in sample_token for keyword in ("יוםחסר", "חסרדיווח", "שגיאה")
+        )
+    if field_name == "employee_name_source":
+        return any(token in resolved_token for token in ("שם", "employee", "name", "עובד"))
+    if field_name == "payroll_number_source":
+        return any(token in resolved_token for token in ("מספר", "תג", "payroll", "employeeid", "עובד", "שכר"))
+    if field_name == "department_source":
+        return any(token in resolved_token for token in ("מחלקה", "department"))
+    if field_name == "id_number_source":
+        return any(token in resolved_token for token in ("זהות", "דרכון", "id", "identity"))
+    return False
+
+
+def dedupe_rimon_field_options(options):
+    grouped = {}
+    order = []
+    for option in options:
+        key = normalize_token(option.get("exact_header", "") or option.get("header", ""))
+        if not key:
+            key = option.get("value", "")
+        if key not in grouped:
+            grouped[key] = []
+            order.append(key)
+        grouped[key].append(option)
+
+    deduped = []
+    for key in order:
+        candidates = grouped[key]
+        with_sample = [option for option in candidates if option.get("sample")]
+        if with_sample:
+            deduped.extend(with_sample[:1])
+            continue
+        exact = [option for option in candidates if option.get("exact_header")]
+        if exact:
+            deduped.extend(exact[:1])
+            continue
+        deduped.extend(candidates[:1])
+    return deduped
+
+
 def detect_rimon_header_row(sheet, workbook_kind):
     rows, cols = get_excel_dims(sheet, workbook_kind)
     best_row = 11 if rows > 11 else 0
@@ -3619,7 +3683,8 @@ def build_rimon_mapping_options(input_path, extension):
         field_name = field["name"]
         options = [{"value": "", "label": "לא נבחר"}]
         options.extend(meta_options.get(field_name, []))
-        options.extend(table_options)
+        filtered_table_options = [option for option in table_options if is_rimon_option_relevant_for_field(field_name, option)]
+        options.extend(dedupe_rimon_field_options(filtered_table_options))
         options_by_field[field_name] = options
 
         suggested = ""
