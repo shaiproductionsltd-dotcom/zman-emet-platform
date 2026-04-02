@@ -3572,8 +3572,8 @@ td { padding: 12px; border-bottom: 1px solid #f1f5f9; vertical-align: middle; }
 .admin-user-summary-box { background:#f8fafc; border:1px solid #e2e8f0; border-radius:14px; padding:12px; }
 .admin-user-summary-box .k { font-size:12px; color:#64748b; margin-bottom:4px; }
 .admin-user-summary-box .v { font-size:22px; font-weight:800; color:#0f172a; }
-.admin-float-nav { position:fixed; top:92px; left:20px; z-index:20; display:flex; flex-direction:column; gap:10px; }
-.admin-float-nav a { box-shadow:0 8px 24px rgba(15,23,42,.12); background:#ffffff; border:1px solid #dbeafe; min-width:160px; }
+.admin-float-nav { position:fixed; top:92px; right:max(8px, calc((100vw - 900px)/2 - 88px)); z-index:20; display:flex; flex-direction:column; gap:8px; }
+.admin-float-nav a { box-shadow:0 8px 24px rgba(15,23,42,.12); background:#ffffff; border:1px solid #dbeafe; min-width:72px; padding:9px 10px; font-size:12px; }
 .support-request-list { display:flex; flex-direction:column; gap:14px; }
 .support-request-card { background:linear-gradient(180deg,#ffffff 0%,#f8fbff 100%); border:1px solid #dbeafe; border-radius:18px; padding:16px; }
 .support-request-card-head { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; margin-bottom:12px; flex-wrap:wrap; }
@@ -3582,7 +3582,13 @@ td { padding: 12px; border-bottom: 1px solid #f1f5f9; vertical-align: middle; }
 .support-request-card-box .k { font-size:11px; color:#64748b; margin-bottom:4px; }
 .support-request-card-box .v { font-size:14px; font-weight:700; color:#0f172a; line-height:1.7; word-break:break-word; }
 .support-request-message { background:#ffffff; border:1px solid #e2e8f0; border-radius:14px; padding:14px; font-size:13px; color:#334155; line-height:1.9; white-space:pre-wrap; margin-bottom:12px; }
-@media (max-width: 1280px) { .admin-float-nav { left:10px; } .admin-float-nav a { min-width:140px; font-size:12px; padding:9px 12px; } }
+.admin-collapsible-summary { list-style:none; cursor:pointer; padding:18px 20px; display:flex; align-items:center; justify-content:space-between; gap:12px; }
+.admin-collapsible-sub { font-size:13px; color:#64748b; line-height:1.7; }
+.admin-support-summary { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:10px; margin-bottom:14px; }
+.admin-support-summary-box { background:#f8fafc; border:1px solid #e2e8f0; border-radius:14px; padding:12px; }
+.admin-support-summary-box .k { font-size:12px; color:#64748b; margin-bottom:4px; }
+.admin-support-summary-box .v { font-size:20px; font-weight:800; color:#0f172a; }
+@media (max-width: 1280px) { .admin-float-nav { right:10px; } .admin-float-nav a { min-width:64px; font-size:11px; padding:8px 9px; } }
 @media (max-width: 1100px) { .admin-float-nav { position:static; margin-bottom:1rem; flex-direction:row; flex-wrap:wrap; } .admin-float-nav a { min-width:unset; } }
 """
 
@@ -6632,12 +6638,13 @@ def admin():
                 + "</label>"
             )
         user_cards += (
-            '<div class="admin-user-card">'
-            '<div class="admin-user-head">'
+            '<details class="admin-user-card">'
+            '<summary class="admin-collapsible-summary">'
             '<div><div class="admin-user-title">' + esc(user["company_name"] or user["full_name"] or user["username"]) + '</div>'
-            '<div class="admin-user-sub">@' + esc(user["username"]) + ' • ח.פ: ' + esc(user["company_id"] or "לא הוגדר") + '</div></div>'
-            '<span class="admin-user-status" style="background:' + service_style[0] + ';color:' + service_style[1] + '">' + esc(status["status_label_he"]) + '</span>'
-            '</div>'
+            '<div class="admin-user-sub">@' + esc(user["username"]) + ' • ח.פ: ' + esc(user["company_id"] or "לא הוגדר") + '</div>'
+            '<div class="admin-user-sub">' + esc(user["full_name"] or "לא הוגדר") + ' • ' + esc(user["email"] or "ללא אימייל") + '</div></div>'
+            '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap"><span class="admin-user-status" style="background:' + service_style[0] + ';color:' + service_style[1] + '">' + esc(status["status_label_he"]) + '</span><span style="font-size:18px;color:#64748b">+</span></div>'
+            '</summary>'
             '<div class="admin-user-meta">'
             '<div class="admin-user-meta-box"><div class="k">איש קשר</div><div class="v">' + esc(user["full_name"] or "לא הוגדר") + '</div></div>'
             '<div class="admin-user-meta-box"><div class="k">מסלול חיוב</div><div class="v">' + esc(billing_mode_label(user["billing_mode"], "he")) + '</div></div>'
@@ -6659,7 +6666,7 @@ def admin():
             + '<form method="POST" action="/admin/resetpass/' + str(uid) + '" style="display:inline"><button type="submit" class="btn btn-gray" style="font-size:12px;padding:6px 14px">סיסמה זמנית</button></form>'
             + '<a href="/admin/delete/' + str(uid) + '" onclick="return confirm(\'Delete?\');" class="btn btn-red" style="text-decoration:none;font-size:12px;padding:6px 14px">מחיקה</a>'
             + '</div></div>'
-            '</div>'
+            '</details>'
         )
 
     users_overview = (
@@ -6804,13 +6811,14 @@ def admin():
             contact_bits.append("טלפון: " + entry["phone"])
         contact_text = "<br>".join(esc(bit) for bit in contact_bits) if contact_bits else "—"
         support_rows += (
-            '<div class="support-request-card">'
-            '<div class="support-request-card-head">'
+            '<details class="support-request-card">'
+            '<summary class="admin-collapsible-summary" style="padding:0 0 12px 0">'
             '<div><div style="font-size:17px;font-weight:800;color:#0f172a;margin-bottom:4px">' + esc(customer_label) + '</div>'
             + ('<div style="font-size:12px;color:#64748b">@' + esc(entry["username"] or "") + '</div>' if entry["username"] else '')
+            + '<div class="admin-collapsible-sub">' + esc(request_type_label) + ' • ' + esc(format_ui_datetime(entry["created_at"])) + (' • ' + esc(entry["script_name"]) if entry["script_name"] else '') + '</div>'
             + '</div>'
-            '<span style="display:inline-flex;align-items:center;padding:7px 12px;border-radius:999px;background:' + meta["bg"] + ';color:' + meta["fg"] + ';font-size:12px;font-weight:800">' + esc(meta["label"]) + '</span>'
-            '</div>'
+            '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap"><span style="display:inline-flex;align-items:center;padding:7px 12px;border-radius:999px;background:' + meta["bg"] + ';color:' + meta["fg"] + ';font-size:12px;font-weight:800">' + esc(meta["label"]) + '</span><span style="font-size:18px;color:#64748b">+</span></div>'
+            '</summary>'
             '<div class="support-request-card-meta">'
             '<div class="support-request-card-box"><div class="k">מועד פתיחה</div><div class="v">' + esc(format_ui_datetime(entry["created_at"])) + '</div></div>'
             '<div class="support-request-card-box"><div class="k">סוג פנייה</div><div class="v">' + esc(request_type_label) + '</div></div>'
@@ -6822,18 +6830,18 @@ def admin():
             + ('<form method="POST" action="/admin/support/' + str(entry["id"]) + '/status" style="display:inline"><input type="hidden" name="status" value="accepted"><button type="submit" class="btn btn-gray" style="font-size:12px;padding:5px 12px">התקבל</button></form>' if str(entry["status"] or "pending").strip().lower() != "accepted" else "")
             + ('<form method="POST" action="/admin/support/' + str(entry["id"]) + '/status" style="display:inline"><input type="hidden" name="status" value="resolved"><button type="submit" class="btn btn-blue" style="font-size:12px;padding:5px 12px">טופל</button></form>' if str(entry["status"] or "pending").strip().lower() != "resolved" else "")
             + '</div>'
-            '</div>'
+            '</details>'
         )
     support_table = ('<div class="support-request-list">' + support_rows + '</div>') if support_requests else '<p style="color:#94a3b8;text-align:center;padding:2rem">No customer support requests yet</p>'
 
     admin_side_nav = (
-        '<div style="position:sticky;top:88px;display:flex;flex-direction:column;gap:10px">'
+        '<div class="admin-float-nav">'
         '<a href="#adminAddUser" class="btn btn-gray" style="text-decoration:none;justify-content:center">הוספת לקוח</a>'
         '<a href="#adminUsers" class="btn btn-gray" style="text-decoration:none;justify-content:center">לקוחות</a>'
-        '<a href="#adminLogs" class="btn btn-gray" style="text-decoration:none;justify-content:center">לוגים</a>'
         '<a href="#adminSupport" class="btn btn-gray" style="text-decoration:none;justify-content:center">פניות שירות'
         + (' (' + str(pending_support) + ')' if pending_support else '')
         + '</a>'
+        '<a href="#adminLogs" class="btn btn-gray" style="text-decoration:none;justify-content:center">לוגים</a>'
         '</div>'
     )
 
@@ -6853,24 +6861,28 @@ def admin():
         '<div class="form-group"><label class="field-label">Account Type</label><select name="account_type" style="margin-bottom:0"><option value="trial">30-day trial</option><option value="active">Active service</option></select></div>'
         '<div class="form-group"><label class="field-label">Valid Until</label><input type="text" name="service_valid_until" placeholder="YYYY-MM-DD" style="margin-bottom:0"></div>'
         '<button type="submit" class="btn btn-blue" style="height:40px;align-self:flex-end">Add</button></div></form></div>'
-        '<div class="card" id="adminUsers"><h2>&#128101; Users In System</h2>'
+        '<details class="card" id="adminUsers" style="padding:0;overflow:hidden">'
+        '<summary class="admin-collapsible-summary">'
+        '<div><div style="font-size:22px;font-weight:800;color:#0f172a;margin-bottom:4px">&#128101; Users In System</div><div class="admin-collapsible-sub">רשימת הלקוחות מקופלת כברירת מחדל. פתיחה לפי צורך לעבודה נוחה יותר.</div></div>'
+        '<span style="font-size:18px;color:#64748b">+</span>'
+        '</summary><div style="padding:0 20px 20px">'
         + table
-        + '</div><details class="card" id="adminLogs" style="padding:0;overflow:hidden">'
-        '<summary style="list-style:none;cursor:pointer;padding:18px 20px;display:flex;align-items:center;justify-content:space-between;gap:12px">'
+        + '</div></details><details class="card" id="adminSupport" style="padding:0;overflow:hidden">'
+        '<summary class="admin-collapsible-summary">'
+        '<div><div style="font-size:22px;font-weight:800;color:#0f172a;margin-bottom:4px">&#128172; Customer Support Requests</div><div class="admin-collapsible-sub">'
+        + ('יש ' + str(pending_support) + ' פניות שממתינות להתייחסות' if pending_support else 'אין כרגע פניות שממתינות להתייחסות')
+        + '</div></div>'
+        '<span style="font-size:18px;color:#64748b">+</span>'
+        '</summary><div style="padding:0 20px 20px">'
+        + support_table
+        + '</div></details><details class="card" id="adminLogs" style="padding:0;overflow:hidden">'
+        '<summary class="admin-collapsible-summary">'
         '<div><div style="font-size:22px;font-weight:800;color:#0f172a;margin-bottom:4px">&#128221; User Activity Log</div><div style="font-size:13px;color:#64748b">פתיחה לפי צורך בלבד לצפייה ועבודה על הלוגים</div></div>'
         '<span style="font-size:18px;color:#64748b">+</span>'
         '</summary><div style="padding:0 20px 20px">'
         + activity_filter_bar
         + activity_summary
         + activity_table
-        + '</div></details><details class="card" id="adminSupport" style="padding:0;overflow:hidden">'
-        '<summary style="list-style:none;cursor:pointer;padding:18px 20px;display:flex;align-items:center;justify-content:space-between;gap:12px">'
-        '<div><div style="font-size:22px;font-weight:800;color:#0f172a;margin-bottom:4px">&#128172; Customer Support Requests</div><div style="font-size:13px;color:#64748b">'
-        + ('יש ' + str(pending_support) + ' פניות שממתינות להתייחסות' if pending_support else 'אין כרגע פניות שממתינות להתייחסות')
-        + '</div></div>'
-        '<span style="font-size:18px;color:#64748b">+</span>'
-        '</summary><div style="padding:0 20px 20px">'
-        + support_table
         + '</div></details>'
         + '</div><div class="modal-bg" id="passModal"><div class="modal-box"><h3 style="font-size:15px;font-weight:700;margin-bottom:1rem;color:#1e3a8a">Change Password &#8212; <span id="pname"></span></h3>'
         '<form method="POST" id="pform"><input type="password" name="new_password" placeholder="New password" required>'
