@@ -355,14 +355,14 @@ def extract_flamingo_worker_pair(detail_sheet, summary_sheet, workbook_kind, map
         except ValueError:
             hourly_rate = None
             status = "Invalid manual hourly rate"
-            notes.append(f"Manual hourly rate value is invalid: {manual_hourly_rate_text}")
+            notes.append(f"התעריף השעתי הידני אינו תקין: {manual_hourly_rate_text}")
     elif rate_raw not in ("", None):
         try:
             hourly_rate = parse_numeric_rate(rate_raw)
         except ValueError:
             hourly_rate = None
             status = "Invalid hourly rate"
-            notes.append(f"Hourly rate value is invalid: {rate_raw}")
+            notes.append(f"ערך התעריף השעתי אינו תקין: {rate_raw}")
 
     if hourly_rate is None and status == "OK":
         status = "Missing hourly rate"
@@ -375,7 +375,7 @@ def extract_flamingo_worker_pair(detail_sheet, summary_sheet, workbook_kind, map
         payable_hours = None
         if status == "OK":
             status = "Invalid payable hours"
-        notes.append(f"Payable hours value is invalid: {payable_hours_raw}")
+        notes.append(f"ערך שעות התשלום אינו תקין: {payable_hours_raw}")
 
     payable_breakdown = {}
     summary_name = get_flamingo_sheet_name(summary_sheet, workbook_kind) if summary_sheet is not None else get_flamingo_sheet_name(detail_sheet, workbook_kind)
@@ -409,10 +409,30 @@ def extract_flamingo_worker_pair(detail_sheet, summary_sheet, workbook_kind, map
     }
 
 
+def translate_flamingo_status(status):
+    return {
+        "OK": "תקין",
+        "Missing hourly rate": "חסר תעריף שעתי",
+        "Invalid hourly rate": "תעריף שעתי לא תקין",
+        "Invalid manual hourly rate": "תעריף ידני לא תקין",
+        "Missing payable hours": "חסרות שעות לתשלום",
+        "Invalid payable hours": "שעות לתשלום לא תקינות",
+        "Could not match summary sheet": "לא זוהה גיליון סיכום",
+    }.get(status, status)
+
+
+def get_flamingo_attention_action(status):
+    if status in {"Missing hourly rate", "Invalid hourly rate", "Invalid manual hourly rate"}:
+        return "יש לבחור שדה תעריף שעתי נכון או להזין תעריף ידני תקין."
+    if status == "Could not match summary sheet":
+        return "יש לבדוק את מבנה הדוח ולוודא שקיים אזור סיכום תקין לעובד."
+    return "יש לבדוק את שדה שעות התשלום ולוודא שנבחר השדה הנכון."
+
+
 def write_flamingo_summary_sheet(ws, worker_rows):
     ws.sheet_view.rightToLeft = True
     ws.sheet_view.showGridLines = False
-    ws.title = safe_sheet_title("Payroll Summary", "Payroll Summary")
+    ws.title = safe_sheet_title("סיכום שכר", "סיכום שכר")
     ws.freeze_panes = "A12"
 
     successful_rows = [row for row in worker_rows if row["status"] == "OK"]
@@ -423,21 +443,22 @@ def write_flamingo_summary_sheet(ws, worker_rows):
     average_rate = (sum(row["hourly_rate"] or 0 for row in successful_rows) / len(successful_rows)) if successful_rows else 0
 
     metrics = [
-        ("Total workers", total_workers, "DBEAFE"),
-        ("Calculated successfully", len(successful_rows), "DCFCE7"),
-        ("Requires attention", unresolved_workers, "FEE2E2"),
-        ("Total payable hours", format_hours(total_hours), "FEF3C7"),
-        ("Total payroll", round(total_salary, 2), "E9D5FF"),
-        ("Average hourly rate", round(average_rate, 2), "FCE7F3"),
+        ("סה\"כ עובדים", total_workers, "DBEAFE"),
+        ("חושבו בהצלחה", len(successful_rows), "DCFCE7"),
+        ("דורשים טיפול", unresolved_workers, "FEE2E2"),
+        ("סה\"כ שעות לתשלום", format_hours(total_hours), "FEF3C7"),
+        ("סה\"כ שכר", round(total_salary, 2), "E9D5FF"),
+        ("ממוצע תעריף שעתי", round(average_rate, 2), "FCE7F3"),
     ]
 
     ws.merge_cells("A1:D1")
-    ws["A1"] = "Flamingo Payroll Summary"
+    ws["A1"] = "דוח סיכום שכר"
     ws["A1"].font = Font(bold=True, size=18, color="0F172A")
     ws["A1"].fill = PatternFill(fill_type="solid", fgColor="BFDBFE")
     ws["A1"].alignment = Alignment(horizontal="center")
-    ws["A2"] = "Automatic payroll calculation from monthly attendance export"
+    ws["A2"] = "חישוב שכר אוטומטי מתוך דוח מפורט חודשי"
     ws["A2"].font = Font(italic=True, size=11, color="475569")
+    ws["A2"].alignment = Alignment(horizontal="center")
 
     for index, (label, value, fill_color) in enumerate(metrics):
         start_col = 1 + (index % 3) * 4
@@ -455,18 +476,18 @@ def write_flamingo_summary_sheet(ws, worker_rows):
 
     header_row = 11
     headers = [
-        "Worker Name",
-        "Worker Number",
-        "ID Number",
-        "Department",
-        "Start Date",
-        "Detail Sheet",
-        "Summary Sheet",
-        "Hourly Rate",
-        "Payable Hours",
-        "Calculated Salary",
-        "Status",
-        "Notes",
+        "שם עובד",
+        "מספר עובד",
+        "תעודת זהות",
+        "מחלקה",
+        "תחילת עבודה",
+        "גיליון מפורט",
+        "גיליון סיכום",
+        "תעריף שעתי",
+        "שעות לתשלום",
+        "שכר מחושב",
+        "סטטוס",
+        "הערות",
     ]
 
     for col_index, header in enumerate(headers, start=1):
@@ -488,11 +509,12 @@ def write_flamingo_summary_sheet(ws, worker_rows):
             worker["hourly_rate"],
             format_hours(worker["payable_hours"]),
             worker["salary"],
-            worker["status"],
+            translate_flamingo_status(worker["status"]),
             worker["notes"],
         ]
         for col_index, value in enumerate(values, start=1):
-            ws.cell(row=row_index, column=col_index, value=value)
+            cell = ws.cell(row=row_index, column=col_index, value=value)
+            cell.alignment = Alignment(horizontal="right")
         fill_color = "ECFDF5" if worker["status"] == "OK" else "FEE2E2"
         for col_index in range(1, len(headers) + 1):
             ws.cell(row=row_index, column=col_index).fill = PatternFill(fill_type="solid", fgColor=fill_color)
@@ -507,10 +529,10 @@ def write_flamingo_summary_sheet(ws, worker_rows):
 def write_flamingo_attention_sheet(ws, worker_rows):
     ws.sheet_view.rightToLeft = True
     ws.sheet_view.showGridLines = False
-    ws.title = safe_sheet_title("Requires Attention", "Requires Attention")
+    ws.title = safe_sheet_title("דורש טיפול", "דורש טיפול")
     ws.freeze_panes = "A2"
 
-    headers = ["Worker Name", "Worker Number", "ID Number", "Issue", "Hourly Rate", "Payable Hours", "Recommended Action"]
+    headers = ["שם עובד", "מספר עובד", "תעודת זהות", "סוג תקלה", "תעריף שעתי", "שעות לתשלום", "פעולה מומלצת"]
     for col_index, header in enumerate(headers, start=1):
         cell = ws.cell(row=1, column=col_index, value=header)
         cell.font = Font(bold=True, color="FFFFFF")
@@ -520,25 +542,19 @@ def write_flamingo_attention_sheet(ws, worker_rows):
 
     issues = [row for row in worker_rows if row["status"] != "OK"]
     for row_index, worker in enumerate(issues, start=2):
-        if worker["status"] in {"Missing hourly rate", "Invalid hourly rate"}:
-            action = "יש לעדכן את התעריף בשדה הערות ולייצא את הדוח מחדש."
-        elif worker["status"] == "Could not match summary sheet":
-            action = "Verify the report structure and confirm that each detail sheet has a following summary sheet."
-        else:
-            action = "Verify payable hour values in the summary sheet."
-
         values = [
             worker["worker_name"],
             worker["worker_number"],
             worker["id_number"],
-            worker["status"],
+            translate_flamingo_status(worker["status"]),
             worker["hourly_rate_raw"],
             format_hours(worker["payable_hours"]),
-            action,
+            get_flamingo_attention_action(worker["status"]),
         ]
         for col_index, value in enumerate(values, start=1):
-            ws.cell(row=row_index, column=col_index, value=value)
-            ws.cell(row=row_index, column=col_index).fill = PatternFill(fill_type="solid", fgColor="FEF2F2")
+            cell = ws.cell(row=row_index, column=col_index, value=value)
+            cell.fill = PatternFill(fill_type="solid", fgColor="FEF2F2")
+            cell.alignment = Alignment(horizontal="right")
 
     widths = [22, 16, 18, 24, 14, 14, 60]
     for col_index, width in enumerate(widths, start=1):
@@ -548,10 +564,10 @@ def write_flamingo_attention_sheet(ws, worker_rows):
 def write_flamingo_department_sheet(ws, worker_rows):
     ws.sheet_view.rightToLeft = True
     ws.sheet_view.showGridLines = False
-    ws.title = safe_sheet_title("Department Summary", "Department Summary")
+    ws.title = safe_sheet_title("סיכום מחלקות", "סיכום מחלקות")
     ws.freeze_panes = "A2"
 
-    headers = ["Department", "Workers", "Calculated Workers", "Payable Hours", "Payroll"]
+    headers = ["מחלקה", "עובדים", "חושבו בהצלחה", "שעות לתשלום", "שכר כולל"]
     for col_index, header in enumerate(headers, start=1):
         cell = ws.cell(row=1, column=col_index, value=header)
         cell.font = Font(bold=True, color="FFFFFF")
@@ -561,7 +577,7 @@ def write_flamingo_department_sheet(ws, worker_rows):
 
     department_totals = defaultdict(lambda: {"workers": 0, "calculated": 0, "hours": 0.0, "salary": 0.0})
     for worker in worker_rows:
-        department = worker["department"] or "Unassigned"
+        department = worker["department"] or "ללא מחלקה"
         bucket = department_totals[department]
         bucket["workers"] += 1
         if worker["status"] == "OK":
@@ -578,9 +594,10 @@ def write_flamingo_department_sheet(ws, worker_rows):
             round(totals["salary"], 2),
         ]
         for col_index, value in enumerate(values, start=1):
-            ws.cell(row=row_index, column=col_index, value=value)
+            cell = ws.cell(row=row_index, column=col_index, value=value)
+            cell.alignment = Alignment(horizontal="right")
             if row_index % 2 == 0:
-                ws.cell(row=row_index, column=col_index).fill = PatternFill(fill_type="solid", fgColor="F0FDFA")
+                cell.fill = PatternFill(fill_type="solid", fgColor="F0FDFA")
 
     widths = [24, 12, 18, 16, 16]
     for col_index, width in enumerate(widths, start=1):
@@ -590,10 +607,10 @@ def write_flamingo_department_sheet(ws, worker_rows):
 def write_flamingo_top_earners_sheet(ws, worker_rows):
     ws.sheet_view.rightToLeft = True
     ws.sheet_view.showGridLines = False
-    ws.title = safe_sheet_title("Top Earners", "Top Earners")
+    ws.title = safe_sheet_title("שכר גבוה", "שכר גבוה")
     ws.freeze_panes = "A2"
 
-    headers = ["Rank", "Worker Name", "ID Number", "Department", "Hourly Rate", "Payable Hours", "Calculated Salary"]
+    headers = ["דירוג", "שם עובד", "תעודת זהות", "מחלקה", "תעריף שעתי", "שעות לתשלום", "שכר מחושב"]
     for col_index, header in enumerate(headers, start=1):
         cell = ws.cell(row=1, column=col_index, value=header)
         cell.font = Font(bold=True, color="FFFFFF")
@@ -618,9 +635,10 @@ def write_flamingo_top_earners_sheet(ws, worker_rows):
             worker["salary"],
         ]
         for col_index, value in enumerate(values, start=1):
-            ws.cell(row=row_index, column=col_index, value=value)
+            cell = ws.cell(row=row_index, column=col_index, value=value)
+            cell.alignment = Alignment(horizontal="right")
             if row_index % 2 == 0:
-                ws.cell(row=row_index, column=col_index).fill = PatternFill(fill_type="solid", fgColor="F5F3FF")
+                cell.fill = PatternFill(fill_type="solid", fgColor="F5F3FF")
         ws.cell(row=row_index, column=5).number_format = '0.00'
         ws.cell(row=row_index, column=7).number_format = '#,##0.00'
 
