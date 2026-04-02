@@ -208,6 +208,9 @@ def run_attendance_cleanup(input_path, output_path, extension, options=None):
 PAYABLE_HOUR_LABELS = {"רגילות", "׳¨׳’׳™׳׳•׳×", "100%", "125%", "150%", "175%", "200%"}
 REGULAR_PAYABLE_HOUR_LABELS = {"רגילות", "׳¨׳’׳™׳׳•׳×"}
 
+FLAMINGO_PAYABLE_KEYWORDS = ("שעותלתשלום", "שעותמשולמות", "רגילות", "נוכחות")
+FLAMINGO_RATE_KEYWORDS = ("תעריף", "שעה", "הערות", "rate")
+
 
 def parse_numeric_rate(value):
     if value in ("", None):
@@ -248,6 +251,13 @@ def format_hours(hours_value):
 def parse_hours_or_zero(value):
     parsed = parse_hours_value(value)
     return 0.0 if parsed is None else parsed
+
+
+def try_parse_hours_value(value):
+    try:
+        return parse_hours_value(value)
+    except (ValueError, TypeError):
+        return None
 
 
 def parse_float_or_none(value):
@@ -321,64 +331,57 @@ def extract_payable_hours(summary_sheet):
     return sum(available), totals
 
 
-def extract_flamingo_worker_pair(detail_sheet, summary_sheet):
-    worker_name = ""
-    for label in ("שם לתצוגה", "׳©׳ ׳׳×׳¦׳•׳’׳”"):
-        worker_name = str(find_row_label_value_with_offsets(detail_sheet, 5, label, [2, 1])).strip()
-        if worker_name:
-            break
-    worker_name = worker_name or detail_sheet.name
-    department = ""
-    rate_raw = ""
-    worker_number = ""
-    id_number = ""
-    start_date = ""
-    for label in ("מחלקה", "׳׳—׳׳§׳”"):
-        department = str(find_row_label_value_with_offsets(detail_sheet, 5, label, [3, 2, 1])).strip()
-        if department:
-            break
-    for rate_label in ("הערות", "׳”׳¢׳¨׳•׳×"):
-        rate_raw = find_row_label_value_with_offsets(detail_sheet, 5, rate_label, [4])
-        if rate_raw not in ("", None):
-            break
-    for label in ("מספר בשכר", "מס' מפעל בשכר", "׳׳¡׳₪׳¨ ׳‘׳©׳›׳¨"):
-        worker_number = find_row_label_value_with_offsets(detail_sheet, 5, label, [5, 4, 3, 2, 1])
-        if worker_number not in ("", None):
-            break
-    for label in ("תעודת זהות", "׳×׳¢׳•׳“׳× ׳–׳”׳•׳×"):
-        id_number = find_row_label_value_with_offsets(detail_sheet, 5, label, [2, 1])
-        if id_number not in ("", None):
-            break
-    for label in ("תחילת עבודה", "׳×׳—׳™׳׳× ׳¢׳‘׳•׳“׳”"):
-        start_date = find_row_label_value_with_offsets(detail_sheet, 5, label, [4, 3, 2, 1])
-        if start_date not in ("", None):
-            break
+def extract_flamingo_worker_pair(detail_sheet, summary_sheet, workbook_kind, mapping, manual_hourly_rate_text=""):
+    worker_name = stringify_excel_value(extract_flamingo_mapping_value(detail_sheet, summary_sheet, workbook_kind, mapping.get("worker_name_source")))
+    worker_name = worker_name or get_flamingo_sheet_name(detail_sheet, workbook_kind)
+    department = stringify_excel_value(extract_flamingo_mapping_value(detail_sheet, summary_sheet, workbook_kind, mapping.get("department_source")))
+    rate_raw = extract_flamingo_mapping_value(detail_sheet, summary_sheet, workbook_kind, mapping.get("hourly_rate_source"))
+    worker_number = stringify_excel_value(extract_flamingo_mapping_value(detail_sheet, summary_sheet, workbook_kind, mapping.get("worker_number_source")))
+    id_number = stringify_excel_value(extract_flamingo_mapping_value(detail_sheet, summary_sheet, workbook_kind, mapping.get("id_number_source")))
+    start_date = stringify_excel_value(extract_flamingo_mapping_value(detail_sheet, summary_sheet, workbook_kind, mapping.get("start_date_source")))
+    attendance_hours = extract_flamingo_mapping_value(detail_sheet, summary_sheet, workbook_kind, mapping.get("attendance_hours_source"))
+    standard_hours = extract_flamingo_mapping_value(detail_sheet, summary_sheet, workbook_kind, mapping.get("standard_hours_source"))
+    missing_hours = extract_flamingo_mapping_value(detail_sheet, summary_sheet, workbook_kind, mapping.get("missing_hours_source"))
     notes = []
     status = "OK"
 
-    try:
-        hourly_rate = parse_numeric_rate(rate_raw)
-    except ValueError:
-        hourly_rate = None
-        status = "Invalid hourly rate"
-        notes.append(f"Hourly rate value is invalid: {rate_raw}")
+    hourly_rate = None
+    used_manual_rate = False
+    if str(manual_hourly_rate_text or "").strip():
+        try:
+            hourly_rate = parse_numeric_rate(manual_hourly_rate_text)
+            used_manual_rate = True
+            rate_raw = manual_hourly_rate_text
+        except ValueError:
+            hourly_rate = None
+            status = "Invalid manual hourly rate"
+            notes.append(f"Manual hourly rate value is invalid: {manual_hourly_rate_text}")
+    elif rate_raw not in ("", None):
+        try:
+            hourly_rate = parse_numeric_rate(rate_raw)
+        except ValueError:
+            hourly_rate = None
+            status = "Invalid hourly rate"
+            notes.append(f"Hourly rate value is invalid: {rate_raw}")
 
     if hourly_rate is None and status == "OK":
         status = "Missing hourly rate"
-        notes.append("יש לעדכן את התעריף בשדה הערות ולייצא את הדוח מחדש.")
+        notes.append("לא נבחר שדה תעריף שעתי ולא הוזן תעריף ידני.")
 
-    payable_hours = None
+    payable_hours_raw = extract_flamingo_mapping_value(detail_sheet, summary_sheet, workbook_kind, mapping.get("payable_hours_source"))
+    try:
+        payable_hours = parse_hours_value(payable_hours_raw)
+    except ValueError:
+        payable_hours = None
+        if status == "OK":
+            status = "Invalid payable hours"
+        notes.append(f"Payable hours value is invalid: {payable_hours_raw}")
+
     payable_breakdown = {}
-    summary_name = ""
-    if summary_sheet is None:
-        status = "Could not match summary sheet"
-        notes.append("Expected the summary sheet immediately after the worker detail sheet.")
-    else:
-        summary_name = summary_sheet.name
-        payable_hours, payable_breakdown = extract_payable_hours(summary_sheet)
-        if payable_hours is None and status == "OK":
-            status = "Missing payable hours"
-            notes.append("No payable hour values were found in the summary sheet.")
+    summary_name = get_flamingo_sheet_name(summary_sheet, workbook_kind) if summary_sheet is not None else get_flamingo_sheet_name(detail_sheet, workbook_kind)
+    if payable_hours is None and status == "OK":
+        status = "Missing payable hours"
+        notes.append("לא נבחר או לא זוהה שדה שעות לתשלום בפועל.")
 
     calculated_salary = None
     if status == "OK":
@@ -390,14 +393,18 @@ def extract_flamingo_worker_pair(detail_sheet, summary_sheet):
         "worker_number": worker_number,
         "id_number": id_number,
         "start_date": start_date,
-        "detail_sheet": detail_sheet.name,
+        "detail_sheet": get_flamingo_sheet_name(detail_sheet, workbook_kind),
         "summary_sheet": summary_name,
         "hourly_rate": hourly_rate,
         "hourly_rate_raw": rate_raw,
         "payable_hours": payable_hours,
         "payable_breakdown": payable_breakdown,
+        "attendance_hours": parse_hours_value(attendance_hours) if attendance_hours not in ("", None) else None,
+        "standard_hours": parse_hours_value(standard_hours) if standard_hours not in ("", None) else None,
+        "missing_hours": parse_hours_value(missing_hours) if missing_hours not in ("", None) else None,
         "salary": calculated_salary,
         "status": status,
+        "used_manual_rate": used_manual_rate,
         "notes": " | ".join(notes),
     }
 
@@ -2143,6 +2150,160 @@ def extract_rimon_mapping_value(sheet, workbook_kind, mapping_value, row_index=N
     return ""
 
 
+def get_flamingo_sheet_name(sheet, workbook_kind):
+    return sheet.title if workbook_kind == "xlsx" else sheet.name
+
+
+def get_flamingo_sheet_dims(sheet, workbook_kind):
+    return get_excel_dims(sheet, workbook_kind)
+
+
+def get_flamingo_sheet_cell(sheet, workbook_kind, row_index, col_index, default=""):
+    return get_excel_cell(sheet, workbook_kind, row_index, col_index, default)
+
+
+def find_sheet_label_row(sheet, workbook_kind, label_text):
+    normalized_label = normalize_token(label_text)
+    rows, cols = get_flamingo_sheet_dims(sheet, workbook_kind)
+    for row_index in range(rows):
+        for col_index in range(cols):
+            token = normalize_token(get_flamingo_sheet_cell(sheet, workbook_kind, row_index, col_index))
+            if token == normalized_label:
+                return row_index
+    return -1
+
+
+def sheet_has_label(sheet, workbook_kind, label_text):
+    normalized_label = normalize_token(label_text)
+    rows, cols = get_flamingo_sheet_dims(sheet, workbook_kind)
+    for row_index in range(rows):
+        for col_index in range(cols):
+            token = normalize_token(get_flamingo_sheet_cell(sheet, workbook_kind, row_index, col_index))
+            if token == normalized_label:
+                return True
+    return False
+
+
+def flamingo_sheet_has_daily(sheet, workbook_kind):
+    return sheet_has_label(sheet, workbook_kind, "תאריך") and sheet_has_label(sheet, workbook_kind, "כניסה")
+
+
+def flamingo_sheet_has_summary(sheet, workbook_kind):
+    return (
+        find_sheet_label_row(sheet, workbook_kind, "נתונים כללים") >= 0
+        or (
+            not flamingo_sheet_has_daily(sheet, workbook_kind)
+            and (
+                sheet_has_label(sheet, workbook_kind, "נוכחות")
+                or sheet_has_label(sheet, workbook_kind, "שעות לתשלום")
+                or sheet_has_label(sheet, workbook_kind, "שעות משולמות")
+            )
+        )
+    )
+
+
+def iter_flamingo_worker_blocks(workbook_kind, workbook):
+    sheets = iter_excel_sheets(workbook_kind, workbook)
+    index = 0
+    while index < len(sheets):
+        current_sheet = sheets[index]
+        if not flamingo_sheet_has_daily(current_sheet, workbook_kind):
+            index += 1
+            continue
+        summary_sheet = None
+        if flamingo_sheet_has_summary(current_sheet, workbook_kind):
+            summary_sheet = current_sheet
+            index += 1
+        elif index + 1 < len(sheets):
+            next_sheet = sheets[index + 1]
+            if flamingo_sheet_has_summary(next_sheet, workbook_kind) and not flamingo_sheet_has_daily(next_sheet, workbook_kind):
+                summary_sheet = next_sheet
+                index += 2
+            else:
+                index += 1
+        else:
+            index += 1
+        yield current_sheet, summary_sheet
+
+
+def find_first_non_empty_in_row(sheet, row_index, start_col=0):
+    if row_index >= sheet.nrows:
+        return ""
+    for col_index in range(start_col, sheet.ncols):
+        value = sheet.cell_value(row_index, col_index)
+        if value not in ("", None):
+            return value
+    return ""
+
+
+def parse_flamingo_source(source):
+    text = str(source or "").strip()
+    if not text or ":" not in text:
+        return "", ""
+    source_type, source_label = text.split(":", 1)
+    return source_type, source_label
+
+
+def find_value_by_label_nearby(sheet, workbook_kind, label_text, max_col_distance=8, min_row=0, max_row=None):
+    normalized_label = normalize_token(label_text)
+    rows, cols = get_flamingo_sheet_dims(sheet, workbook_kind)
+    last_row = rows if max_row is None else min(max_row, rows)
+    for row_index in range(min_row, last_row):
+        for col_index in range(cols):
+            token = normalize_token(get_flamingo_sheet_cell(sheet, workbook_kind, row_index, col_index))
+            if token != normalized_label:
+                continue
+            for next_col in range(col_index + 1, min(cols, col_index + max_col_distance + 1)):
+                candidate = get_flamingo_sheet_cell(sheet, workbook_kind, row_index, next_col)
+                if candidate not in ("", None):
+                    candidate_token = normalize_token(candidate)
+                    if candidate_token in FLAMINGO_META_LABEL_TOKENS or candidate_token in {"תאריך", "יום", "כניסה", "יציאה", "אירוע", "סהכ", "סה\"כ", "תקן", "חוסר"}:
+                        continue
+                    return candidate
+    return ""
+
+
+def find_flamingo_summary_value_by_label(detail_sheet, summary_sheet, workbook_kind, label_text):
+    normalized_label = normalize_token(label_text)
+    search_sheets = []
+    if summary_sheet is not None:
+        search_sheets.append(summary_sheet)
+    if summary_sheet is None or summary_sheet is detail_sheet:
+        search_sheets.append(detail_sheet)
+    for sheet in search_sheets:
+        rows, cols = get_flamingo_sheet_dims(sheet, workbook_kind)
+        summary_start_row = find_sheet_label_row(sheet, workbook_kind, "נתונים כללים")
+        start_row = summary_start_row if summary_start_row >= 0 else 0
+        for row_index in range(start_row, rows):
+            row_values = [get_flamingo_sheet_cell(sheet, workbook_kind, row_index, c) for c in range(cols)]
+            for col_index, raw in enumerate(row_values):
+                if normalize_token(raw) != normalized_label:
+                    continue
+                for next_col in range(col_index + 1, len(row_values)):
+                    candidate = row_values[next_col]
+                    parsed_hours = try_parse_hours_value(candidate)
+                    if parsed_hours is not None:
+                        return candidate
+                    if isinstance(candidate, (int, float)) and candidate not in (0, 0.0):
+                        return candidate
+                    if str(candidate).strip():
+                        try:
+                            float(str(candidate).strip().replace(",", "."))
+                            return candidate
+                        except ValueError:
+                            continue
+    return ""
+
+
+def extract_flamingo_mapping_value(detail_sheet, summary_sheet, workbook_kind, source):
+    source_type, source_label = parse_flamingo_source(source)
+    if source_type == "meta":
+        return find_value_by_label_nearby(detail_sheet, workbook_kind, source_label, max_col_distance=10, min_row=0, max_row=18)
+    if source_type == "summary":
+        return find_flamingo_summary_value_by_label(detail_sheet, summary_sheet, workbook_kind, source_label)
+    return ""
+
+
 def default_rimon_mapping():
     return {
         "employee_name_source": "meta:employee_name",
@@ -2570,15 +2731,17 @@ def run_matan_missing_filter(input_path, output_path, extension, options=None):
 
 
 def run_flamingo_payroll(input_path, output_path, extension, options=None):
-    if extension != "xls":
-        raise ValueError("Flamingo payroll currently supports original XLS exports only")
+    if extension not in {"xls", "xlsx"}:
+        raise ValueError("Flamingo payroll currently supports XLS and XLSX uploads only")
+    options = options or {}
+    workbook_kind, workbook = open_excel_workbook(input_path, extension)
+    mapping = default_flamingo_mapping()
+    mapping.update({key: value for key, value in options.items() if key.endswith("_source")})
+    manual_hourly_rate_text = str(options.get("manual_hourly_rate", "") or "").strip()
 
-    workbook = xlrd.open_workbook(input_path)
     worker_rows = []
-    for sheet_index in range(0, workbook.nsheets, 2):
-        detail_sheet = workbook.sheet_by_index(sheet_index)
-        summary_sheet = workbook.sheet_by_index(sheet_index + 1) if sheet_index + 1 < workbook.nsheets else None
-        worker_rows.append(extract_flamingo_worker_pair(detail_sheet, summary_sheet))
+    for detail_sheet, summary_sheet in iter_flamingo_worker_blocks(workbook_kind, workbook):
+        worker_rows.append(extract_flamingo_worker_pair(detail_sheet, summary_sheet, workbook_kind, mapping, manual_hourly_rate_text))
 
     output_wb = Workbook()
     summary_ws = output_wb.active
@@ -2587,6 +2750,7 @@ def run_flamingo_payroll(input_path, output_path, extension, options=None):
     write_flamingo_department_sheet(output_wb.create_sheet(), worker_rows)
     write_flamingo_top_earners_sheet(output_wb.create_sheet(), worker_rows)
     output_wb.save(output_path)
+    return {"warnings": build_flamingo_mapping_warnings(mapping, manual_hourly_rate_text)}
 
 
 app = Flask(__name__)
@@ -2777,19 +2941,24 @@ FLOW_TEXTS = {
             },
             "flamingo_payroll": {
                 "name": "סיכום שכר לפי תעריף שעתי קבוע",
-                "desc": "הפקת סיכום שכר לפי דוח מפורט חודשי בצורה ברורה ומוכנה לבדיקה",
+                "desc": "סיכום שכר חכם מתוך דוח מפורט חודשי, עם אישור שדות לפני חישוב",
                 "help_label": "דרישות לקובץ",
                 "help_title": "מה צריך להעלות?",
-                "help_intro": "יש להעלות דוח מפורט חודשי הכולל שדה של תעריף שעתי קבוע.",
-                "help_items": ["המערכת תפיק דוח שכר לעובדים", "כולל חישוב שכר וסיכומים מתקדמים"],
-                "help_note": "מיועד בעיקר לחברות כוח אדם",
+                "help_intro": "יש להעלות דוח מפורט חודשי הכולל אזור סיכום שממנו אפשר למשוך את שעות התשלום.",
+                "help_items": ["המערכת מזהה שדות שכר מרכזיים מתוך הדוח", "מבקשת אישור שדות לפני הרצת החישוב", "ומפיקה סיכום שכר ברור לפי העובדים שנקלטו"],
+                "help_note": "אפשר לעבוד גם עם דוחות מסודרים וגם עם דוחות פחות מסודרים, כל עוד הלקוח מאשר את השדות הנכונים.",
+                "rules_label": "איך הסקריפט מחשב",
+                "rules_title": "מה חשוב לאשר לפני חישוב השכר?",
+                "rules_intro": "הסקריפט מחשב את השכר לפי שני שדות קריטיים שחייבים להיות נכונים:",
+                "rules_items": ["תעריף שעתי - אפשר למשוך מהדוח או להזין ידנית", "שעות לתשלום בפועל - הלקוח בוחר את השדה שממנו יחושב השכר", "אם מוזן תעריף ידני, כל העובדים בדוח יחושבו לפי אותו תעריף", "שדות כמו נוכחות, תקן וחוסר משמשים לבקרה ולהצלבה"],
+                "rules_note": "לפני ההרצה המערכת תציע זיהוי אוטומטי, אבל הלקוח הוא זה שמאשר את השדות הקריטיים.",
                 "success_title": "קובץ השכר מוכן",
                 "success_action": "הורדת סיכום השכר",
                 "retry_action": "עיבוד קובץ שכר נוסף",
                 "submit_label": "יצירת סיכום שכר",
                 "back_label": "חזרה לכלים",
                 "empty_error": "לא נבחר קובץ",
-                "unsupported_error": "יש להעלות את ייצוא ה-XLS המקורי של פלמינגו",
+                "unsupported_error": "יש להעלות דוח מפורט חודשי בפורמט Excel",
                 "invalid_error": "הקובץ שהועלה אינו קובץ אקסל תקין",
                 "empty_file_error": "הקובץ שהועלה ריק",
                 "too_large_error": "הקובץ שהועלה גדול מדי",
@@ -2915,7 +3084,22 @@ SCRIPTS["flamingo_payroll"] = {
     "id": "flamingo_payroll",
     "name": "סיכום שכר לפי תעריף שעתי קבוע",
     "desc": "הפקת סיכום שכר לפי דוח מפורט חודשי בצורה ברורה ומוכנה לבדיקה",
-    "accept": ".xls",
+    "help_label": "מה הסקריפט עושה",
+    "help_title": "מה צריך להעלות?",
+    "help_intro": "יש להעלות דוח מפורט חודשי הכולל אזור סיכום שממנו אפשר למשוך את שעות התשלום.",
+    "help_items": ["המערכת מזהה שדות שכר מרכזיים מתוך הדוח", "מבקשת אישור שדות לפני הרצת החישוב", "ומפיקה סיכום שכר ברור לפי העובדים שנקלטו"],
+    "help_note": "אפשר לעבוד גם עם דוחות מסודרים וגם עם דוחות פחות מסודרים, כל עוד הלקוח מאשר את השדות הנכונים.",
+    "rules_label": "איך הסקריפט מחשב",
+    "rules_title": "מה חשוב לאשר לפני חישוב השכר?",
+    "rules_intro": "הסקריפט מחשב את השכר לפי שני שדות קריטיים שחייבים להיות נכונים:",
+    "rules_items": [
+        "תעריף שעתי - אפשר למשוך מהדוח או להזין ידנית",
+        "שעות לתשלום בפועל - הלקוח בוחר את השדה שממנו יחושב השכר",
+        "אם מוזן תעריף ידני, כל העובדים בדוח יחושבו לפי אותו תעריף",
+        "שדות כמו נוכחות, תקן וחוסר משמשים לבקרה ולהצלבה",
+    ],
+    "rules_note": "לפני ההרצה המערכת תציע זיהוי אוטומטי, אבל הלקוח הוא זה שמאשר את השדות הקריטיים.",
+    "accept": ".xls,.xlsx",
     "icon": "$",
 }
 
@@ -2923,20 +3107,21 @@ SCRIPT_REGISTRY["flamingo_payroll"] = {
     **SCRIPTS["flamingo_payroll"],
     "processor": run_flamingo_payroll,
     "output_suffix": "flamingo_payroll",
+    "requires_mapping_confirmation": True,
     "success_title": "Payroll file is ready",
     "success_action": "Download payroll summary",
     "retry_action": "Process another payroll file",
     "submit_label": "Create payroll summary",
     "back_label": "Back to tools",
     "empty_error": "No file selected",
-    "unsupported_error": "Please upload the original Flamingo XLS export",
+    "unsupported_error": "Please upload a monthly detailed Excel report",
     "invalid_error": "The uploaded file is not a valid Excel file",
     "empty_file_error": "The uploaded file is empty",
     "too_large_error": "The uploaded file is too large",
     "processing_error": "Could not generate a payroll summary from this file",
     "processing_title": "Payroll summary is being prepared",
     "processing_note": "The system is calculating payable hours and salary for all employees. This may take a few minutes.",
-    "file_picker_label": "Choose Flamingo file",
+    "file_picker_label": "Choose monthly detailed report",
 }
 
 SCRIPTS["matan_missing"] = {
@@ -3381,6 +3566,19 @@ RIMON_MAPPING_FIELDS = [
     {"name": "id_number_source", "label": "תעודת זהות", "required": False},
 ]
 
+FLAMINGO_MAPPING_FIELDS = [
+    {"name": "worker_name_source", "label": "שם עובד", "required": True},
+    {"name": "worker_number_source", "label": "מספר עובד", "required": False},
+    {"name": "id_number_source", "label": "תעודת זהות / דרכון", "required": False},
+    {"name": "department_source", "label": "מחלקה", "required": False},
+    {"name": "hourly_rate_source", "label": "תעריף שעתי", "required": False, "critical": True},
+    {"name": "payable_hours_source", "label": "שעות לתשלום בפועל", "required": True, "critical": True},
+    {"name": "attendance_hours_source", "label": "נוכחות", "required": False},
+    {"name": "standard_hours_source", "label": "תקן", "required": False},
+    {"name": "missing_hours_source", "label": "חוסר", "required": False},
+    {"name": "start_date_source", "label": "תחילת עבודה", "required": False},
+]
+
 
 RIMON_SUGGESTION_KEYWORDS = {
     "employee_name_source": ["שםלתצוגה", "שםעובד", "עובד", "employee", "name"],
@@ -3398,6 +3596,19 @@ RIMON_SUGGESTION_KEYWORDS = {
     "id_number_source": ["תעודתזהות", "זהות", "דרכון", "id", "identity"],
 }
 
+FLAMINGO_SUGGESTION_KEYWORDS = {
+    "worker_name_source": ["שםלתצוגה", "שםעובד", "עובד", "name"],
+    "worker_number_source": ["מספרבשכר", "מספרעובד", "מפעלבשכר", "employee"],
+    "id_number_source": ["תעודתזהות", "דרכון", "זהות", "id"],
+    "department_source": ["מחלקה", "department"],
+    "hourly_rate_source": ["תעריף", "שעה", "rate"],
+    "payable_hours_source": ["שעותלתשלום", "שעותמשולמות", "רגילות", "נוכחות"],
+    "attendance_hours_source": ["נוכחות"],
+    "standard_hours_source": ["תקן"],
+    "missing_hours_source": ["חוסר"],
+    "start_date_source": ["תחילתעבודה"],
+}
+
 RIMON_META_LABEL_TOKENS = {
     normalize_token(label)
     for label in [
@@ -3411,6 +3622,22 @@ RIMON_META_LABEL_TOKENS = {
         "תעודת זהות",
         "דרכון",
         "תחילת עבודה",
+    ]
+}
+
+FLAMINGO_META_LABEL_TOKENS = {
+    normalize_token(label)
+    for label in [
+        "שם לתצוגה",
+        "שם עובד",
+        "מחלקה",
+        "מספר בשכר",
+        "מספר עובד",
+        "מס' מפעל בשכר",
+        "תעודת זהות",
+        "דרכון",
+        "תחילת עבודה",
+        "הערות",
     ]
 }
 
@@ -3590,6 +3817,212 @@ def filter_rimon_options_for_field(field_name, options):
     if field_name == "date_source":
         return [option for option in options if looks_like_excel_date_sample(option.get("sample", ""))]
     return options
+
+
+def default_flamingo_mapping():
+    return {
+        "worker_name_source": "meta:שם לתצוגה",
+        "worker_number_source": "meta:מספר בשכר",
+        "id_number_source": "meta:תעודת זהות",
+        "department_source": "meta:מחלקה",
+        "hourly_rate_source": "",
+        "payable_hours_source": "summary:שעות לתשלום",
+        "attendance_hours_source": "summary:נוכחות",
+        "standard_hours_source": "summary:תקן",
+        "missing_hours_source": "summary:חוסר",
+        "start_date_source": "meta:תחילת עבודה",
+    }
+
+
+def build_flamingo_mapping_warnings(mapping, manual_hourly_rate_text):
+    warnings = []
+    if str(manual_hourly_rate_text or "").strip():
+        warnings.append(f"כל העובדים בדוח חושבו לפי התעריף השעתי: {str(manual_hourly_rate_text).strip()}")
+    elif not mapping.get("hourly_rate_source"):
+        warnings.append("לא נבחר שדה תעריף שעתי ולא הוזן תעריף ידני.")
+    if not mapping.get("payable_hours_source"):
+        warnings.append("לא נבחר שדה שעות לתשלום בפועל. ללא השדה הזה חישוב השכר לא יהיה תקין.")
+    if not mapping.get("worker_number_source") and not mapping.get("id_number_source"):
+        warnings.append("לא נבחר מספר עובד או תעודת זהות. הזיהוי יתבסס על שם עובד בלבד ויכול להיות פחות חזק.")
+    return warnings
+
+
+def collect_flamingo_meta_candidates(detail_sheet, workbook_kind):
+    candidates = []
+    seen = set()
+    rows, cols = get_flamingo_sheet_dims(detail_sheet, workbook_kind)
+    date_header_row = find_sheet_label_row(detail_sheet, workbook_kind, "תאריך")
+    max_meta_row = min(rows, 20)
+    if date_header_row >= 0:
+        max_meta_row = min(max_meta_row, date_header_row)
+    for row_index in range(max_meta_row):
+        row_values = [get_flamingo_sheet_cell(detail_sheet, workbook_kind, row_index, c) for c in range(cols)]
+        for col_index, raw_label in enumerate(row_values):
+            label_text = str(raw_label or "").strip()
+            if not label_text:
+                continue
+            normalized = normalize_token(label_text)
+            if normalized in {"שםלתצוגה", "שםעובד", "מחלקה", "מספרבשכר", "מספרעובד", "מסמפעלבשכר", "תעודתזהות", "דרכון", "תחילתעבודה", "הערות"}:
+                for next_col in range(col_index + 1, min(cols, col_index + 11)):
+                    candidate = row_values[next_col]
+                    if candidate in ("", None):
+                        continue
+                    candidate_token = normalize_token(candidate)
+                    if candidate_token in FLAMINGO_META_LABEL_TOKENS or candidate_token in {"תאריך", "יום", "כניסה", "יציאה", "אירוע", "סהכ", "סה\"כ", "תקן", "חוסר"}:
+                        continue
+                    source = f"meta:{label_text}"
+                    if source in seen:
+                        break
+                    candidates.append(
+                        {
+                            "value": source,
+                            "label": f"שדה עליון: {label_text} (לדוגמה: {stringify_excel_value(candidate)})",
+                            "source_kind": "meta",
+                            "match_token": normalized,
+                        }
+                    )
+                    seen.add(source)
+                    break
+    return candidates
+
+
+def collect_flamingo_summary_candidates(detail_sheet, summary_sheet, workbook_kind):
+    search_sheets = []
+    if summary_sheet is not None:
+        search_sheets.append(summary_sheet)
+    if summary_sheet is None or summary_sheet is detail_sheet:
+        search_sheets.append(detail_sheet)
+    candidates = []
+    seen = set()
+    relevant_keywords = (
+        "נוכחות",
+        "תקן",
+        "חוסר",
+        "שעותלתשלום",
+        "שעותמשולמות",
+        "רגילות",
+        "100",
+        "125",
+        "150",
+        "175",
+        "200",
+    )
+    for sheet in search_sheets:
+        rows, cols = get_flamingo_sheet_dims(sheet, workbook_kind)
+        summary_start_row = find_sheet_label_row(sheet, workbook_kind, "נתונים כללים")
+        start_row = summary_start_row if summary_start_row >= 0 else 0
+        for row_index in range(start_row, rows):
+            row_values = [get_flamingo_sheet_cell(sheet, workbook_kind, row_index, c) for c in range(cols)]
+            for col_index, raw_label in enumerate(row_values):
+                label_text = str(raw_label or "").strip()
+                if not label_text:
+                    continue
+                normalized = normalize_token(label_text)
+                if not normalized or not any(keyword in normalized for keyword in relevant_keywords):
+                    continue
+                for next_col in range(col_index + 1, len(row_values)):
+                    candidate = row_values[next_col]
+                    if candidate in ("", None):
+                        continue
+                    parsed_hours = try_parse_hours_value(candidate)
+                    if parsed_hours is None and not isinstance(candidate, (int, float)):
+                        candidate_text = str(candidate).strip()
+                        if not candidate_text:
+                            continue
+                        try:
+                            float(candidate_text.replace(",", "."))
+                        except ValueError:
+                            continue
+                    source = f"summary:{label_text}"
+                    if source in seen:
+                        break
+                    candidates.append(
+                        {
+                            "value": source,
+                            "label": f"שדה סיכום: {label_text} (לדוגמה: {stringify_excel_value(candidate)})",
+                            "source_kind": "table_exact",
+                            "match_token": normalized,
+                        }
+                    )
+                    seen.add(source)
+                    break
+    return candidates
+
+
+def build_flamingo_mapping_options(input_path, extension):
+    workbook_kind, workbook = open_excel_workbook(input_path, extension)
+    worker_blocks = list(iter_flamingo_worker_blocks(workbook_kind, workbook))
+    if not worker_blocks:
+        raise ValueError("Could not identify worker sheets in this payroll report")
+    detail_sheet, summary_sheet = worker_blocks[0]
+    meta_options = collect_flamingo_meta_candidates(detail_sheet, workbook_kind)
+    summary_options = collect_flamingo_summary_candidates(detail_sheet, summary_sheet, workbook_kind)
+    base_options = meta_options + summary_options
+    options_by_field = {}
+    suggestions = {}
+    for field in FLAMINGO_MAPPING_FIELDS:
+        field_name = field["name"]
+        options = [{"value": "", "label": "לא נבחר", "source_kind": "empty"}]
+        if field_name == "hourly_rate_source":
+            options.append({"value": "__manual__", "label": "הזנה ידנית של תעריף שעתי", "source_kind": "critical"})
+        for option in base_options:
+            token = option.get("match_token", "")
+            keywords = FLAMINGO_SUGGESTION_KEYWORDS.get(field_name, [])
+            if field_name == "payable_hours_source":
+                if any(keyword in token for keyword in keywords):
+                    options.append(option)
+            elif field_name == "hourly_rate_source":
+                if option.get("source_kind") == "meta":
+                    options.append(option)
+            elif field_name in {"attendance_hours_source", "standard_hours_source", "missing_hours_source"}:
+                if any(keyword in token for keyword in keywords):
+                    options.append(option)
+            elif option.get("source_kind") == "meta":
+                options.append(option)
+        deduped = []
+        seen_values = set()
+        for option in options:
+            if option["value"] in seen_values:
+                continue
+            deduped.append(option)
+            seen_values.add(option["value"])
+        options_by_field[field_name] = deduped
+
+        suggested = ""
+        if field_name == "payable_hours_source":
+            preferred_order = ["שעותלתשלום", "שעותמשולמות", "נוכחות", "רגילות"]
+            for preferred in preferred_order:
+                for option in deduped:
+                    token = option.get("match_token", "")
+                    if preferred in token:
+                        suggested = option["value"]
+                        break
+                if suggested:
+                    break
+        else:
+            keywords = FLAMINGO_SUGGESTION_KEYWORDS.get(field_name, [])
+            if field_name == "hourly_rate_source":
+                for preferred in ["תעריף", "rate", "שעה"]:
+                    for option in deduped:
+                        token = option.get("match_token", "")
+                        if preferred in token:
+                            suggested = option["value"]
+                            break
+                    if suggested:
+                        break
+            else:
+                for option in deduped:
+                    token = option.get("match_token", "")
+                    if any(keyword in token for keyword in keywords):
+                        suggested = option["value"]
+                        break
+        suggestions[field_name] = suggested
+
+    return {
+        "options_by_field": options_by_field,
+        "suggestions": suggestions,
+        "suggested_template_name": "תבנית שכר",
+    }
 
 
 def detect_rimon_header_row(sheet, workbook_kind):
@@ -4024,6 +4457,137 @@ def build_rimon_mapping_form(script_id, temp_upload_path, temp_upload_ext, inspe
     )
 
 
+def build_flamingo_mapping_form(script_id, temp_upload_path, temp_upload_ext, inspection, current_mapping, templates, template_name_value, manual_hourly_rate_value):
+    template_options = '<option value="">ללא תבנית שמורה</option>'
+    for template in templates:
+        template_options += '<option value="' + str(template["id"]) + '">' + esc(template["name"]) + '</option>'
+
+    mapping_labels = {field["name"]: field["label"] for field in FLAMINGO_MAPPING_FIELDS}
+    template_payload = {
+        str(template["id"]): {key: str(value or "") for key, value in template["mapping"].items()}
+        for template in templates
+    }
+
+    mapping_fields_html = ""
+    for field in FLAMINGO_MAPPING_FIELDS:
+        field_name = field["name"]
+        current_value = str(current_mapping.get(field_name, "") or "")
+        options = inspection["options_by_field"].get(field_name, [])
+        blank_options = [option for option in options if not option.get("value")]
+        critical_options = [option for option in options if option.get("source_kind") == "critical"]
+        meta_options = [option for option in options if option.get("source_kind") == "meta"]
+        summary_options = [option for option in options if option.get("source_kind") == "table_exact"]
+
+        def render_option(option):
+            selected = ' selected' if option["value"] == current_value else ""
+            return (
+                '<option value="' + esc(option["value"]) + '" data-base-label="' + esc(option["label"]) + '" data-source-kind="' + esc(option.get("source_kind", "empty")) + '"' + selected + ">"
+                + esc(option["label"])
+                + "</option>"
+            )
+
+        select_options = ""
+        for option in blank_options:
+            select_options += render_option(option)
+        if critical_options:
+            select_options += '<optgroup label="בחירה ידנית">'
+            for option in critical_options:
+                select_options += render_option(option)
+            select_options += '</optgroup>'
+        if meta_options:
+            select_options += '<optgroup label="שדות עליונים">'
+            for option in meta_options:
+                select_options += render_option(option)
+            select_options += '</optgroup>'
+        if summary_options:
+            select_options += '<optgroup label="שדות סיכום">'
+            for option in summary_options:
+                select_options += render_option(option)
+            select_options += '</optgroup>'
+
+        required_badge = ' <span style="color:#dc2626">*</span>' if field["required"] else ' <span style="color:#94a3b8">(אופציונלי)</span>'
+        wrapper_style = ""
+        if field.get("critical"):
+            wrapper_style = 'background:#fff7ed;border:1px solid #fdba74;border-radius:12px;padding:10px 10px 12px'
+        mapping_fields_html += (
+            '<div style="' + wrapper_style + '"><label class="field-label">' + field["label"] + required_badge + '</label>'
+            + ('<div style="font-size:12px;color:#9a3412;line-height:1.6;margin:-4px 0 8px">שדה קריטי לחישוב השכר. יש לוודא שזהו המקור הנכון.</div>' if field.get("critical") else '')
+            + '<select name="' + field_name + '" data-mapping-field="1" data-field-label="' + esc(field["label"]) + '" style="padding:9px 12px;border:1.5px solid #e2e8f0;border-radius:8px;font-size:13px;font-family:inherit;outline:none;width:100%;margin-bottom:0;background:white;transition:background-color .15s ease,border-color .15s ease,box-shadow .15s ease">'
+            + select_options
+            + '</select>'
+            + (
+                '<div data-manual-rate-wrap="1" style="' + ('display:block' if current_value == "__manual__" else 'display:none') + ';margin-top:10px">'
+                + '<label class="field-label" style="margin-bottom:6px">תעריף שעתי ידני</label>'
+                + '<input type="text" name="manual_hourly_rate" value="' + esc(manual_hourly_rate_value) + '" placeholder="לדוגמה 45.5" style="margin-bottom:0">'
+                + '<div style="font-size:12px;color:#9a3412;line-height:1.6;margin-top:8px">אם תבחר תעריף ידני, כל העובדים בדוח יחושבו לפי אותו תעריף.</div>'
+                + '</div>'
+                if field_name == "hourly_rate_source" else ""
+            )
+            + '</div>'
+        )
+
+    return (
+        '<form method="POST" id="flamingoMappingConfirmForm">'
+        + '<input type="hidden" name="flow_mode" value="confirm_mapping">'
+        + '<input type="hidden" name="temp_upload_path" value="' + esc(temp_upload_path) + '">'
+        + '<input type="hidden" name="temp_upload_ext" value="' + esc(temp_upload_ext) + '">'
+        + '<div style="background:#fafcff;border:1px solid #dbeafe;border-radius:14px;padding:1rem;margin-bottom:1rem">'
+        + '<div style="font-size:15px;font-weight:700;color:#1e3a8a;margin-bottom:10px">אישור שדות לפני חישוב שכר</div>'
+        + '<div style="display:grid;grid-template-columns:260px minmax(0,1fr);gap:14px;align-items:start">'
+        + '<div style="background:#ffffff;border:1px solid #e2e8f0;border-radius:12px;padding:12px">'
+        + '<div style="font-size:14px;font-weight:700;color:#0f172a;margin-bottom:10px">תבניות שמורות</div>'
+        + '<label class="field-label">בחירת תבנית</label>'
+        + '<div style="display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:center;margin-bottom:12px">'
+        + '<select id="selectedFlamingoTemplateId" name="selected_template_id" style="padding:9px 12px;border:1.5px solid #e2e8f0;border-radius:8px;font-size:13px;font-family:inherit;outline:none;width:100%;background:white">' + template_options + '</select>'
+        + '<button type="submit" name="mapping_action" value="delete_template" class="btn btn-gray" style="min-width:104px;padding-inline:14px;white-space:nowrap">מחיקה</button>'
+        + '</div>'
+        + '<label style="display:flex;align-items:center;gap:6px;font-size:13px;color:#334155;margin-bottom:10px"><input type="checkbox" name="save_template" value="1"> שמור כתבנית חדשה</label>'
+        + '<label class="field-label">שם תבנית חדשה</label>'
+        + '<input type="text" name="template_name" value="' + esc(template_name_value) + '" placeholder="שם תבנית" style="margin-bottom:0">'
+        + '<div style="font-size:12px;color:#64748b;line-height:1.7;margin-top:10px">בחירת תבנית תעדכן את כל השדות בהתאם. שמירה תיצור תבנית חדשה בלבד ולא תדרוס תבנית קיימת.</div>'
+        + '</div>'
+        + '<div>'
+        + '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">'
+        + '<span style="display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border-radius:999px;background:#fff7ed;border:1px solid #fdba74;font-size:12px;color:#9a3412">שדה קריטי לחישוב</span>'
+        + '<span style="display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border-radius:999px;background:#eff6ff;border:1px solid #bfdbfe;font-size:12px;color:#1d4ed8">שדה עליון</span>'
+        + '<span style="display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border-radius:999px;background:#ecfdf5;border:1px solid #86efac;font-size:12px;color:#166534">שדה סיכום</span>'
+        + '</div>'
+        + '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-bottom:12px">' + mapping_fields_html + '</div>'
+        + '<div style="font-size:12px;color:#64748b;line-height:1.7;margin-bottom:12px">שדות קריטיים: תעריף שעתי ושעות לתשלום בפועל. בלי השניים האלה חישוב השכר לא יהיה אמין.</div>'
+        + '<div style="display:flex;gap:10px;flex-wrap:wrap;justify-content:center"><button type="submit" id="flamingoMappingConfirmButton" name="mapping_action" value="confirm" class="btn btn-blue" style="min-width:220px">אשר הכל והפעל חישוב</button><a href="/run/' + script_id + '" class="btn btn-gray" style="text-decoration:none;display:inline-flex;align-items:center;justify-content:center;min-width:150px">העלאת קובץ חדש</a></div>'
+        + '</div></div>'
+        + '</div>'
+        + '<div id="flamingoProcessingOverlay" style="display:none;position:fixed;inset:0;background:rgba(248,250,252,.78);backdrop-filter:blur(2px);z-index:80;align-items:center;justify-content:center;padding:20px">'
+        + '<div style="width:100%;max-width:320px;background:#ffffff;border:1px solid #dbeafe;border-radius:18px;box-shadow:0 20px 50px rgba(15,23,42,.14);padding:24px 20px;text-align:center">'
+        + '<div style="width:42px;height:42px;border-radius:999px;border:3px solid #bfdbfe;border-top-color:#2563eb;margin:0 auto 14px;animation:mappingSpin .9s linear infinite"></div>'
+        + '<div style="font-size:16px;font-weight:800;color:#1e3a8a;margin-bottom:6px">חישוב השכר בהכנה</div>'
+        + '<div style="font-size:13px;line-height:1.7;color:#475569">המערכת מאשרת את השדות ומחשבת את השכר. בדוחות גדולים הפעולה יכולה להימשך מעט זמן.</div>'
+        + '</div></div>'
+        + '<script>'
+        + '(function(){'
+        + 'var templateSelect=document.getElementById("selectedFlamingoTemplateId");'
+        + 'var fieldSelects=Array.prototype.slice.call(document.querySelectorAll(\'select[data-mapping-field="1"]\'));'
+        + 'var form=document.getElementById("flamingoMappingConfirmForm");'
+        + 'var confirmButton=document.getElementById("flamingoMappingConfirmButton");'
+        + 'var overlay=document.getElementById("flamingoProcessingOverlay");'
+        + 'var templateMappings=' + json.dumps(template_payload, ensure_ascii=False) + ';'
+        + 'var fieldLabels=' + json.dumps(mapping_labels, ensure_ascii=False) + ';'
+        + 'var selectStyles={critical:{bg:"#fff7ed",border:"#fb923c",shadow:"rgba(249,115,22,.14)"},meta:{bg:"#eff6ff",border:"#60a5fa",shadow:"rgba(59,130,246,.12)"},table_exact:{bg:"#ecfdf5",border:"#4ade80",shadow:"rgba(34,197,94,.14)"},empty:{bg:"#ffffff",border:"#e2e8f0",shadow:"rgba(148,163,184,.08)"}};'
+        + 'function applySelectVisual(sel){var opt=sel.options[sel.selectedIndex];var kind=(opt&&opt.getAttribute("data-source-kind"))||"empty";var style=selectStyles[kind]||selectStyles.empty;sel.style.backgroundColor=style.bg;sel.style.borderColor=style.border;sel.style.boxShadow="0 0 0 3px "+style.shadow;if(sel.name==="hourly_rate_source"){var wrap=document.querySelector("[data-manual-rate-wrap=\'1\']");if(wrap){wrap.style.display=(sel.value==="__manual__")?"block":"none";}}}'
+        + 'function refreshOptionLabels(){var assignments={};fieldSelects.forEach(function(sel){if(sel.value && sel.value!=="__manual__"){assignments[sel.value]=sel.name;}});fieldSelects.forEach(function(sel){Array.prototype.forEach.call(sel.options,function(opt){var base=opt.getAttribute("data-base-label")||opt.text;var assigned=assignments[opt.value];var suffix="";if(opt.value && opt.value!=="__manual__" && assigned && assigned!==sel.name){suffix=" [נבחר עבור "+(fieldLabels[assigned]||assigned)+"]";}opt.text=base+suffix;});applySelectVisual(sel);});}'
+        + 'function clearDuplicateSelections(changedSelect){if(!changedSelect.value || changedSelect.value==="__manual__"){refreshOptionLabels();return;}fieldSelects.forEach(function(sel){if(sel!==changedSelect && sel.value===changedSelect.value){sel.value="";}});refreshOptionLabels();}'
+        + 'function applyTemplate(templateId){var mapping=templateMappings[templateId]||{};if(!templateId){refreshOptionLabels();return;}fieldSelects.forEach(function(sel){sel.value=mapping[sel.name]||"";});var manualRate=document.querySelector(\'input[name="manual_hourly_rate"]\');if(manualRate){manualRate.value=mapping.manual_hourly_rate||manualRate.value||"";}var seen={};fieldSelects.forEach(function(sel){if(sel.value && sel.value!=="__manual__" && seen[sel.value]){sel.value="";}else if(sel.value && sel.value!=="__manual__"){seen[sel.value]=true;}});refreshOptionLabels();}'
+        + 'fieldSelects.forEach(function(sel){sel.addEventListener("change",function(){clearDuplicateSelections(sel);});});'
+        + 'if(templateSelect){templateSelect.addEventListener("change",function(){applyTemplate(this.value);});}'
+        + 'if(form){form.addEventListener("submit",function(event){var submitter=event.submitter||document.activeElement;if(!submitter||submitter.value!=="confirm"){return;}if(confirmButton){confirmButton.disabled=true;confirmButton.textContent="החישוב התחיל...";}if(overlay){overlay.style.display="flex";}document.body.style.overflow="hidden";});}'
+        + 'refreshOptionLabels();'
+        + '})();'
+        + '</script>'
+        + '<style>@keyframes mappingSpin{from{transform:rotate(0deg);}to{transform:rotate(360deg);}}</style>'
+        + '</form>'
+    )
+
+
 def get_account_status(user_row):
     today = date.today()
     trial_start = parse_iso_date(user_row["trial_start_date"])
@@ -4358,25 +4922,44 @@ def run_script(script_id):
                 uid = str(uuid.uuid4())[:8]
                 inp = str(UPLOAD_FOLDER / f"{uid}_mapping.{ext}")
                 file_obj.save(inp)
-                inspection = build_rimon_mapping_options(inp, ext)
+                if script_id == "flamingo_payroll":
+                    inspection = build_flamingo_mapping_options(inp, ext)
+                    selected_mapping = dict(default_flamingo_mapping())
+                    selected_mapping.update(inspection["suggestions"])
+                else:
+                    inspection = build_rimon_mapping_options(inp, ext)
+                    selected_mapping = dict(inspection["suggestions"])
                 mapping_templates = get_mapping_templates(session["user_id"], script_id)
-                selected_mapping = dict(inspection["suggestions"])
                 info_message = '<div class="flash" style="background:#eff6ff;border-color:#bfdbfe;color:#1d4ed8">המערכת זיהתה שדות אפשריים. נא לאשר או לתקן לפני הרצת הדוח.</div>'
-                mapping_confirmation_html = build_rimon_mapping_form(
-                    script_id,
-                    inp,
-                    ext,
-                    inspection,
-                    selected_mapping,
-                    mapping_templates,
-                    get_next_mapping_template_name(mapping_templates),
-                )
+                if script_id == "flamingo_payroll":
+                    mapping_confirmation_html = build_flamingo_mapping_form(
+                        script_id,
+                        inp,
+                        ext,
+                        inspection,
+                        selected_mapping,
+                        mapping_templates,
+                        get_next_mapping_template_name(mapping_templates),
+                        "",
+                    )
+                else:
+                    mapping_confirmation_html = build_rimon_mapping_form(
+                        script_id,
+                        inp,
+                        ext,
+                        inspection,
+                        selected_mapping,
+                        mapping_templates,
+                        get_next_mapping_template_name(mapping_templates),
+                    )
         elif scr.get("requires_mapping_confirmation") and flow_mode == "confirm_mapping":
             inp = request.form.get("temp_upload_path", "").strip()
             ext = request.form.get("temp_upload_ext", "").strip().lower()
             mapping = {}
-            for field in RIMON_MAPPING_FIELDS:
+            mapping_fields = FLAMINGO_MAPPING_FIELDS if script_id == "flamingo_payroll" else RIMON_MAPPING_FIELDS
+            for field in mapping_fields:
                 mapping[field["name"]] = request.form.get(field["name"], "").strip()
+            manual_hourly_rate = request.form.get("manual_hourly_rate", "").strip() if script_id == "flamingo_payroll" else ""
             mapping_templates = get_mapping_templates(session["user_id"], script_id)
             mapping_action = request.form.get("mapping_action", "confirm").strip() or "confirm"
             selected_template_id = request.form.get("selected_template_id", "").strip()
@@ -4389,36 +4972,115 @@ def run_script(script_id):
                         info_message = '<div class="flash" style="background:#eff6ff;border-color:#bfdbfe;color:#1d4ed8">התבנית נמחקה.</div>'
                     else:
                         info_message = '<div class="flash-err">לא נבחרה תבנית למחיקה.</div>'
-                    inspection = build_rimon_mapping_options(inp, ext)
+                    inspection = build_flamingo_mapping_options(inp, ext) if script_id == "flamingo_payroll" else build_rimon_mapping_options(inp, ext)
                     mapping_templates = get_mapping_templates(session["user_id"], script_id)
+                    if script_id == "flamingo_payroll":
+                        mapping_confirmation_html = build_flamingo_mapping_form(
+                            script_id,
+                            inp,
+                            ext,
+                            inspection,
+                            mapping,
+                            mapping_templates,
+                            get_next_mapping_template_name(mapping_templates),
+                            manual_hourly_rate,
+                        )
+                    else:
+                        mapping_confirmation_html = build_rimon_mapping_form(
+                            script_id,
+                            inp,
+                            ext,
+                            inspection,
+                            mapping,
+                            mapping_templates,
+                            get_next_mapping_template_name(mapping_templates),
+                        )
+            elif mapping_action == "apply_template":
+                inspection = build_flamingo_mapping_options(inp, ext) if script_id == "flamingo_payroll" else build_rimon_mapping_options(inp, ext)
+                selected_mapping, selected_template = apply_selected_template(
+                    dict(default_flamingo_mapping()) if script_id == "flamingo_payroll" else dict(inspection["suggestions"]),
+                    mapping_templates,
+                    selected_template_id,
+                )
+                selected_mapping.update({key: value for key, value in mapping.items() if value})
+                if script_id == "flamingo_payroll" and selected_template:
+                    manual_hourly_rate = str(selected_template["mapping"].get("manual_hourly_rate", manual_hourly_rate) or "")
+                info_message = '<div class="flash" style="background:#eff6ff;border-color:#bfdbfe;color:#1d4ed8">התבנית נטענה. אפשר לבדוק את השדות ואז להריץ.</div>'
+                if script_id == "flamingo_payroll":
+                    mapping_confirmation_html = build_flamingo_mapping_form(
+                        script_id,
+                        inp,
+                        ext,
+                        inspection,
+                        selected_mapping,
+                        mapping_templates,
+                        request.form.get("template_name", "").strip() or get_next_mapping_template_name(mapping_templates),
+                        manual_hourly_rate,
+                    )
+                else:
                     mapping_confirmation_html = build_rimon_mapping_form(
                         script_id,
                         inp,
                         ext,
                         inspection,
-                        mapping,
+                        selected_mapping,
                         mapping_templates,
-                        get_next_mapping_template_name(mapping_templates),
+                        request.form.get("template_name", "").strip() or get_next_mapping_template_name(mapping_templates),
                     )
-            elif mapping_action == "apply_template":
-                inspection = build_rimon_mapping_options(inp, ext)
-                selected_mapping, selected_template = apply_selected_template(dict(inspection["suggestions"]), mapping_templates, selected_template_id)
-                selected_mapping.update({key: value for key, value in mapping.items() if value})
-                info_message = '<div class="flash" style="background:#eff6ff;border-color:#bfdbfe;color:#1d4ed8">התבנית נטענה. אפשר לבדוק את השדות ואז להריץ.</div>'
-                mapping_confirmation_html = build_rimon_mapping_form(
-                    script_id,
-                    inp,
-                    ext,
-                    inspection,
-                    selected_mapping,
-                    mapping_templates,
-                    request.form.get("template_name", "").strip() or get_next_mapping_template_name(mapping_templates),
-                )
             elif not inp or not os.path.exists(inp):
                 error = '<div class="flash-err">הקובץ הזמני לא נמצא. יש להעלות את הדוח מחדש.</div>'
             else:
+                if script_id == "flamingo_payroll":
+                    if not mapping.get("payable_hours_source"):
+                        inspection = build_flamingo_mapping_options(inp, ext)
+                        error = '<div class="flash-err">יש לבחור שדה שעות לתשלום בפועל לפני חישוב השכר.</div>'
+                        mapping_confirmation_html = build_flamingo_mapping_form(
+                            script_id,
+                            inp,
+                            ext,
+                            inspection,
+                            mapping,
+                            mapping_templates,
+                            request.form.get("template_name", "").strip() or get_next_mapping_template_name(mapping_templates),
+                            manual_hourly_rate,
+                        )
+                        return render(
+                            scr["name"],
+                            '<a href="/dashboard" style="color:#2563eb;font-size:13px;text-decoration:none;display:block;margin-bottom:1rem">' + text["back_arrow"] + ' ' + scr["back_label"] + '</a>'
+                            + '<div class="card"><div style="font-size:40px;margin-bottom:.5rem">' + scr["icon"] + '</div><div style="font-size:20px;font-weight:700;color:#1e3a8a;margin-bottom:4px">' + scr["name"] + '</div>'
+                            + error + mapping_confirmation_html + '</div>',
+                            lang=lang,
+                            topbar_greeting=text["topbar_greeting"],
+                            logout_label=text["logout"],
+                            show_lang_switch=True,
+                        )
+                    if mapping.get("hourly_rate_source") == "__manual__" and not manual_hourly_rate:
+                        inspection = build_flamingo_mapping_options(inp, ext)
+                        error = '<div class="flash-err">נבחר תעריף שעתי ידני, אבל לא הוזן ערך לתעריף.</div>'
+                        mapping_confirmation_html = build_flamingo_mapping_form(
+                            script_id,
+                            inp,
+                            ext,
+                            inspection,
+                            mapping,
+                            mapping_templates,
+                            request.form.get("template_name", "").strip() or get_next_mapping_template_name(mapping_templates),
+                            manual_hourly_rate,
+                        )
+                        return render(
+                            scr["name"],
+                            '<a href="/dashboard" style="color:#2563eb;font-size:13px;text-decoration:none;display:block;margin-bottom:1rem">' + text["back_arrow"] + ' ' + scr["back_label"] + '</a>'
+                            + '<div class="card"><div style="font-size:40px;margin-bottom:.5rem">' + scr["icon"] + '</div><div style="font-size:20px;font-weight:700;color:#1e3a8a;margin-bottom:4px">' + scr["name"] + '</div>'
+                            + error + mapping_confirmation_html + '</div>',
+                            lang=lang,
+                            topbar_greeting=text["topbar_greeting"],
+                            logout_label=text["logout"],
+                            show_lang_switch=True,
+                        )
                 uid = str(uuid.uuid4())[:8]
                 options = {key: value for key, value in mapping.items()}
+                if script_id == "flamingo_payroll":
+                    options["manual_hourly_rate"] = manual_hourly_rate
                 result_name = build_output_filename(scr, uid, options)
                 out = str(OUTPUT_FOLDER / result_name)
                 try:
@@ -4428,7 +5090,10 @@ def run_script(script_id):
                     log_user_activity("generate_report", "הפיק דוח", script_id, scr["name"], result_name)
                     if request.form.get("save_template") == "1":
                         template_name = request.form.get("template_name", "").strip() or get_next_mapping_template_name(mapping_templates)
-                        save_mapping_template(session["user_id"], script_id, template_name, mapping)
+                        template_mapping = dict(mapping)
+                        if script_id == "flamingo_payroll" and manual_hourly_rate:
+                            template_mapping["manual_hourly_rate"] = manual_hourly_rate
+                        save_mapping_template(session["user_id"], script_id, template_name, template_mapping)
                 except (xlrd.biffh.XLRDError, BadZipFile, OSError, ValueError):
                     error = '<div class="flash-err">' + scr["processing_error"] + '</div>'
                 except Exception as e:
