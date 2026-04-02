@@ -695,29 +695,63 @@ def load_org_structure_csv(csv_path):
     return records, unmatched
 
 
-def parse_org_hierarchy_csv(csv_path):
+def extract_org_mapping_value(raw_row, source):
+    source_text = str(source or "").strip()
+    if not source_text.startswith("header:"):
+        return ""
+    header = source_text.split(":", 1)[1]
+    return str(raw_row.get(header) or "").strip()
+
+
+def parse_org_hierarchy_csv(csv_path, mapping=None):
     rows = []
     with open(csv_path, "r", encoding="utf-8-sig", newline="") as handle:
         reader = csv.DictReader(handle)
         for raw in reader:
-            employee_name = (raw.get("שם עובד") or raw.get("׳©׳ ׳¢׳•׳‘׳“") or "").strip()
-            employee_number = (raw.get("שכר") or raw.get("׳©׳›׳¨") or "").strip()
-            id_number = (raw.get("ת.ז") or raw.get("׳×.׳–") or "").strip()
-            direct_manager = (raw.get("מנהל ישיר") or raw.get("׳׳ ׳”׳ ׳™׳©׳™׳¨") or "").strip()
-            manager_flag = (raw.get("מנהל") or "").strip()
-            department = (raw.get("מחלקה") or raw.get("׳׳—׳׳§׳”") or "").strip()
-            email = (raw.get("אימייל") or "").strip()
-            if not any([employee_name, employee_number, id_number, direct_manager, department, email]):
+            if mapping:
+                employee_name = extract_org_mapping_value(raw, mapping.get("employee_name_source"))
+                employee_number = extract_org_mapping_value(raw, mapping.get("employee_number_source"))
+                id_number = extract_org_mapping_value(raw, mapping.get("id_number_source"))
+                passport_number = extract_org_mapping_value(raw, mapping.get("passport_number_source"))
+                direct_manager = extract_org_mapping_value(raw, mapping.get("direct_manager_source"))
+                manager_flag = extract_org_mapping_value(raw, mapping.get("manager_flag_source"))
+                department = extract_org_mapping_value(raw, mapping.get("department_source"))
+                email = extract_org_mapping_value(raw, mapping.get("email_source"))
+                secondary_email = extract_org_mapping_value(raw, mapping.get("secondary_email_source"))
+                app_access = extract_org_mapping_value(raw, mapping.get("app_access_source"))
+                employment_percent = extract_org_mapping_value(raw, mapping.get("employment_percent_source"))
+                agreement_number = extract_org_mapping_value(raw, mapping.get("agreement_number_source"))
+                agreement_name = extract_org_mapping_value(raw, mapping.get("agreement_name_source"))
+            else:
+                employee_name = (raw.get("שם עובד") or raw.get("׳©׳ ׳¢׳•׳‘׳“") or "").strip()
+                employee_number = (raw.get("שכר") or raw.get("׳©׳›׳¨") or "").strip()
+                id_number = (raw.get("ת.ז") or raw.get("׳×.׳–") or "").strip()
+                passport_number = ""
+                direct_manager = (raw.get("מנהל ישיר") or raw.get("׳׳ ׳”׳ ׳™׳©׳™׳¨") or "").strip()
+                manager_flag = (raw.get("מנהל") or "").strip()
+                department = (raw.get("מחלקה") or raw.get("׳׳—׳׳§׳”") or "").strip()
+                email = (raw.get("אימייל") or "").strip()
+                secondary_email = (raw.get("אימייל נוסף") or "").strip()
+                app_access = (raw.get("הרשאה לאפליקציה") or "").strip()
+                employment_percent = (raw.get("אחוז משרה") or "").strip()
+                agreement_number = (raw.get("מס' הסכם") or "").strip()
+                agreement_name = (raw.get("שם הסכם") or "").strip()
+            if not any([employee_name, employee_number, id_number, passport_number, direct_manager, department, email, secondary_email]):
                 continue
             rows.append(
                 {
                     "employee_name": employee_name,
                     "employee_number": employee_number,
-                    "id_number": id_number,
+                    "id_number": id_number or passport_number,
                     "direct_manager": direct_manager,
-                    "is_manager": manager_flag == "[+]",
+                    "is_manager": manager_flag in {"[+]", "+", "כן", "yes", "true", "1"},
                     "department": department,
                     "email": email,
+                    "secondary_email": secondary_email,
+                    "app_access": app_access,
+                    "employment_percent": employment_percent,
+                    "agreement_number": agreement_number,
+                    "agreement_name": agreement_name,
                 }
             )
 
@@ -804,7 +838,7 @@ def parse_org_hierarchy_csv(csv_path):
                 "employee_number": node["employee_number"],
                 "id_number": node["id_number"],
                 "direct_manager": node["direct_manager"],
-                "is_manager": "כן" if node["is_manager"] else "לא",
+                "is_manager": "כן" if node["is_manager"] or bool(children_map.get(node["employee_name"])) else "לא",
                 "department": node["department"],
                 "email": node["email"],
                 "depth": depth,
@@ -1702,7 +1736,8 @@ def run_org_hierarchy_report(input_path, output_path, extension, options=None):
         raise ValueError("Organizational hierarchy report currently supports CSV input only")
     options = options or {}
     output_type = options.get("output_type", "both").strip() or "both"
-    summary_rows, tree_rows, exception_rows, stats = parse_org_hierarchy_csv(input_path)
+    warnings = build_org_hierarchy_mapping_warnings(options)
+    summary_rows, tree_rows, exception_rows, stats = parse_org_hierarchy_csv(input_path, options)
     root_rows = [row for row in summary_rows if row["depth"] == 0]
     output_file = Path(output_path)
     excel_output_path = output_file.with_name(output_file.stem + ".xlsx")
@@ -1713,10 +1748,10 @@ def run_org_hierarchy_report(input_path, output_path, extension, options=None):
     write_org_hierarchy_exceptions(wb.create_sheet(), exception_rows, root_rows)
     if output_type == "excel":
         wb.save(output_file)
-        return
+        return {"warnings": warnings}
     if output_type == "powerpoint":
         write_org_hierarchy_pptx(str(output_file), summary_rows, tree_rows, exception_rows, stats)
-        return
+        return {"warnings": warnings}
 
     wb.save(excel_output_path)
     write_org_hierarchy_pptx(str(pptx_output_path), summary_rows, tree_rows, exception_rows, stats)
@@ -1728,6 +1763,7 @@ def run_org_hierarchy_report(input_path, output_path, extension, options=None):
             temp_path.unlink()
         except OSError:
             pass
+    return {"warnings": warnings}
 
 
 def parse_matan_missing_report(input_path, mapping):
@@ -3314,11 +3350,22 @@ SCRIPTS["org_hierarchy_report"] = {
     "id": "org_hierarchy_report",
     "name": "תרשים מבנה ארגוני",
     "desc": "הפקת תרשים מבנה ארגוני ודוחות סיכום לפי מנהלים, מחלקות ומבנה הדיווח בארגון, כולל פלט אקסל ו-PowerPoint",
-    "help_label": "דרישות לקובץ",
-    "help_title": "מה צריך לכלול בקובץ?",
-    "help_intro": "יש להעלות קובץ מבנה ארגוני בפורמט CSV או Excel. כדי שהמערכת תפיק את הדוח, הקובץ חייב לכלול לפחות:",
-    "help_items": ["שם עובד", "מנהל ישיר", "מחלקה", "ואחד מאמצעי הזיהוי הבאים: מספר עובד, תעודת זהות או דרכון"],
-    "help_note": "שדות נוספים כמו סימון מנהל, אימייל או תפקיד יכולים לשפר את הפלט.",
+    "help_label": "מה הסקריפט עושה",
+    "help_title": "מה צריך להעלות?",
+    "help_intro": "יש להעלות קובץ מבנה ארגוני בפורמט CSV.",
+    "help_items": ["המערכת מזהה שדות מרכזיים מתוך הקובץ", "מבקשת אישור שדות לפני יצירת הדוח", "ומפיקה דוח מבנה ארגוני עם פלט אקסל, PowerPoint או שניהם יחד"],
+    "help_note": "אפשר לעבוד גם עם קבצים מסודרים וגם עם קבצים פחות מסודרים, כל עוד מאשרים את השדות הנכונים.",
+    "rules_label": "איך הסקריפט בונה את ההיררכיה",
+    "rules_title": "מה חשוב לאשר לפני יצירת הדוח?",
+    "rules_intro": "הסקריפט בונה את ההיררכיה לפי שלושה שדות קריטיים שחייבים להיות נכונים:",
+    "rules_items": [
+        "שם עובד - זהו הצומת שמופיע בהיררכיה",
+        "מנהל ישיר - זהו הקשר שקובע למי כל עובד מדווח",
+        "מחלקה - משמשת לסיכומים, לקיבוץ ולהבנת המבנה הארגוני",
+        "מומלץ לבחור גם מזהה נוסף לעובד: מספר עובד, תעודת זהות או דרכון",
+        "שדה מנהל הוא אופציונלי בלבד. אם עובד מוגדר כמנהל ישיר של אחרים, הוא מזוהה כמנהל גם בלי סימון מפורש",
+    ],
+    "rules_note": "לפני ההרצה המערכת תציע זיהוי אוטומטי, אבל הלקוח הוא זה שמאשר את המיפוי הסופי.",
     "accept": ".csv",
     "icon": "🌳",
 }
@@ -3397,6 +3444,7 @@ SCRIPT_REGISTRY["org_hierarchy_report"] = {
     **SCRIPTS["org_hierarchy_report"],
     "processor": run_org_hierarchy_report,
     "output_suffix": "org_hierarchy_report",
+    "requires_mapping_confirmation": True,
     "output_extension": "zip",
     "output_option_name": "output_type",
     "output_extension_map": {"excel": "xlsx", "powerpoint": "pptx", "both": "zip"},
@@ -3737,6 +3785,22 @@ MATAN_MISSING_MAPPING_FIELDS = [
     {"name": "absence_hours_source", "label": "היעדרות", "required": False},
 ]
 
+ORG_HIERARCHY_MAPPING_FIELDS = [
+    {"name": "employee_name_source", "label": "שם עובד", "required": True, "critical": True},
+    {"name": "direct_manager_source", "label": "מנהל ישיר", "required": True, "critical": True},
+    {"name": "department_source", "label": "מחלקה", "required": True, "critical": True},
+    {"name": "employee_number_source", "label": "מספר עובד", "required": False},
+    {"name": "id_number_source", "label": "תעודת זהות", "required": False},
+    {"name": "passport_number_source", "label": "דרכון", "required": False},
+    {"name": "manager_flag_source", "label": "סימון מנהל", "required": False},
+    {"name": "email_source", "label": "אימייל", "required": False},
+    {"name": "secondary_email_source", "label": "אימייל נוסף", "required": False},
+    {"name": "app_access_source", "label": "הרשאה לאפליקציה", "required": False},
+    {"name": "employment_percent_source", "label": "אחוז משרה", "required": False},
+    {"name": "agreement_number_source", "label": "מס' הסכם", "required": False},
+    {"name": "agreement_name_source", "label": "שם הסכם", "required": False},
+]
+
 
 RIMON_SUGGESTION_KEYWORDS = {
     "employee_name_source": ["שםלתצוגה", "שםעובד", "עובד", "employee", "name"],
@@ -3783,6 +3847,22 @@ MATAN_MISSING_SUGGESTION_KEYWORDS = {
     "pregnancy_hours_source": ["הריון"],
     "special_child_hours_source": ["ילדמיחד", "ילדמיוחד"],
     "absence_hours_source": ["היעדרות"],
+}
+
+ORG_HIERARCHY_SUGGESTION_KEYWORDS = {
+    "employee_name_source": ["שםעובד", "עובד", "name"],
+    "direct_manager_source": ["מנהלישיר", "directmanager", "manager"],
+    "department_source": ["מחלקה", "department"],
+    "employee_number_source": ["מספרעובד", "מספרשכר", "שכר", "employeeid", "payroll"],
+    "id_number_source": ["תז", "תעותזהות", "תעודתזהות", "id"],
+    "passport_number_source": ["דרכון", "passport"],
+    "manager_flag_source": ["מנהל", "ismanager", "managerflag"],
+    "email_source": ["אימייל", "אימיל", "email", "mail"],
+    "secondary_email_source": ["אימיילנוסף", "מיילנוסף", "secondaryemail", "additionalemail"],
+    "app_access_source": ["הרשאהלאפליקציה", "אפליקציה", "access", "permission"],
+    "employment_percent_source": ["אחוזמשרה", "משרה", "percent", "fte"],
+    "agreement_number_source": ["מסהסכם", "מספרהסכם", "agreementnumber"],
+    "agreement_name_source": ["שםהסכם", "agreementname"],
 }
 
 RIMON_META_LABEL_TOKENS = {
@@ -4125,6 +4205,126 @@ def build_matan_missing_mapping_options(input_path, extension):
         "options_by_field": options_by_field,
         "suggestions": suggestions,
         "suggested_template_name": "תבנית שעות חסר",
+    }
+
+
+def default_org_hierarchy_mapping():
+    return {field["name"]: "" for field in ORG_HIERARCHY_MAPPING_FIELDS}
+
+
+def build_org_hierarchy_mapping_warnings(mapping):
+    warnings = []
+    if not mapping.get("employee_name_source"):
+        warnings.append("לא נבחר שדה שם עובד. בלי השדה הזה לא ניתן לבנות את מבנה הדיווח.")
+    if not mapping.get("direct_manager_source"):
+        warnings.append("לא נבחר שדה מנהל ישיר. בלי השדה הזה לא ניתן לבנות את ההיררכיה נכון.")
+    if not mapping.get("department_source"):
+        warnings.append("לא נבחר שדה מחלקה. הפלט עדיין יופק, אבל יהיה פחות שימושי לסיכומי מחלקות.")
+    identifier_sources = [
+        mapping.get("employee_number_source"),
+        mapping.get("id_number_source"),
+        mapping.get("passport_number_source"),
+    ]
+    if not any(identifier_sources):
+        warnings.append("לא נבחר מזהה נוסף לעובד. מומלץ לבחור מספר עובד, תעודת זהות או דרכון.")
+    return warnings
+
+
+def build_org_hierarchy_mapping_options(input_path, extension):
+    if extension != "csv":
+        raise ValueError("Organizational hierarchy tool currently supports CSV input only")
+    with open(input_path, "r", encoding="utf-8-sig", newline="") as handle:
+        rows = list(csv.reader(handle))
+    headers = rows[0] if rows else []
+    samples_by_index = {}
+    for col_index, _header in enumerate(headers):
+        sample = ""
+        for row in rows[1:]:
+            if col_index < len(row):
+                candidate = str(row[col_index] or "").strip()
+                if candidate:
+                    sample = candidate
+                    break
+        samples_by_index[col_index] = sample
+
+    base_options = [{"value": "", "label": "לא נבחר", "source_kind": "empty"}]
+    for col_index, header in enumerate(headers):
+        header_text = str(header or "").strip()
+        if not header_text:
+            continue
+        sample = samples_by_index.get(col_index, "")
+        base_options.append(
+            {
+                "value": f"header:{header_text}",
+                "label": f"עמודה {get_column_letter(col_index + 1)} - {header_text}" + (f" (לדוגמה: {sample})" if sample else ""),
+                "source_kind": "table_exact",
+                "match_token": normalize_token(header_text),
+                "header": header_text,
+                "sample": sample,
+            }
+        )
+
+    preferred_tokens = {
+        "employee_name_source": ["שםעובד"],
+        "direct_manager_source": ["מנהלישיר"],
+        "department_source": ["מחלקה"],
+        "employee_number_source": ["מספרשכר", "שכר", "מספרעובד"],
+        "id_number_source": ["ת.ז", "תז", "תעודתזהות"],
+        "passport_number_source": ["דרכון"],
+        "manager_flag_source": ["מנהל"],
+        "email_source": ["אימייל"],
+        "secondary_email_source": ["אימיילנוסף"],
+        "app_access_source": ["הרשאהלאפליקציה"],
+        "employment_percent_source": ["אחוזמשרה"],
+        "agreement_number_source": ["מסהסכם", "מספרהסכם"],
+        "agreement_name_source": ["שםהסכם"],
+    }
+
+    options_by_field = {}
+    suggestions = {}
+    for field in ORG_HIERARCHY_MAPPING_FIELDS:
+        field_name = field["name"]
+        field_options = [base_options[0]]
+        keywords = ORG_HIERARCHY_SUGGESTION_KEYWORDS.get(field_name, [])
+        for option in base_options[1:]:
+            token = option.get("match_token", "")
+            if any(keyword in token for keyword in keywords):
+                field_options.append(option)
+        for option in base_options[1:]:
+            if option["value"] not in {item["value"] for item in field_options}:
+                field_options.append(option)
+        options_by_field[field_name] = field_options
+
+        suggested = ""
+        for preferred in preferred_tokens.get(field_name, []):
+            for option in field_options[1:]:
+                token = option.get("match_token", "")
+                if preferred == token:
+                    suggested = option["value"]
+                    break
+            if suggested:
+                break
+        if not suggested:
+            for preferred in preferred_tokens.get(field_name, []):
+                for option in field_options[1:]:
+                    token = option.get("match_token", "")
+                    if preferred in token:
+                        suggested = option["value"]
+                        break
+                if suggested:
+                    break
+        if not suggested:
+            for option in field_options[1:]:
+                token = option.get("match_token", "")
+                if any(keyword in token for keyword in keywords):
+                    suggested = option["value"]
+                    break
+        suggestions[field_name] = suggested
+
+    return {
+        "options_by_field": options_by_field,
+        "suggestions": suggestions,
+        "suggested_template_name": "תבנית ארגונית",
     }
 
 
@@ -4870,6 +5070,109 @@ def build_matan_missing_mapping_form(script_id, temp_upload_path, temp_upload_ex
     )
 
 
+def build_org_hierarchy_mapping_form(script_id, temp_upload_path, temp_upload_ext, inspection, current_mapping, templates, template_name_value, current_output_type):
+    template_options = '<option value="">ללא תבנית שמורה</option>'
+    for template in templates:
+        template_options += '<option value="' + str(template["id"]) + '">' + esc(template["name"]) + '</option>'
+
+    mapping_labels = {field["name"]: field["label"] for field in ORG_HIERARCHY_MAPPING_FIELDS}
+    template_payload = {
+        str(template["id"]): {key: str(value or "") for key, value in template["mapping"].items()}
+        for template in templates
+    }
+
+    fields_html = ""
+    for field in ORG_HIERARCHY_MAPPING_FIELDS:
+        field_name = field["name"]
+        current_value = str(current_mapping.get(field_name, "") or "")
+        options = inspection["options_by_field"].get(field_name, [])
+        select_options = ""
+        for option in options:
+            selected = ' selected' if option["value"] == current_value else ""
+            select_options += (
+                '<option value="' + esc(option["value"]) + '" data-base-label="' + esc(option["label"]) + '" data-source-kind="' + esc(option.get("source_kind", "empty")) + '"' + selected + ">"
+                + esc(option["label"])
+                + "</option>"
+            )
+
+        required_badge = ' <span style="color:#dc2626">*</span>' if field["required"] else ' <span style="color:#94a3b8">(אופציונלי)</span>'
+        wrapper_style = ""
+        if field.get("critical"):
+            wrapper_style = 'background:#fff7ed;border:1px solid #fdba74;border-radius:12px;padding:10px 10px 12px'
+        fields_html += (
+            '<div style="' + wrapper_style + '"><label class="field-label">' + field["label"] + required_badge + '</label>'
+            + ('<div style="font-size:12px;color:#9a3412;line-height:1.6;margin:-4px 0 8px">שדה קריטי לבניית ההיררכיה. יש לוודא שזהו המקור הנכון.</div>' if field.get("critical") else '')
+            + '<select name="' + field_name + '" data-mapping-field="1" data-field-label="' + esc(field["label"]) + '" style="padding:9px 12px;border:1.5px solid #e2e8f0;border-radius:8px;font-size:13px;font-family:inherit;outline:none;width:100%;margin-bottom:0;background:white;transition:background-color .15s ease,border-color .15s ease,box-shadow .15s ease">'
+            + select_options
+            + '</select></div>'
+        )
+
+    return (
+        '<form method="POST" id="orgHierarchyMappingForm">'
+        + '<input type="hidden" name="flow_mode" value="confirm_mapping">'
+        + '<input type="hidden" name="temp_upload_path" value="' + esc(temp_upload_path) + '">'
+        + '<input type="hidden" name="temp_upload_ext" value="' + esc(temp_upload_ext) + '">'
+        + '<div style="background:#fafcff;border:1px solid #dbeafe;border-radius:14px;padding:1rem;margin-bottom:1rem">'
+        + '<div style="font-size:15px;font-weight:700;color:#1e3a8a;margin-bottom:10px">אישור שדות לפני עיבוד</div>'
+        + '<div style="display:grid;grid-template-columns:260px minmax(0,1fr);gap:14px;align-items:start">'
+        + '<div style="background:#ffffff;border:1px solid #e2e8f0;border-radius:12px;padding:12px">'
+        + '<div style="font-size:14px;font-weight:700;color:#0f172a;margin-bottom:10px">תבניות שמורות</div>'
+        + '<label class="field-label">בחירת תבנית</label>'
+        + '<div style="display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:center;margin-bottom:12px">'
+        + '<select id="selectedTemplateId" name="selected_template_id" style="padding:9px 12px;border:1.5px solid #e2e8f0;border-radius:8px;font-size:13px;font-family:inherit;outline:none;width:100%;background:white">' + template_options + '</select>'
+        + '<button type="submit" name="mapping_action" value="delete_template" class="btn btn-gray" style="min-width:104px;padding-inline:14px;white-space:nowrap">מחיקה</button>'
+        + '</div>'
+        + '<label style="display:flex;align-items:center;gap:6px;font-size:13px;color:#334155;margin-bottom:10px"><input type="checkbox" name="save_template" value="1"> שמור כתבנית חדשה</label>'
+        + '<label class="field-label">שם תבנית חדשה</label>'
+        + '<input type="text" name="template_name" value="' + esc(template_name_value) + '" placeholder="שם תבנית" style="margin-bottom:0">'
+        + '<div style="font-size:12px;color:#64748b;line-height:1.7;margin-top:10px">בחירת תבנית תעדכן את כל השדות בהתאם. שמירה תיצור תבנית חדשה בלבד ולא תדרוס תבנית קיימת.</div>'
+        + '</div>'
+        + '<div>'
+        + '<div style="margin-bottom:12px"><label class="field-label">סוג פלט</label><select name="output_type" style="padding:9px 12px;border:1.5px solid #e2e8f0;border-radius:8px;font-size:13px;font-family:inherit;outline:none;width:100%;background:white">'
+        + '<option value="excel"' + (' selected' if current_output_type == 'excel' else '') + '>אקסל בלבד</option>'
+        + '<option value="powerpoint"' + (' selected' if current_output_type == 'powerpoint' else '') + '>PowerPoint בלבד</option>'
+        + '<option value="both"' + (' selected' if current_output_type == 'both' else '') + '>XL+PowerPoint</option>'
+        + '</select></div>'
+        + '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">'
+        + '<span style="display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border-radius:999px;background:#fff7ed;border:1px solid #fdba74;font-size:12px;color:#9a3412">שדה קריטי</span>'
+        + '<span style="display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border-radius:999px;background:#ecfdf5;border:1px solid #86efac;font-size:12px;color:#166534">שדה מהקובץ</span>'
+        + '</div>'
+        + '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-bottom:12px">' + fields_html + '</div>'
+        + '<div style="font-size:12px;color:#64748b;line-height:1.7;margin-bottom:12px">שדות חובה: שם עובד, מנהל ישיר ומחלקה. בנוסף יש לבחור לפחות מזהה אחד נוסף: מספר עובד, תעודת זהות או דרכון.</div>'
+        + '<div style="display:flex;gap:10px;flex-wrap:wrap;justify-content:center"><button type="submit" id="orgHierarchyConfirmButton" name="mapping_action" value="confirm" class="btn btn-blue" style="min-width:220px">אשר הכל והפעל עיבוד</button><a href="/run/' + script_id + '" class="btn btn-gray" style="text-decoration:none;display:inline-flex;align-items:center;justify-content:center;min-width:150px">העלאת קובץ חדש</a></div>'
+        + '</div></div>'
+        + '</div>'
+        + '<div id="orgHierarchyProcessingOverlay" style="display:none;position:fixed;inset:0;background:rgba(248,250,252,.78);backdrop-filter:blur(2px);z-index:80;align-items:center;justify-content:center;padding:20px">'
+        + '<div style="width:100%;max-width:320px;background:#ffffff;border:1px solid #dbeafe;border-radius:18px;box-shadow:0 20px 50px rgba(15,23,42,.14);padding:24px 20px;text-align:center">'
+        + '<div style="width:42px;height:42px;border-radius:999px;border:3px solid #bfdbfe;border-top-color:#2563eb;margin:0 auto 14px;animation:mappingSpin .9s linear infinite"></div>'
+        + '<div style="font-size:16px;font-weight:800;color:#1e3a8a;margin-bottom:6px">הדוח בהכנה</div>'
+        + '<div style="font-size:13px;line-height:1.7;color:#475569">המערכת מאשרת את השדות ובונה את דוח המבנה הארגוני. בקבצים גדולים הפעולה יכולה להימשך מעט זמן.</div>'
+        + '</div></div>'
+        + '<script>'
+        + '(function(){'
+        + 'var templateSelect=document.getElementById("selectedTemplateId");'
+        + 'var fieldSelects=Array.prototype.slice.call(document.querySelectorAll(\'select[data-mapping-field="1"]\'));'
+        + 'var form=document.getElementById("orgHierarchyMappingForm");'
+        + 'var confirmButton=document.getElementById("orgHierarchyConfirmButton");'
+        + 'var overlay=document.getElementById("orgHierarchyProcessingOverlay");'
+        + 'var templateMappings=' + json.dumps(template_payload, ensure_ascii=False) + ';'
+        + 'var fieldLabels=' + json.dumps(mapping_labels, ensure_ascii=False) + ';'
+        + 'var selectStyles={critical:{bg:"#fff7ed",border:"#fb923c",shadow:"rgba(249,115,22,.14)"},table_exact:{bg:"#ecfdf5",border:"#4ade80",shadow:"rgba(34,197,94,.14)"},empty:{bg:"#ffffff",border:"#e2e8f0",shadow:"rgba(148,163,184,.08)"}};'
+        + 'function applySelectVisual(sel){var fieldName=sel.name;var isCritical=(fieldName==="employee_name_source"||fieldName==="direct_manager_source"||fieldName==="department_source");var kind=isCritical?"critical":(((sel.options[sel.selectedIndex]||{}).getAttribute&&sel.options[sel.selectedIndex].getAttribute("data-source-kind"))||"table_exact");var style=selectStyles[kind]||selectStyles.empty;sel.style.backgroundColor=style.bg;sel.style.borderColor=style.border;sel.style.boxShadow="0 0 0 3px "+style.shadow;}'
+        + 'function refreshOptionLabels(){var assignments={};fieldSelects.forEach(function(sel){if(sel.value){assignments[sel.value]=sel.name;}});fieldSelects.forEach(function(sel){Array.prototype.forEach.call(sel.options,function(opt){var base=opt.getAttribute("data-base-label")||opt.text;var assigned=assignments[opt.value];var suffix="";if(opt.value&&assigned&&assigned!==sel.name){suffix=" [נבחר עבור "+(fieldLabels[assigned]||assigned)+"]";}opt.text=base+suffix;});applySelectVisual(sel);});}'
+        + 'function clearDuplicateSelections(changedSelect){if(!changedSelect.value){refreshOptionLabels();return;}fieldSelects.forEach(function(sel){if(sel!==changedSelect&&sel.value===changedSelect.value){sel.value="";}});refreshOptionLabels();}'
+        + 'function applyTemplate(templateId){var mapping=templateMappings[templateId]||{};if(!templateId){refreshOptionLabels();return;}fieldSelects.forEach(function(sel){sel.value=mapping[sel.name]||"";});var seen={};fieldSelects.forEach(function(sel){if(sel.value&&seen[sel.value]){sel.value="";}else if(sel.value){seen[sel.value]=true;}});refreshOptionLabels();}'
+        + 'fieldSelects.forEach(function(sel){sel.addEventListener("change",function(){clearDuplicateSelections(sel);});});'
+        + 'if(templateSelect){templateSelect.addEventListener("change",function(){applyTemplate(this.value);});}'
+        + 'if(form){form.addEventListener("submit",function(event){var submitter=event.submitter||document.activeElement;if(!submitter||submitter.value!=="confirm"){return;}if(confirmButton){confirmButton.disabled=true;confirmButton.textContent="העיבוד התחיל...";}if(overlay){overlay.style.display="flex";}document.body.style.overflow="hidden";});}'
+        + 'refreshOptionLabels();'
+        + '})();'
+        + '</script>'
+        + '<style>@keyframes mappingSpin{from{transform:rotate(0deg);}to{transform:rotate(360deg);}}</style>'
+        + '</form>'
+    )
+
+
 def build_flamingo_mapping_form(script_id, temp_upload_path, temp_upload_ext, inspection, current_mapping, templates, template_name_value, manual_hourly_rate_value):
     template_options = '<option value="">ללא תבנית שמורה</option>'
     for template in templates:
@@ -5343,6 +5646,10 @@ def run_script(script_id):
                     inspection = build_matan_missing_mapping_options(inp, ext)
                     selected_mapping = dict(default_matan_missing_mapping())
                     selected_mapping.update(inspection["suggestions"])
+                elif script_id == "org_hierarchy_report":
+                    inspection = build_org_hierarchy_mapping_options(inp, ext)
+                    selected_mapping = dict(default_org_hierarchy_mapping())
+                    selected_mapping.update(inspection["suggestions"])
                 else:
                     inspection = build_rimon_mapping_options(inp, ext)
                     selected_mapping = dict(inspection["suggestions"])
@@ -5373,6 +5680,17 @@ def run_script(script_id):
                             "max_missing_hours": request.form.get("max_missing_hours", "").strip(),
                         },
                     )
+                elif script_id == "org_hierarchy_report":
+                    mapping_confirmation_html = build_org_hierarchy_mapping_form(
+                        script_id,
+                        inp,
+                        ext,
+                        inspection,
+                        selected_mapping,
+                        mapping_templates,
+                        get_next_mapping_template_name(mapping_templates),
+                        request.form.get("output_type", "").strip() or "powerpoint",
+                    )
                 else:
                     mapping_confirmation_html = build_rimon_mapping_form(
                         script_id,
@@ -5387,13 +5705,16 @@ def run_script(script_id):
             inp = request.form.get("temp_upload_path", "").strip()
             ext = request.form.get("temp_upload_ext", "").strip().lower()
             mapping = {}
-            mapping_fields = FLAMINGO_MAPPING_FIELDS if script_id == "flamingo_payroll" else MATAN_MISSING_MAPPING_FIELDS if script_id == "matan_missing" else RIMON_MAPPING_FIELDS
+            mapping_fields = FLAMINGO_MAPPING_FIELDS if script_id == "flamingo_payroll" else MATAN_MISSING_MAPPING_FIELDS if script_id == "matan_missing" else ORG_HIERARCHY_MAPPING_FIELDS if script_id == "org_hierarchy_report" else RIMON_MAPPING_FIELDS
             for field in mapping_fields:
                 mapping[field["name"]] = request.form.get(field["name"], "").strip()
             manual_hourly_rate = request.form.get("manual_hourly_rate", "").strip() if script_id == "flamingo_payroll" else ""
             matan_filters = {
                 "min_missing_hours": request.form.get("min_missing_hours", "").strip(),
                 "max_missing_hours": request.form.get("max_missing_hours", "").strip(),
+            }
+            org_options = {
+                "output_type": request.form.get("output_type", "").strip() or "powerpoint",
             }
             mapping_templates = get_mapping_templates(session["user_id"], script_id)
             mapping_action = request.form.get("mapping_action", "confirm").strip() or "confirm"
@@ -5407,7 +5728,7 @@ def run_script(script_id):
                         info_message = '<div class="flash" style="background:#eff6ff;border-color:#bfdbfe;color:#1d4ed8">התבנית נמחקה.</div>'
                     else:
                         info_message = '<div class="flash-err">לא נבחרה תבנית למחיקה.</div>'
-                    inspection = build_flamingo_mapping_options(inp, ext) if script_id == "flamingo_payroll" else build_matan_missing_mapping_options(inp, ext) if script_id == "matan_missing" else build_rimon_mapping_options(inp, ext)
+                    inspection = build_flamingo_mapping_options(inp, ext) if script_id == "flamingo_payroll" else build_matan_missing_mapping_options(inp, ext) if script_id == "matan_missing" else build_org_hierarchy_mapping_options(inp, ext) if script_id == "org_hierarchy_report" else build_rimon_mapping_options(inp, ext)
                     mapping_templates = get_mapping_templates(session["user_id"], script_id)
                     if script_id == "flamingo_payroll":
                         mapping_confirmation_html = build_flamingo_mapping_form(
@@ -5431,6 +5752,17 @@ def run_script(script_id):
                             get_next_mapping_template_name(mapping_templates),
                             matan_filters,
                         )
+                    elif script_id == "org_hierarchy_report":
+                        mapping_confirmation_html = build_org_hierarchy_mapping_form(
+                            script_id,
+                            inp,
+                            ext,
+                            inspection,
+                            mapping,
+                            mapping_templates,
+                            get_next_mapping_template_name(mapping_templates),
+                            org_options["output_type"],
+                        )
                     else:
                         mapping_confirmation_html = build_rimon_mapping_form(
                             script_id,
@@ -5442,9 +5774,9 @@ def run_script(script_id):
                             get_next_mapping_template_name(mapping_templates),
                         )
             elif mapping_action == "apply_template":
-                inspection = build_flamingo_mapping_options(inp, ext) if script_id == "flamingo_payroll" else build_matan_missing_mapping_options(inp, ext) if script_id == "matan_missing" else build_rimon_mapping_options(inp, ext)
+                inspection = build_flamingo_mapping_options(inp, ext) if script_id == "flamingo_payroll" else build_matan_missing_mapping_options(inp, ext) if script_id == "matan_missing" else build_org_hierarchy_mapping_options(inp, ext) if script_id == "org_hierarchy_report" else build_rimon_mapping_options(inp, ext)
                 selected_mapping, selected_template = apply_selected_template(
-                    dict(default_flamingo_mapping()) if script_id == "flamingo_payroll" else dict(default_matan_missing_mapping()) if script_id == "matan_missing" else dict(inspection["suggestions"]),
+                    dict(default_flamingo_mapping()) if script_id == "flamingo_payroll" else dict(default_matan_missing_mapping()) if script_id == "matan_missing" else dict(default_org_hierarchy_mapping()) if script_id == "org_hierarchy_report" else dict(inspection["suggestions"]),
                     mapping_templates,
                     selected_template_id,
                 )
@@ -5473,6 +5805,17 @@ def run_script(script_id):
                         mapping_templates,
                         request.form.get("template_name", "").strip() or get_next_mapping_template_name(mapping_templates),
                         matan_filters,
+                    )
+                elif script_id == "org_hierarchy_report":
+                    mapping_confirmation_html = build_org_hierarchy_mapping_form(
+                        script_id,
+                        inp,
+                        ext,
+                        inspection,
+                        selected_mapping,
+                        mapping_templates,
+                        request.form.get("template_name", "").strip() or get_next_mapping_template_name(mapping_templates),
+                        org_options["output_type"],
                     )
                 else:
                     mapping_confirmation_html = build_rimon_mapping_form(
@@ -5610,12 +5953,89 @@ def run_script(script_id):
                             logout_label=text["logout"],
                             show_lang_switch=True,
                         )
+                elif script_id == "org_hierarchy_report":
+                    identifier_values = [
+                        mapping.get("employee_number_source"),
+                        mapping.get("id_number_source"),
+                        mapping.get("passport_number_source"),
+                    ]
+                    if not mapping.get("employee_name_source"):
+                        inspection = build_org_hierarchy_mapping_options(inp, ext)
+                        error = '<div class="flash-err">יש לבחור שדה שם עובד לפני יצירת הדוח.</div>'
+                        mapping_confirmation_html = build_org_hierarchy_mapping_form(
+                            script_id,
+                            inp,
+                            ext,
+                            inspection,
+                            mapping,
+                            mapping_templates,
+                            request.form.get("template_name", "").strip() or get_next_mapping_template_name(mapping_templates),
+                            org_options["output_type"],
+                        )
+                        return render(
+                            scr["name"],
+                            '<a href="/dashboard" style="color:#2563eb;font-size:13px;text-decoration:none;display:block;margin-bottom:1rem">' + text["back_arrow"] + ' ' + scr["back_label"] + '</a>'
+                            + '<div class="card"><div style="font-size:40px;margin-bottom:.5rem">' + scr["icon"] + '</div><div style="font-size:20px;font-weight:700;color:#1e3a8a;margin-bottom:4px">' + scr["name"] + '</div>'
+                            + error + mapping_confirmation_html + '</div>',
+                            lang=lang,
+                            topbar_greeting=text["topbar_greeting"],
+                            logout_label=text["logout"],
+                            show_lang_switch=True,
+                        )
+                    if not mapping.get("direct_manager_source") or not mapping.get("department_source"):
+                        inspection = build_org_hierarchy_mapping_options(inp, ext)
+                        error = '<div class="flash-err">יש לבחור שדה מנהל ישיר ושדה מחלקה לפני יצירת הדוח.</div>'
+                        mapping_confirmation_html = build_org_hierarchy_mapping_form(
+                            script_id,
+                            inp,
+                            ext,
+                            inspection,
+                            mapping,
+                            mapping_templates,
+                            request.form.get("template_name", "").strip() or get_next_mapping_template_name(mapping_templates),
+                            org_options["output_type"],
+                        )
+                        return render(
+                            scr["name"],
+                            '<a href="/dashboard" style="color:#2563eb;font-size:13px;text-decoration:none;display:block;margin-bottom:1rem">' + text["back_arrow"] + ' ' + scr["back_label"] + '</a>'
+                            + '<div class="card"><div style="font-size:40px;margin-bottom:.5rem">' + scr["icon"] + '</div><div style="font-size:20px;font-weight:700;color:#1e3a8a;margin-bottom:4px">' + scr["name"] + '</div>'
+                            + error + mapping_confirmation_html + '</div>',
+                            lang=lang,
+                            topbar_greeting=text["topbar_greeting"],
+                            logout_label=text["logout"],
+                            show_lang_switch=True,
+                        )
+                    if not any(identifier_values):
+                        inspection = build_org_hierarchy_mapping_options(inp, ext)
+                        error = '<div class="flash-err">יש לבחור לפחות מזהה אחד נוסף: מספר עובד, תעודת זהות או דרכון.</div>'
+                        mapping_confirmation_html = build_org_hierarchy_mapping_form(
+                            script_id,
+                            inp,
+                            ext,
+                            inspection,
+                            mapping,
+                            mapping_templates,
+                            request.form.get("template_name", "").strip() or get_next_mapping_template_name(mapping_templates),
+                            org_options["output_type"],
+                        )
+                        return render(
+                            scr["name"],
+                            '<a href="/dashboard" style="color:#2563eb;font-size:13px;text-decoration:none;display:block;margin-bottom:1rem">' + text["back_arrow"] + ' ' + scr["back_label"] + '</a>'
+                            + '<div class="card"><div style="font-size:40px;margin-bottom:.5rem">' + scr["icon"] + '</div><div style="font-size:20px;font-weight:700;color:#1e3a8a;margin-bottom:4px">' + scr["name"] + '</div>'
+                            + error + mapping_confirmation_html + '</div>',
+                            lang=lang,
+                            topbar_greeting=text["topbar_greeting"],
+                            logout_label=text["logout"],
+                            show_lang_switch=True,
+                        )
                 uid = str(uuid.uuid4())[:8]
                 options = {key: value for key, value in mapping.items()}
                 if script_id == "flamingo_payroll":
                     options["manual_hourly_rate"] = manual_hourly_rate
                 elif script_id == "matan_missing":
                     options.update(matan_filters)
+                elif script_id == "org_hierarchy_report":
+                    options.update(org_options)
                 result_name = build_output_filename(scr, uid, options)
                 out = str(OUTPUT_FOLDER / result_name)
                 try:
