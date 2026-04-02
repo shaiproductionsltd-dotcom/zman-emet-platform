@@ -5496,6 +5496,10 @@ def dashboard():
         service_note = ("בתוקף עד " if lang == "he" else "Valid until ") + format_ui_date(status["renewal_date"], lang)
     else:
         service_note = "ללא פרטי שירות נוספים" if lang == "he" else "No additional service details"
+    collapsed_company_name = user["company_name"] or user["full_name"] or user["username"] or not_set
+    service_compact = status_label
+    if status["status_key"] == "trial" and status["days_remaining"] is not None:
+        service_compact += (" • נותרו " + str(status["days_remaining"]) + " ימים" if lang == "he" else f" • {status['days_remaining']} days left")
 
     cards = ""
     for script in allowed:
@@ -5538,18 +5542,27 @@ def dashboard():
         + ('<p style="font-size:14px;color:#64748b;margin-bottom:1.5rem">' + text["dashboard_intro"] + "</p>" if text["dashboard_intro"] else "")
         +
         '<div style="display:grid;grid-template-columns:1.15fr .85fr;gap:1rem;margin-bottom:1rem">'
-        '<div class="card" style="margin:0"><div style="font-size:18px;font-weight:800;color:#0f172a;margin-bottom:14px">'
-        + ("פרטי חשבון ולקוח" if lang == "he" else "Account and company details")
-        + '</div><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px">'
+        '<details class="card" style="margin:0;padding:0;overflow:hidden" id="accountDetailsCard">'
+        '<summary style="list-style:none;cursor:pointer;padding:18px 20px;display:flex;align-items:center;justify-content:space-between;gap:12px">'
+        '<div><div style="font-size:18px;font-weight:800;color:#0f172a;margin-bottom:6px">' + ("פרטי חשבון ולקוח" if lang == "he" else "Account and company details") + '</div>'
+        '<div style="font-size:14px;color:#334155;font-weight:700">' + esc(collapsed_company_name) + '</div></div>'
+        '<span style="font-size:18px;color:#64748b">+</span>'
+        '</summary>'
+        '<div style="padding:0 20px 20px"><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px">'
         + info_grid
-        + '</div></div>'
-        '<div class="card" style="margin:0;background:linear-gradient(180deg,#ffffff 0%,#f8fbff 100%)">'
-        '<div style="font-size:18px;font-weight:800;color:#0f172a;margin-bottom:12px">' + ("סטטוס שירות" if lang == "he" else "Service status") + '</div>'
-        '<div style="display:inline-flex;align-items:center;padding:8px 12px;border-radius:999px;background:' + status_bg + ';color:' + status_fg + ';font-size:14px;font-weight:800;margin-bottom:10px">' + esc(status_label) + '</div>'
+        + '</div></div></details>'
+        '<details class="card" style="margin:0;padding:0;overflow:hidden;background:linear-gradient(180deg,#ffffff 0%,#f8fbff 100%)" id="serviceStatusCard">'
+        '<summary style="list-style:none;cursor:pointer;padding:18px 20px;display:flex;align-items:center;justify-content:space-between;gap:12px">'
+        '<div><div style="font-size:18px;font-weight:800;color:#0f172a;margin-bottom:6px">' + ("סטטוס שירות" if lang == "he" else "Service status") + '</div>'
+        '<div style="display:inline-flex;align-items:center;padding:8px 12px;border-radius:999px;background:' + status_bg + ';color:' + status_fg + ';font-size:14px;font-weight:800;margin-bottom:8px">' + esc(status_label) + '</div>'
+        '<div style="font-size:13px;color:#475569">' + esc(service_compact) + '</div></div>'
+        '<span style="font-size:18px;color:#64748b">+</span>'
+        '</summary>'
+        '<div style="padding:0 20px 20px">'
         '<div style="font-size:14px;color:#334155;margin-bottom:8px">' + esc(service_note) + '</div>'
         '<div style="font-size:12px;color:#64748b;margin-bottom:4px">' + ("מסלול חיוב" if lang == "he" else "Billing mode") + '</div>'
         '<div style="font-size:15px;font-weight:700;color:#0f172a">' + esc(billing_mode_label(user["billing_mode"], lang)) + '</div>'
-        '</div></div>'
+        '</div></details>'
         '<div class="card" style="margin:0"><div style="font-size:18px;font-weight:800;color:#0f172a;margin-bottom:14px">'
         + ("הכלים הזמינים לך" if lang == "he" else "Your available tools")
         + '</div><div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:1rem">'
