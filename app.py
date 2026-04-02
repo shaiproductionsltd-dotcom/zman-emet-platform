@@ -5798,16 +5798,16 @@ def support():
         meta = support_status_meta(entry["status"])
         request_type_label = "בקשה לכלי חדש" if entry["request_type"] == "new_tool" else "תמיכה בכלי קיים"
         request_rows += (
-            '<div style="border:1px solid #e2e8f0;border-radius:14px;padding:14px;background:#f8fafc;margin-bottom:10px">'
-            '<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:8px">'
+            '<details style="border:1px solid #e2e8f0;border-radius:14px;padding:14px;background:#f8fafc;margin-bottom:10px">'
+            '<summary style="list-style:none;cursor:pointer;display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap">'
             '<div>'
             '<div style="font-size:14px;font-weight:800;color:#0f172a">' + esc(request_type_label) + '</div>'
             '<div style="font-size:12px;color:#64748b">' + esc(format_ui_datetime(entry["created_at"])) + (' • ' + esc(entry["script_name"]) if entry["script_name"] else '') + '</div>'
             '</div>'
-            '<span style="display:inline-flex;align-items:center;padding:7px 12px;border-radius:999px;background:' + meta["bg"] + ';color:' + meta["fg"] + ';font-size:12px;font-weight:800">' + esc(meta["label"]) + '</span>'
-            '</div>'
-            '<div style="font-size:13px;color:#334155;line-height:1.8;white-space:pre-wrap">' + esc(entry["message"] or "") + '</div>'
-            '</div>'
+            '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap"><span style="display:inline-flex;align-items:center;padding:7px 12px;border-radius:999px;background:' + meta["bg"] + ';color:' + meta["fg"] + ';font-size:12px;font-weight:800">' + esc(meta["label"]) + '</span><span style="font-size:18px;color:#64748b">+</span></div>'
+            '</summary>'
+            '<div style="font-size:13px;color:#334155;line-height:1.8;white-space:pre-wrap;margin-top:12px">' + esc(entry["message"] or "") + '</div>'
+            '</details>'
         )
     requests_html = (
         '<div style="margin-top:1.25rem;padding-top:1.25rem;border-top:1px solid #e2e8f0">'
@@ -6664,7 +6664,7 @@ def admin():
             '<div class="admin-user-section"><div class="admin-user-section-title">פעולות ניהול</div><div class="admin-user-actions">'
             + '<button type="button" class="btn btn-gray" style="font-size:12px;padding:6px 14px" onclick="openPass(' + str(uid) + ',' + json.dumps(user["full_name"] or user["company_name"] or user["username"] or "") + ')">שינוי סיסמה</button>'
             + '<form method="POST" action="/admin/resetpass/' + str(uid) + '" style="display:inline"><button type="submit" class="btn btn-gray" style="font-size:12px;padding:6px 14px">סיסמה זמנית</button></form>'
-            + '<a href="/admin/delete/' + str(uid) + '" onclick="return confirm(\'Delete?\');" class="btn btn-red" style="text-decoration:none;font-size:12px;padding:6px 14px">מחיקה</a>'
+            + '<a href="/admin/delete/' + str(uid) + '" onclick="return confirm(\'האם למחוק את הלקוח הזה?\');" class="btn btn-red" style="text-decoration:none;font-size:12px;padding:6px 14px">מחיקה</a>'
             + '</div></div>'
             '</details>'
         )
@@ -6677,7 +6677,7 @@ def admin():
         '<div class="admin-user-summary-box"><div class="k">לא בשירות</div><div class="v">' + str(inactive_customers) + '</div></div>'
         '</div>'
     ) if users else ""
-    table = (users_overview + '<div class="admin-user-grid">' + user_cards + '</div>') if users else '<p style="color:#94a3b8;text-align:center;padding:2rem">No users yet</p>'
+    table = (users_overview + '<div class="admin-user-grid">' + user_cards + '</div>') if users else '<p style="color:#94a3b8;text-align:center;padding:2rem">עדיין אין לקוחות במערכת</p>'
 
     user_lookup = {str(user["id"]): user for user in users}
     customer_options = ""
@@ -6727,29 +6727,17 @@ def admin():
 
     displayed_activity_logs = filtered_activity_logs[:activity_limit]
 
-    def build_activity_link(event_type):
-        query = {
-            "activity_user_id": activity_user_id,
-            "activity_range": activity_range,
-            "activity_from": activity_from,
-            "activity_to": activity_to,
-            "activity_event": event_type,
-            "activity_limit": str(activity_limit),
-        }
-        filtered_query = {key: value for key, value in query.items() if value and not (key == "activity_event" and value == "all")}
-        return "/admin" + ("?" + urlencode(filtered_query) if filtered_query else "")
-
     def build_summary_card(label, value, event_type):
         return (
-            '<a href="' + esc(build_activity_link(event_type)) + '" style="background:#f8fafc;border:1px solid ' + ("#93c5fd" if activity_event == event_type or (event_type == "all" and activity_event == "all") else "#e2e8f0") + ';border-radius:12px;padding:12px;text-decoration:none;display:block">'
+            '<button type="button" data-activity-event="' + esc(event_type) + '" style="background:#f8fafc;border:1px solid ' + ("#93c5fd" if activity_event == event_type or (event_type == "all" and activity_event == "all") else "#e2e8f0") + ';border-radius:12px;padding:12px;text-decoration:none;display:block;width:100%;text-align:right;font-family:inherit;cursor:pointer">'
             + '<div style="font-size:12px;color:#64748b;margin-bottom:6px">' + label + '</div>'
             + '<div style="font-size:20px;font-weight:800;color:#0f172a">' + str(value) + '</div>'
-            + '</a>'
+            + '</button>'
         )
 
     activity_rows = ""
     for entry in displayed_activity_logs:
-        user_label = entry["full_name"] or entry["username"] or ("User #" + str(entry["user_id"]))
+        user_label = entry["full_name"] or entry["username"] or ("משתמש #" + str(entry["user_id"]))
         activity_rows += (
             "<tr>"
             '<td>' + esc(format_ui_datetime(entry["created_at"])) + "</td>"
@@ -6759,41 +6747,42 @@ def admin():
             '<td>' + esc(entry["details"] or "—") + "</td>"
             "</tr>"
         )
-    activity_table = (
-        "<table><thead><tr><th>When</th><th>User</th><th>Action</th><th>Tool</th><th>Details</th></tr></thead><tbody>"
+    activity_table_inner = (
+        "<table><thead><tr><th>מתי</th><th>משתמש</th><th>פעולה</th><th>כלי</th><th>פרטים</th></tr></thead><tbody>"
         + activity_rows
         + "</tbody></table>"
-    ) if displayed_activity_logs else '<p style="color:#94a3b8;text-align:center;padding:2rem">No activity matches the current filters</p>'
+    ) if displayed_activity_logs else '<p style="color:#94a3b8;text-align:center;padding:2rem">אין לוגים שתואמים את הסינון הנוכחי</p>'
+    activity_table = '<div id="activityTableWrap">' + activity_table_inner + '</div>'
     activity_summary = (
         '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;margin-bottom:1rem">'
-        + build_summary_card("Total events", total_activity, "all")
-        + build_summary_card("Tools opened", opened_tools, "open_script")
-        + build_summary_card("Reports generated", generated_reports, "generate_report")
-        + build_summary_card("Help opened", help_opens, "open_help_popup")
-        + build_summary_card("Terms opened", terms_opens, "open_service_terms")
+        + build_summary_card("סה\"כ אירועים", total_activity, "all")
+        + build_summary_card("כלים שנפתחו", opened_tools, "open_script")
+        + build_summary_card("דוחות שהופקו", generated_reports, "generate_report")
+        + build_summary_card("חלונות מידע שנפתחו", help_opens, "open_help_popup")
+        + build_summary_card("פירוט שירות ומחיר", terms_opens, "open_service_terms")
         + '</div>'
     )
     activity_filter_bar = (
-        '<form method="GET" action="/admin" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;margin-bottom:1rem">'
-        '<div><label class="field-label">Customer</label><select name="activity_user_id" style="padding:9px 12px;border:1.5px solid #e2e8f0;border-radius:8px;font-size:13px;font-family:inherit;outline:none;width:100%;margin-bottom:0;background:white"><option value="">All customers</option>' + customer_options + '</select></div>'
-        '<div><label class="field-label">Date range</label><select name="activity_range" style="padding:9px 12px;border:1.5px solid #e2e8f0;border-radius:8px;font-size:13px;font-family:inherit;outline:none;width:100%;margin-bottom:0;background:white">'
-        + '<option value="all"' + (' selected' if activity_range == "all" else '') + '>All activity</option>'
-        + '<option value="last_30"' + (' selected' if activity_range == "last_30" else '') + '>Last 30 days</option>'
-        + '<option value="custom"' + (' selected' if activity_range == "custom" else '') + '>From date to date</option>'
+        '<form method="GET" action="/admin" id="activityFilterForm" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;margin-bottom:1rem">'
+        '<div><label class="field-label">לקוח</label><select id="activityUserId" name="activity_user_id" style="padding:9px 12px;border:1.5px solid #e2e8f0;border-radius:8px;font-size:13px;font-family:inherit;outline:none;width:100%;margin-bottom:0;background:white"><option value="">כל הלקוחות</option>' + customer_options + '</select></div>'
+        '<div><label class="field-label">טווח תאריכים</label><select id="activityRange" name="activity_range" style="padding:9px 12px;border:1.5px solid #e2e8f0;border-radius:8px;font-size:13px;font-family:inherit;outline:none;width:100%;margin-bottom:0;background:white">'
+        + '<option value="all"' + (' selected' if activity_range == "all" else '') + '>כל התקופה</option>'
+        + '<option value="last_30"' + (' selected' if activity_range == "last_30" else '') + '>30 הימים האחרונים</option>'
+        + '<option value="custom"' + (' selected' if activity_range == "custom" else '') + '>מתאריך עד תאריך</option>'
         + '</select></div>'
-        '<div><label class="field-label">From date</label><input type="text" name="activity_from" value="' + esc(activity_from) + '" placeholder="YYYY-MM-DD" style="margin-bottom:0"></div>'
-        '<div><label class="field-label">To date</label><input type="text" name="activity_to" value="' + esc(activity_to) + '" placeholder="YYYY-MM-DD" style="margin-bottom:0"></div>'
-        '<div><label class="field-label">Show rows</label><select name="activity_limit" style="padding:9px 12px;border:1.5px solid #e2e8f0;border-radius:8px;font-size:13px;font-family:inherit;outline:none;width:100%;margin-bottom:0;background:white">'
+        '<div><label class="field-label">מתאריך</label><input type="text" id="activityFrom" name="activity_from" value="' + esc(activity_from) + '" placeholder="YYYY-MM-DD" style="margin-bottom:0"></div>'
+        '<div><label class="field-label">עד תאריך</label><input type="text" id="activityTo" name="activity_to" value="' + esc(activity_to) + '" placeholder="YYYY-MM-DD" style="margin-bottom:0"></div>'
+        '<div><label class="field-label">כמות שורות להצגה</label><select id="activityLimit" name="activity_limit" style="padding:9px 12px;border:1.5px solid #e2e8f0;border-radius:8px;font-size:13px;font-family:inherit;outline:none;width:100%;margin-bottom:0;background:white">'
         + '<option value="50"' + (' selected' if activity_limit == 50 else '') + '>50</option>'
         + '<option value="100"' + (' selected' if activity_limit == 100 else '') + '>100</option>'
         + '<option value="200"' + (' selected' if activity_limit == 200 else '') + '>200</option>'
         + '<option value="500"' + (' selected' if activity_limit == 500 else '') + '>500</option>'
         + '</select></div>'
-        '<input type="hidden" name="activity_event" value="' + esc(activity_event) + '">'
-        '<div style="display:flex;gap:8px;align-items:flex-end"><button type="submit" class="btn btn-blue" style="height:40px">Filter</button><a href="/admin" class="btn btn-gray" style="height:40px;display:inline-flex;align-items:center;text-decoration:none">Reset</a></div>'
+        '<input type="hidden" id="activityEvent" name="activity_event" value="' + esc(activity_event) + '">'
+        '<div style="display:flex;gap:8px;align-items:flex-end"><button type="submit" class="btn btn-blue" style="height:40px">סינון</button><button type="button" id="activityReset" class="btn btn-gray" style="height:40px">איפוס</button></div>'
         '</form>'
-        '<div style="font-size:12px;color:#64748b;margin-bottom:1rem">Activity is available from the moment logging was enabled. Older button clicks and opens cannot be reconstructed retroactively.</div>'
-        + ('<div style="font-size:12px;color:#1d4ed8;margin-bottom:1rem">Showing ' + str(len(displayed_activity_logs)) + ' of ' + str(total_activity) + ' matching log entries.</div>' if total_activity > activity_limit else "")
+        '<div style="font-size:12px;color:#64748b;margin-bottom:1rem">הלוגים זמינים מרגע שההקלטה הופעלה. פעולות ישנות יותר לא ניתנות לשחזור רטרואקטיבית.</div>'
+        + ('<div id="activityShowing" style="font-size:12px;color:#1d4ed8;margin-bottom:1rem">מוצגות ' + str(len(displayed_activity_logs)) + ' מתוך ' + str(total_activity) + ' רשומות תואמות.</div>' if total_activity > activity_limit else '<div id="activityShowing" style="font-size:12px;color:#1d4ed8;margin-bottom:1rem"></div>')
     )
 
     support_rows = ""
@@ -6801,7 +6790,7 @@ def admin():
     for entry in support_requests:
         meta = support_status_meta(entry["status"])
         request_type_label = "בקשה לכלי חדש" if entry["request_type"] == "new_tool" else "תמיכה בכלי קיים"
-        customer_label = entry["company_name"] or entry["full_name"] or entry["username"] or ("User #" + str(entry["user_id"]))
+        customer_label = entry["company_name"] or entry["full_name"] or entry["username"] or ("משתמש #" + str(entry["user_id"]))
         if str(entry["status"] or "pending").strip().lower() not in {"accepted", "resolved"}:
             pending_support += 1
         contact_bits = []
@@ -6832,7 +6821,25 @@ def admin():
             + '</div>'
             '</details>'
         )
-    support_table = ('<div class="support-request-list">' + support_rows + '</div>') if support_requests else '<p style="color:#94a3b8;text-align:center;padding:2rem">No customer support requests yet</p>'
+    support_table = ('<div class="support-request-list">' + support_rows + '</div>') if support_requests else '<p style="color:#94a3b8;text-align:center;padding:2rem">עדיין אין פניות שירות מצד לקוחות</p>'
+
+    activity_logs_payload = json.dumps(
+        [
+            {
+                "user_id": str(entry["user_id"] or ""),
+                "username": entry["username"] or "",
+                "full_name": entry["full_name"] or "",
+                "event_type": entry["event_type"] or "",
+                "action_label": entry["action_label"] or "",
+                "script_name": entry["script_name"] or "",
+                "details": entry["details"] or "",
+                "created_at": entry["created_at"] or "",
+                "display_when": format_ui_datetime(entry["created_at"]),
+            }
+            for entry in all_activity_logs
+        ],
+        ensure_ascii=False,
+    )
 
     admin_side_nav = (
         '<div class="admin-float-nav">'
@@ -6848,49 +6855,74 @@ def admin():
     body = (
         admin_side_nav
         +
-        '<div class="card" id="adminAddUser"><h2>&#10133; Add New User</h2><form method="POST" action="/admin/add_user"><div class="form-row">'
-        '<div class="form-group"><label class="field-label">Full Name</label><input type="text" name="full_name" placeholder="Customer name" required style="margin-bottom:0"></div>'
-        '<div class="form-group"><label class="field-label">Company Name</label><input type="text" name="company_name" placeholder="Company name" style="margin-bottom:0"></div>'
-        '<div class="form-group"><label class="field-label">Company ID / ח.פ</label><input type="text" name="company_id" placeholder="Company ID" style="margin-bottom:0"></div>'
-        '<div class="form-group"><label class="field-label">Username</label><input type="text" name="username" placeholder="Login username" required style="margin-bottom:0"></div>'
-        '<div class="form-group"><label class="field-label">Password</label><input type="password" name="password" placeholder="Initial password" required style="margin-bottom:0"></div>'
+        '<div class="card" id="adminAddUser"><h2>&#10133; הוספת לקוח חדש</h2><form method="POST" action="/admin/add_user"><div class="form-row">'
+        '<div class="form-group"><label class="field-label">שם מלא</label><input type="text" name="full_name" placeholder="שם הלקוח" required style="margin-bottom:0"></div>'
+        '<div class="form-group"><label class="field-label">שם חברה</label><input type="text" name="company_name" placeholder="שם החברה" style="margin-bottom:0"></div>'
+        '<div class="form-group"><label class="field-label">ח.פ / מזהה חברה</label><input type="text" name="company_id" placeholder="ח.פ / מזהה חברה" style="margin-bottom:0"></div>'
+        '<div class="form-group"><label class="field-label">שם משתמש</label><input type="text" name="username" placeholder="שם משתמש להתחברות" required style="margin-bottom:0"></div>'
+        '<div class="form-group"><label class="field-label">סיסמה</label><input type="password" name="password" placeholder="סיסמה ראשונית" required style="margin-bottom:0"></div>'
         '</div><div class="form-row">'
-        '<div class="form-group"><label class="field-label">Email</label><input type="text" name="email" placeholder="Email" style="margin-bottom:0"></div>'
-        '<div class="form-group"><label class="field-label">Phone</label><input type="text" name="phone" placeholder="Phone" style="margin-bottom:0"></div>'
-        '<div class="form-group"><label class="field-label">Billing Mode</label><select name="billing_mode" style="margin-bottom:0"><option value="monthly">Monthly</option><option value="yearly_prepaid">Yearly prepaid</option></select></div>'
-        '<div class="form-group"><label class="field-label">Account Type</label><select name="account_type" style="margin-bottom:0"><option value="trial">30-day trial</option><option value="active">Active service</option></select></div>'
-        '<div class="form-group"><label class="field-label">Valid Until</label><input type="text" name="service_valid_until" placeholder="YYYY-MM-DD" style="margin-bottom:0"></div>'
-        '<button type="submit" class="btn btn-blue" style="height:40px;align-self:flex-end">Add</button></div></form></div>'
-        '<details class="card" id="adminUsers" style="padding:0;overflow:hidden">'
+        '<div class="form-group"><label class="field-label">אימייל</label><input type="text" name="email" placeholder="אימייל" style="margin-bottom:0"></div>'
+        '<div class="form-group"><label class="field-label">טלפון</label><input type="text" name="phone" placeholder="טלפון" style="margin-bottom:0"></div>'
+        '<div class="form-group"><label class="field-label">מסלול חיוב</label><select name="billing_mode" style="margin-bottom:0"><option value="monthly">חודשי</option><option value="yearly_prepaid">שנתי מראש</option></select></div>'
+        '<div class="form-group"><label class="field-label">סוג חשבון</label><select name="account_type" style="margin-bottom:0"><option value="trial">תקופת ניסיון 30 יום</option><option value="active">שירות פעיל</option></select></div>'
+        '<div class="form-group"><label class="field-label">בתוקף עד</label><input type="text" name="service_valid_until" placeholder="YYYY-MM-DD" style="margin-bottom:0"></div>'
+        '<button type="submit" class="btn btn-blue" style="height:40px;align-self:flex-end">הוספה</button></div></form></div>'
+        '<details class="card" id="adminUsers" style="padding:0;overflow:hidden" dir="rtl">'
         '<summary class="admin-collapsible-summary">'
-        '<div><div style="font-size:22px;font-weight:800;color:#0f172a;margin-bottom:4px">&#128101; Users In System</div><div class="admin-collapsible-sub">רשימת הלקוחות מקופלת כברירת מחדל. פתיחה לפי צורך לעבודה נוחה יותר.</div></div>'
+        '<div><div style="font-size:22px;font-weight:800;color:#0f172a;margin-bottom:4px">&#128101; לקוחות במערכת</div><div class="admin-collapsible-sub">רשימת הלקוחות מקופלת כברירת מחדל. פתיחה לפי צורך לעבודה נוחה יותר.</div></div>'
         '<span style="font-size:18px;color:#64748b">+</span>'
         '</summary><div style="padding:0 20px 20px">'
         + table
-        + '</div></details><details class="card" id="adminSupport" style="padding:0;overflow:hidden">'
+        + '</div></details><details class="card" id="adminSupport" style="padding:0;overflow:hidden" dir="rtl">'
         '<summary class="admin-collapsible-summary">'
-        '<div><div style="font-size:22px;font-weight:800;color:#0f172a;margin-bottom:4px">&#128172; Customer Support Requests</div><div class="admin-collapsible-sub">'
+        '<div><div style="font-size:22px;font-weight:800;color:#0f172a;margin-bottom:4px">&#128172; פניות שירות לקוחות</div><div class="admin-collapsible-sub">'
         + ('יש ' + str(pending_support) + ' פניות שממתינות להתייחסות' if pending_support else 'אין כרגע פניות שממתינות להתייחסות')
         + '</div></div>'
         '<span style="font-size:18px;color:#64748b">+</span>'
         '</summary><div style="padding:0 20px 20px">'
         + support_table
-        + '</div></details><details class="card" id="adminLogs" style="padding:0;overflow:hidden">'
+        + '</div></details><details class="card" id="adminLogs" style="padding:0;overflow:hidden" dir="rtl">'
         '<summary class="admin-collapsible-summary">'
-        '<div><div style="font-size:22px;font-weight:800;color:#0f172a;margin-bottom:4px">&#128221; User Activity Log</div><div style="font-size:13px;color:#64748b">פתיחה לפי צורך בלבד לצפייה ועבודה על הלוגים</div></div>'
+        '<div><div style="font-size:22px;font-weight:800;color:#0f172a;margin-bottom:4px">&#128221; לוג פעילות משתמשים</div><div style="font-size:13px;color:#64748b">פתיחה לפי צורך בלבד לצפייה ועבודה על הלוגים</div></div>'
         '<span style="font-size:18px;color:#64748b">+</span>'
         '</summary><div style="padding:0 20px 20px">'
+        '<div id="activityPanel">'
         + activity_filter_bar
         + activity_summary
         + activity_table
-        + '</div></details>'
-        + '</div><div class="modal-bg" id="passModal"><div class="modal-box"><h3 style="font-size:15px;font-weight:700;margin-bottom:1rem;color:#1e3a8a">Change Password &#8212; <span id="pname"></span></h3>'
-        '<form method="POST" id="pform"><input type="password" name="new_password" placeholder="New password" required>'
-        '<div style="display:flex;gap:8px;margin-top:.5rem;justify-content:flex-end"><button type="button" class="btn btn-gray" onclick="closePass()">Cancel</button>'
-        '<button type="submit" class="btn btn-blue">Update</button></div></form></div></div>'
-        '<script>function openPass(id,name){document.getElementById("pname").textContent=name||"";document.getElementById("pform").action="/admin/setpass/"+id;document.getElementById("passModal").style.display="flex";}function closePass(){document.getElementById("passModal").style.display="none";}</script>'
+        + '</div></div></details>'
+        + '</div><div class="modal-bg" id="passModal"><div class="modal-box"><h3 style="font-size:15px;font-weight:700;margin-bottom:1rem;color:#1e3a8a">שינוי סיסמה &#8212; <span id="pname"></span></h3>'
+        '<form method="POST" id="pform"><input type="password" name="new_password" placeholder="סיסמה חדשה" required>'
+        '<div style="display:flex;gap:8px;margin-top:.5rem;justify-content:flex-end"><button type="button" class="btn btn-gray" onclick="closePass()">ביטול</button>'
+        '<button type="submit" class="btn btn-blue">עדכון</button></div></form></div></div>'
+        '<script>'
+        'function openPass(id,name){document.getElementById("pname").textContent=name||"";document.getElementById("pform").action="/admin/setpass/"+id;document.getElementById("passModal").style.display="flex";}'
+        'function closePass(){document.getElementById("passModal").style.display="none";}'
+        '(function(){'
+        'var allLogs=' + activity_logs_payload + ';'
+        'var userSelect=document.getElementById("activityUserId");'
+        'var rangeSelect=document.getElementById("activityRange");'
+        'var fromInput=document.getElementById("activityFrom");'
+        'var toInput=document.getElementById("activityTo");'
+        'var limitSelect=document.getElementById("activityLimit");'
+        'var eventInput=document.getElementById("activityEvent");'
+        'var form=document.getElementById("activityFilterForm");'
+        'var summaryButtons=document.querySelectorAll("[data-activity-event]");'
+        'var panel=document.getElementById("activityPanel");'
+        'function escHtml(value){return String(value||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");}'
+        'function parseDateOnly(text){if(!text){return null;}var m=String(text).match(/^(\\d{4})-(\\d{2})-(\\d{2})$/);if(!m){return null;}return new Date(Number(m[1]),Number(m[2])-1,Number(m[3]),0,0,0,0);}'
+        'function parseCreatedAt(text){if(!text){return null;}var m=String(text).match(/^(\\d{4})-(\\d{2})-(\\d{2}) (\\d{2}):(\\d{2}):(\\d{2})$/);if(!m){return null;}return new Date(Number(m[1]),Number(m[2])-1,Number(m[3]),Number(m[4]),Number(m[5]),Number(m[6]),0);}'
+        'function getFilteredLogs(){var userId=userSelect?userSelect.value:"";var range=rangeSelect?rangeSelect.value:"all";var fromDate=parseDateOnly(fromInput?fromInput.value:"");var toDate=parseDateOnly(toInput?toInput.value:"");var eventType=eventInput?eventInput.value:"all";var today=new Date();today.setHours(0,0,0,0);var last30Start=new Date(today.getTime());last30Start.setDate(today.getDate()-29);var last30End=new Date(today.getTime());last30End.setHours(23,59,59,999);return allLogs.filter(function(entry){if(userId&&entry.user_id!==userId){return false;}if(eventType&&eventType!=="all"&&entry.event_type!==eventType){return false;}var created=parseCreatedAt(entry.created_at);if(range==="last_30"){if(!created||created<last30Start||created>last30End){return false;}}else if(range==="custom"){if(fromDate&&(!created||created<fromDate)){return false;}if(toDate){var end=new Date(toDate.getTime());end.setHours(23,59,59,999);if(!created||created>end){return false;}}}return true;});}'
+        'function countBy(logs,eventType){if(eventType==="all"){return logs.length;}var total=0;logs.forEach(function(entry){if(entry.event_type===eventType){total+=1;}});return total;}'
+        'function renderActivity(){if(!panel){return;}var filtered=getFilteredLogs();var limit=Math.max(50,Math.min(500,parseInt(limitSelect&&limitSelect.value||"50",10)||50));var displayed=filtered.slice(0,limit);var currentEvent=eventInput?eventInput.value:"all";summaryButtons.forEach(function(btn){var active=(btn.getAttribute("data-activity-event")||"all")===currentEvent;btn.style.borderColor=active?"#93c5fd":"#e2e8f0";var valueNode=btn.querySelectorAll("div")[1];if(valueNode){var eventKey=btn.getAttribute("data-activity-event")||"all";valueNode.textContent=String(countBy(filtered,eventKey));}});var rowsHtml="";if(displayed.length){displayed.forEach(function(entry){var userLabel=entry.full_name||entry.username||("משתמש #"+entry.user_id);rowsHtml+="<tr><td>"+escHtml(entry.display_when)+"</td><td><div style=\\"font-weight:700;color:#0f172a\\">"+escHtml(userLabel)+"</div><div style=\\"font-size:12px;color:#64748b\\">@"+escHtml(entry.username||"")+"</div></td><td>"+escHtml(entry.action_label||"")+"</td><td>"+escHtml(entry.script_name||"ללא כלי")+"</td><td>"+escHtml(entry.details||"—")+"</td></tr>";});rowsHtml="<table><thead><tr><th>מתי</th><th>משתמש</th><th>פעולה</th><th>כלי</th><th>פרטים</th></tr></thead><tbody>"+rowsHtml+"</tbody></table>";}else{rowsHtml=\'<p style="color:#94a3b8;text-align:center;padding:2rem">אין לוגים שתואמים את הסינון הנוכחי</p>\';}var showingNode=document.getElementById("activityShowing");if(showingNode){showingNode.textContent=filtered.length>limit?("מוצגות "+displayed.length+" מתוך "+filtered.length+" רשומות תואמות."): ""; }var existingTable=document.getElementById("activityTableWrap");if(existingTable){existingTable.innerHTML=rowsHtml;}else{var wrap=document.createElement("div");wrap.id="activityTableWrap";wrap.innerHTML=rowsHtml;panel.appendChild(wrap);} }'
+        'if(form){form.addEventListener("submit",function(ev){ev.preventDefault();renderActivity();});}'
+        'summaryButtons.forEach(function(btn){btn.addEventListener("click",function(){if(eventInput){eventInput.value=this.getAttribute("data-activity-event")||"all";}renderActivity();});});'
+        'var resetBtn=document.getElementById("activityReset");if(resetBtn){resetBtn.addEventListener("click",function(){if(userSelect){userSelect.value="";}if(rangeSelect){rangeSelect.value="all";}if(fromInput){fromInput.value="";}if(toInput){toInput.value="";}if(limitSelect){limitSelect.value="50";}if(eventInput){eventInput.value="all";}renderActivity();});}'
+        '})();'
+        '</script>'
     )
-    return render("Admin", body)
+    return render("ניהול מערכת", body)
 
 
 @app.route("/admin/add_user", methods=["POST"])
@@ -6931,11 +6963,11 @@ def add_user():
                 ),
             )
             db.commit()
-        add_flash("User " + full_name + " was created successfully")
+        add_flash("הלקוח " + full_name + " נוצר בהצלחה")
     except Exception as exc:
         if not is_integrity_error(exc):
             raise
-        add_flash("Username already exists")
+        add_flash("שם המשתמש כבר קיים במערכת")
     return redirect("/admin")
 
 
@@ -6945,12 +6977,12 @@ def add_user():
 def update_support_request_status(request_id):
     new_status = request.form.get("status", "").strip().lower()
     if new_status not in {"accepted", "resolved"}:
-        add_flash("Invalid support request status")
+        add_flash("סטטוס הפנייה אינו תקין")
         return redirect("/admin#adminSupport")
     with get_db() as db:
         db.execute("UPDATE support_requests SET status=? WHERE id=?", (new_status, request_id))
         db.commit()
-    add_flash("Support request status updated")
+    add_flash("סטטוס הפנייה עודכן בהצלחה")
     return redirect("/admin#adminSupport")
 
 
@@ -6962,7 +6994,7 @@ def delete_user(uid):
         db.execute("DELETE FROM users WHERE id=?", (uid,))
         db.execute("DELETE FROM permissions WHERE user_id=?", (uid,))
         db.commit()
-    add_flash("User deleted")
+    add_flash("הלקוח נמחק")
     return redirect("/admin")
 
 
@@ -6976,7 +7008,7 @@ def set_password(uid):
             (generate_password_hash(request.form["new_password"]), uid),
         )
         db.commit()
-    add_flash("Password updated")
+    add_flash("הסיסמה עודכנה")
     return redirect("/admin")
 
 
@@ -6993,7 +7025,7 @@ def reset_password(uid):
         )
         db.commit()
     name = user["full_name"] if user else str(uid)
-    add_flash("Temporary password for " + name + ": " + temp_password)
+    add_flash("סיסמה זמנית עבור " + name + ": " + temp_password)
     return redirect("/admin")
 
 
@@ -7011,7 +7043,7 @@ def set_permissions(uid):
                     (uid, script_id),
                 )
         db.commit()
-    add_flash("Permissions updated")
+    add_flash("ההרשאות עודכנו")
     return redirect("/admin")
 
 
