@@ -2126,12 +2126,20 @@ def extract_rimon_mapping_value(sheet, workbook_kind, mapping_value, row_index=N
         return find_rimon_meta_value(sheet, workbook_kind, ["מחלקה"], [(5, 21), (5, 23)])
     if source == "meta:id_number":
         return find_rimon_meta_value(sheet, workbook_kind, ["תעודת זהות", "דרכון"], [(7, 5)])
+    if source.startswith("meta_cell:"):
+        try:
+            _, row_text, col_text = source.split(":", 2)
+            meta_row = int(row_text)
+            meta_col = int(col_text)
+        except ValueError:
+            return ""
+        return stringify_excel_value(get_excel_cell(sheet, workbook_kind, meta_row, meta_col, ""))
     if source.startswith("col:") and row_index is not None:
         try:
             col_index = int(source.split(":", 1)[1])
         except ValueError:
             return ""
-        return stringify_excel_value(get_excel_cell(sheet, workbook_kind, row_index, col_index, ""))
+        return get_excel_cell(sheet, workbook_kind, row_index, col_index, "")
     return ""
 
 
@@ -3225,6 +3233,22 @@ RIMON_SUGGESTION_KEYWORDS = {
     "id_number_source": ["תעודתזהות", "זהות", "דרכון", "id", "identity"],
 }
 
+RIMON_META_LABEL_TOKENS = {
+    normalize_token(label)
+    for label in [
+        "שם לתצוגה",
+        "שם עובד",
+        "מחלקה",
+        "תג עובד",
+        "מספר שכר",
+        "מספר עובד",
+        "מספר בשכר",
+        "תעודת זהות",
+        "דרכון",
+        "תחילת עבודה",
+    ]
+}
+
 
 def open_excel_workbook(input_path, extension):
     ext = str(extension or get_extension(input_path)).lower()
@@ -3277,6 +3301,24 @@ def parse_excel_date_generic(workbook_kind, workbook, value):
     return None
 
 
+def looks_like_excel_date_sample(sample_text):
+    text = str(sample_text or "").strip()
+    if not text:
+        return False
+    try:
+        number = float(text)
+        return 20000 <= number <= 60000
+    except ValueError:
+        pass
+    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d.%m.%Y"):
+        try:
+            datetime.strptime(text, fmt)
+            return True
+        except ValueError:
+            continue
+    return False
+
+
 def detect_rimon_header_row(sheet, workbook_kind):
     rows, cols = get_excel_dims(sheet, workbook_kind)
     best_row = 11 if rows > 11 else 0
@@ -3304,6 +3346,17 @@ def find_rimon_first_sample(sheet, workbook_kind, col_index, start_row):
     return ""
 
 
+def resolve_rimon_column_header(sheet, workbook_kind, header_row, col_index):
+    header_text = stringify_excel_value(get_excel_cell(sheet, workbook_kind, header_row, col_index, ""))
+    if header_text:
+        return header_text, False
+    for offset in (1, -1, 2, -2):
+        candidate = stringify_excel_value(get_excel_cell(sheet, workbook_kind, header_row, col_index + offset, ""))
+        if candidate:
+            return candidate, True
+    return "", False
+
+
 def find_rimon_meta_value(sheet, workbook_kind, labels, fallback_cells=()):
     rows, cols = get_excel_dims(sheet, workbook_kind)
     normalized_labels = {normalize_token(label) for label in labels}
@@ -3322,6 +3375,38 @@ def find_rimon_meta_value(sheet, workbook_kind, labels, fallback_cells=()):
     return ""
 
 
+def find_rimon_meta_candidates(sheet, workbook_kind, labels, fallback_cells=()):
+    rows, cols = get_excel_dims(sheet, workbook_kind)
+    normalized_labels = {normalize_token(label) for label in labels}
+    candidates = []
+    seen_sources = set()
+
+    for row_index in range(min(rows, 12)):
+        for col_index in range(cols):
+            raw_label = stringify_excel_value(get_excel_cell(sheet, workbook_kind, row_index, col_index, ""))
+            token = normalize_token(raw_label)
+            if token not in normalized_labels:
+                continue
+            for next_col in range(col_index + 1, min(cols, col_index + 8)):
+                candidate = stringify_excel_value(get_excel_cell(sheet, workbook_kind, row_index, next_col, ""))
+                candidate_token = normalize_token(candidate)
+                if candidate and candidate_token in RIMON_META_LABEL_TOKENS:
+                    break
+                if candidate:
+                    source = f"meta_cell:{row_index}:{next_col}"
+                    if source not in seen_sources:
+                        candidates.append(
+                            {
+                                "value": source,
+                                "label": f"שדה עליון: {raw_label} (לדוגמה: {candidate})",
+                            }
+                        )
+                        seen_sources.add(source)
+                    break
+
+    return candidates
+
+
 def build_rimon_mapping_options(input_path, extension):
     workbook_kind, workbook = open_excel_workbook(input_path, extension)
     sheets = iter_excel_sheets(workbook_kind, workbook)
@@ -3329,54 +3414,69 @@ def build_rimon_mapping_options(input_path, extension):
     header_row = detect_rimon_header_row(first_sheet, workbook_kind)
     _, cols = get_excel_dims(first_sheet, workbook_kind)
     table_options = []
+    seen_values = set()
     for col_index in range(cols):
-        header_text = stringify_excel_value(get_excel_cell(first_sheet, workbook_kind, header_row, col_index, ""))
-        if not header_text:
-            continue
+        exact_header = stringify_excel_value(get_excel_cell(first_sheet, workbook_kind, header_row, col_index, ""))
+        header_text, from_nearby = resolve_rimon_column_header(first_sheet, workbook_kind, header_row, col_index)
         sample = find_rimon_first_sample(first_sheet, workbook_kind, col_index, header_row)
+        if not header_text and not sample:
+            continue
         column_letter = get_column_letter(col_index + 1)
-        label = f"עמודה {column_letter} - {header_text}"
+        resolved_header = header_text or f"עמודה {column_letter}"
+        label = f"עמודה {column_letter} - {resolved_header}"
+        if from_nearby:
+            label += " (הכותרת זוהתה מעמודה סמוכה)"
         if sample:
             label += f" (לדוגמה: {sample})"
+        option_value = f"col:{col_index}"
+        if option_value in seen_values:
+            continue
+        seen_values.add(option_value)
         table_options.append(
             {
-                "value": f"col:{col_index}",
+                "value": option_value,
                 "label": label,
-                "header": header_text,
+                "header": resolved_header,
+                "exact_header": exact_header,
+                "from_nearby": from_nearby,
                 "sample": sample,
             }
         )
 
     meta_options = {
-        "employee_name_source": [
-            {
-                "value": "meta:employee_name",
-                "label": "שדה עליון: שם עובד"
-                + (f" (לדוגמה: {find_rimon_meta_value(first_sheet, workbook_kind, ['שם לתצוגה', 'שם עובד'], [(5, 5)])})" if find_rimon_meta_value(first_sheet, workbook_kind, ['שם לתצוגה', 'שם עובד'], [(5, 5)]) else ""),
-            }
-        ],
-        "payroll_number_source": [
-            {
-                "value": "meta:payroll_number",
-                "label": "שדה עליון: מספר עובד"
-                + (f" (לדוגמה: {find_rimon_meta_value(first_sheet, workbook_kind, ['מספר שכר', 'מספר עובד', 'שכר'], [(5, 48), (5, 50)])})" if find_rimon_meta_value(first_sheet, workbook_kind, ['מספר שכר', 'מספר עובד', 'שכר'], [(5, 48), (5, 50)]) else ""),
-            }
-        ],
-        "department_source": [
-            {
-                "value": "meta:department",
-                "label": "שדה עליון: מחלקה"
-                + (f" (לדוגמה: {find_rimon_meta_value(first_sheet, workbook_kind, ['מחלקה'], [(5, 21), (5, 23)])})" if find_rimon_meta_value(first_sheet, workbook_kind, ['מחלקה'], [(5, 21), (5, 23)]) else ""),
-            }
-        ],
-        "id_number_source": [
-            {
-                "value": "meta:id_number",
-                "label": "שדה עליון: תעודת זהות"
-                + (f" (לדוגמה: {find_rimon_meta_value(first_sheet, workbook_kind, ['תעודת זהות', 'דרכון'], [(7, 5)])})" if find_rimon_meta_value(first_sheet, workbook_kind, ['תעודת זהות', 'דרכון'], [(7, 5)]) else ""),
-            }
-        ],
+        "employee_name_source": [],
+        "payroll_number_source": [],
+        "department_source": [],
+        "id_number_source": [],
     }
+    alias_meta_values = {
+        "employee_name_source": find_rimon_meta_value(first_sheet, workbook_kind, ["שם לתצוגה", "שם עובד"], [(5, 5)]),
+        "payroll_number_source": find_rimon_meta_value(first_sheet, workbook_kind, ["מספר שכר", "מספר עובד", "מספר בשכר", "תג עובד"], [(5, 23), (5, 50)]),
+        "department_source": find_rimon_meta_value(first_sheet, workbook_kind, ["מחלקה"], [(5, 13), (5, 21), (5, 23)]),
+        "id_number_source": find_rimon_meta_value(first_sheet, workbook_kind, ["תעודת זהות", "דרכון"], [(7, 5)]),
+    }
+    alias_meta_labels = {
+        "employee_name_source": "שדה עליון: שם עובד",
+        "payroll_number_source": "שדה עליון: מספר עובד",
+        "department_source": "שדה עליון: מחלקה",
+        "id_number_source": "שדה עליון: תעודת זהות",
+    }
+    candidate_meta_labels = {
+        "employee_name_source": (["שם לתצוגה", "שם עובד"], [(5, 5)]),
+        "payroll_number_source": (["מספר שכר", "מספר עובד", "מספר בשכר", "תג עובד"], [(5, 23), (5, 50)]),
+        "department_source": (["מחלקה"], [(5, 13), (5, 21), (5, 23)]),
+        "id_number_source": (["תעודת זהות", "דרכון"], [(7, 5)]),
+    }
+    for field_name, field_value in alias_meta_values.items():
+        if field_value:
+            meta_options[field_name].append(
+                {
+                    "value": "meta:" + field_name.replace("_source", ""),
+                    "label": alias_meta_labels[field_name] + f" (לדוגמה: {field_value})",
+                }
+            )
+        labels, fallback_cells = candidate_meta_labels[field_name]
+        meta_options[field_name].extend(find_rimon_meta_candidates(first_sheet, workbook_kind, labels))
 
     options_by_field = {}
     suggestions = {}
@@ -3392,11 +3492,33 @@ def build_rimon_mapping_options(input_path, extension):
             suggested = meta_options[field_name][0]["value"]
         if not suggested:
             keywords = RIMON_SUGGESTION_KEYWORDS.get(field_name, [])
-            for option in table_options:
-                token = normalize_token(option["header"])
-                if any(keyword in token for keyword in keywords):
-                    suggested = option["value"]
-                    break
+            ranked_options = sorted(table_options, key=lambda option: (option.get("from_nearby", False), option["value"]))
+            if field_name == "date_source":
+                for option in ranked_options:
+                    header_token = normalize_token(option["header"])
+                    exact_token = normalize_token(option.get("exact_header", ""))
+                    if (
+                        (any(keyword in exact_token for keyword in keywords) or any(keyword in header_token for keyword in keywords))
+                        and looks_like_excel_date_sample(option.get("sample", ""))
+                    ):
+                        suggested = option["value"]
+                        break
+            if not suggested:
+                for option in ranked_options:
+                    header_token = normalize_token(option["header"])
+                    exact_token = normalize_token(option.get("exact_header", ""))
+                    if any(keyword in exact_token for keyword in keywords):
+                        suggested = option["value"]
+                        break
+                    if not option.get("from_nearby") and any(keyword in header_token for keyword in keywords):
+                        suggested = option["value"]
+                        break
+            if not suggested:
+                for option in ranked_options:
+                    token = normalize_token(option["header"])
+                    if any(keyword in token for keyword in keywords):
+                        suggested = option["value"]
+                        break
         suggestions[field_name] = suggested
 
     if workbook_kind == "xlsx":
@@ -3435,21 +3557,37 @@ def get_mapping_templates(user_id, script_id):
     return templates
 
 
-def save_mapping_template(user_id, script_id, template_name, mapping, template_id=""):
+def get_next_mapping_template_name(templates):
+    max_index = 0
+    for template in templates:
+        match = re.fullmatch(r"\s*תבנית:\s*(\d+)\s*", str(template.get("name", "")))
+        if match:
+            max_index = max(max_index, int(match.group(1)))
+    return f"תבנית: {max_index + 1}"
+
+
+def save_mapping_template(user_id, script_id, template_name, mapping):
     now_text = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     mapping_json = json.dumps(mapping, ensure_ascii=False)
     with get_db() as db:
-        if str(template_id or "").strip():
-            db.execute(
-                "UPDATE mapping_templates SET name=?, mapping_json=?, updated_at=? WHERE id=? AND user_id=? AND script_id=?",
-                (template_name, mapping_json, now_text, int(template_id), user_id, script_id),
-            )
-        else:
-            db.execute(
-                "INSERT INTO mapping_templates(user_id, script_id, name, mapping_json, created_at, updated_at) VALUES (?,?,?,?,?,?)",
-                (user_id, script_id, template_name, mapping_json, now_text, now_text),
-            )
+        db.execute(
+            "INSERT INTO mapping_templates(user_id, script_id, name, mapping_json, created_at, updated_at) VALUES (?,?,?,?,?,?)",
+            (user_id, script_id, template_name, mapping_json, now_text, now_text),
+        )
         db.commit()
+
+
+def delete_mapping_template(user_id, script_id, template_id):
+    selected_id = str(template_id or "").strip()
+    if not selected_id:
+        return False
+    with get_db() as db:
+        db.execute(
+            "DELETE FROM mapping_templates WHERE id=? AND user_id=? AND script_id=?",
+            (int(selected_id), user_id, script_id),
+        )
+        db.commit()
+    return True
 
 
 def apply_selected_template(default_mapping, templates, template_id):
@@ -3462,6 +3600,83 @@ def apply_selected_template(default_mapping, templates, template_id):
             merged.update(template["mapping"])
             return merged, template
     return dict(default_mapping), None
+
+
+def build_rimon_mapping_form(script_id, temp_upload_path, temp_upload_ext, inspection, current_mapping, templates, template_name_value):
+    template_options = '<option value="">ללא תבנית שמורה</option>'
+    for template in templates:
+        template_options += '<option value="' + str(template["id"]) + '">' + esc(template["name"]) + '</option>'
+
+    mapping_labels = {field["name"]: field["label"] for field in RIMON_MAPPING_FIELDS}
+    template_payload = {
+        str(template["id"]): {key: str(value or "") for key, value in template["mapping"].items()}
+        for template in templates
+    }
+
+    mapping_fields_html = ""
+    for field in RIMON_MAPPING_FIELDS:
+        field_name = field["name"]
+        select_options = ""
+        current_value = str(current_mapping.get(field_name, "") or "")
+        for option in inspection["options_by_field"].get(field_name, []):
+            selected = ' selected' if option["value"] == current_value else ""
+            select_options += (
+                '<option value="' + esc(option["value"]) + '" data-base-label="' + esc(option["label"]) + '"' + selected + ">"
+                + esc(option["label"])
+                + "</option>"
+            )
+        required_badge = ' <span style="color:#dc2626">*</span>' if field["required"] else ' <span style="color:#94a3b8">(אופציונלי)</span>'
+        mapping_fields_html += (
+            '<div><label class="field-label">' + field["label"] + required_badge + '</label>'
+            + '<select name="' + field_name + '" data-mapping-field="1" data-field-label="' + esc(field["label"]) + '" style="padding:9px 12px;border:1.5px solid #e2e8f0;border-radius:8px;font-size:13px;font-family:inherit;outline:none;width:100%;margin-bottom:0;background:white">'
+            + select_options
+            + '</select></div>'
+        )
+
+    return (
+        '<form method="POST" id="mappingConfirmForm">'
+        + '<input type="hidden" name="flow_mode" value="confirm_mapping">'
+        + '<input type="hidden" name="temp_upload_path" value="' + esc(temp_upload_path) + '">'
+        + '<input type="hidden" name="temp_upload_ext" value="' + esc(temp_upload_ext) + '">'
+        + '<div style="background:#fafcff;border:1px solid #dbeafe;border-radius:14px;padding:1rem;margin-bottom:1rem">'
+        + '<div style="font-size:15px;font-weight:700;color:#1e3a8a;margin-bottom:10px">אישור שדות לפני עיבוד</div>'
+        + '<div style="display:grid;grid-template-columns:260px minmax(0,1fr);gap:14px;align-items:start">'
+        + '<div style="background:#ffffff;border:1px solid #e2e8f0;border-radius:12px;padding:12px">'
+        + '<div style="font-size:14px;font-weight:700;color:#0f172a;margin-bottom:10px">תבניות שמורות</div>'
+        + '<label class="field-label">בחירת תבנית</label>'
+        + '<select id="selectedTemplateId" name="selected_template_id" style="padding:9px 12px;border:1.5px solid #e2e8f0;border-radius:8px;font-size:13px;font-family:inherit;outline:none;width:100%;margin-bottom:10px;background:white">' + template_options + '</select>'
+        + '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px"><button type="submit" name="mapping_action" value="delete_template" class="btn btn-gray" style="flex:1;min-width:110px">מחיקת תבנית</button></div>'
+        + '<label style="display:flex;align-items:center;gap:6px;font-size:13px;color:#334155;margin-bottom:10px"><input type="checkbox" name="save_template" value="1"> שמור כתבנית חדשה</label>'
+        + '<label class="field-label">שם תבנית חדשה</label>'
+        + '<input type="text" name="template_name" value="' + esc(template_name_value) + '" placeholder="שם תבנית" style="margin-bottom:0">'
+        + '<div style="font-size:12px;color:#64748b;line-height:1.7;margin-top:10px">בחירת תבנית תעדכן את כל השדות בהתאם. שמירה תיצור תבנית חדשה בלבד ולא תדרוס תבנית קיימת.</div>'
+        + '</div>'
+        + '<div>'
+        + '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-bottom:12px">' + mapping_fields_html + '</div>'
+        + '<div style="font-size:12px;color:#64748b;line-height:1.7;margin-bottom:12px">שדות חובה: שם עובד, מספר עובד, תאריך ואירוע. אם אותו שדה נבחר בקטגוריה אחרת, הבחירה הקודמת תנוקה אוטומטית.</div>'
+        + '<div style="display:flex;gap:10px;flex-wrap:wrap;justify-content:center"><button type="submit" name="mapping_action" value="confirm" class="btn btn-blue" style="min-width:220px">אשר הכל והפעל עיבוד</button><a href="/run/' + script_id + '" class="btn btn-gray" style="text-decoration:none;display:inline-flex;align-items:center;justify-content:center;min-width:150px">העלאת קובץ חדש</a></div>'
+        + '</div></div>'
+        + '</div>'
+        + '<script>'
+        + '(function(){'
+        + 'var templateSelect=document.getElementById("selectedTemplateId");'
+        + 'var fieldSelects=Array.prototype.slice.call(document.querySelectorAll(\'select[data-mapping-field="1"]\'));'
+        + 'var templateMappings=' + json.dumps(template_payload, ensure_ascii=False) + ';'
+        + 'var fieldLabels=' + json.dumps(mapping_labels, ensure_ascii=False) + ';'
+        + 'function refreshOptionLabels(){'
+        + 'var assignments={};'
+        + 'fieldSelects.forEach(function(sel){if(sel.value){assignments[sel.value]=sel.name;}});'
+        + 'fieldSelects.forEach(function(sel){Array.prototype.forEach.call(sel.options,function(opt){var base=opt.getAttribute("data-base-label")||opt.text;var assigned=assignments[opt.value];var suffix="";if(opt.value && assigned && assigned!==sel.name){suffix=" [נבחר עבור "+(fieldLabels[assigned]||assigned)+"]";}opt.text=base+suffix;});});'
+        + '}'
+        + 'function clearDuplicateSelections(changedSelect){if(!changedSelect.value){refreshOptionLabels();return;}fieldSelects.forEach(function(sel){if(sel!==changedSelect && sel.value===changedSelect.value){sel.value="";}});refreshOptionLabels();}'
+        + 'function applyTemplate(templateId){var mapping=templateMappings[templateId]||{};if(!templateId){refreshOptionLabels();return;}fieldSelects.forEach(function(sel){sel.value=mapping[sel.name]||"";});var seen={};fieldSelects.forEach(function(sel){if(sel.value && seen[sel.value]){sel.value="";}else if(sel.value){seen[sel.value]=true;}});refreshOptionLabels();}'
+        + 'fieldSelects.forEach(function(sel){sel.addEventListener("change",function(){clearDuplicateSelections(sel);});});'
+        + 'if(templateSelect){templateSelect.addEventListener("change",function(){applyTemplate(this.value);});}'
+        + 'refreshOptionLabels();'
+        + '})();'
+        + '</script>'
+        + '</form>'
+    )
 
 
 def get_account_status(user_row):
@@ -3527,7 +3742,22 @@ def render(title, body, nav=True, lang="en", topbar_greeting="Hello, ", logout_l
         '<meta name="viewport" content="width=device-width,initial-scale=1">'
         "<title>" + title + " | Scriptly</title>"
         "<style>" + CSS + "</style></head>"
-        "<body>" + topbar + '<div class="' + wrap_cls + '">' + pop_flashes() + body + "</div></body></html>"
+        + "<body>"
+        + topbar
+        + '<div class="' + wrap_cls + '">'
+        + pop_flashes()
+        + body
+        + "</div>"
+        + '<script>'
+        + '(function(){'
+        + 'function resetTransientUi(){'
+        + 'document.querySelectorAll(".modal-bg").forEach(function(el){el.style.display="none";});'
+        + 'document.body.style.removeProperty("overflow");'
+        + '}'
+        + 'if(document.readyState==="loading"){document.addEventListener("DOMContentLoaded",resetTransientUi);}else{resetTransientUi();}'
+        + 'window.addEventListener("pageshow",resetTransientUi);'
+        + '})();'
+        + "</script></body></html>"
     )
 
 
@@ -3785,48 +4015,16 @@ def run_script(script_id):
                 file_obj.save(inp)
                 inspection = build_rimon_mapping_options(inp, ext)
                 mapping_templates = get_mapping_templates(session["user_id"], script_id)
-                selected_template_id = request.form.get("selected_template_id", "").strip()
-                base_mapping = dict(inspection["suggestions"])
-                if mapping_templates and not selected_template_id:
-                    selected_template_id = str(mapping_templates[0]["id"])
-                selected_mapping, selected_template = apply_selected_template(base_mapping, mapping_templates, selected_template_id)
+                selected_mapping = dict(inspection["suggestions"])
                 info_message = '<div class="flash" style="background:#eff6ff;border-color:#bfdbfe;color:#1d4ed8">המערכת זיהתה שדות אפשריים. נא לאשר או לתקן לפני הרצת הדוח.</div>'
-                mapping_fields_html = ""
-                for field in RIMON_MAPPING_FIELDS:
-                    field_name = field["name"]
-                    select_options = ""
-                    current_value = selected_mapping.get(field_name, "")
-                    for option in inspection["options_by_field"].get(field_name, []):
-                        selected = ' selected' if option["value"] == current_value else ""
-                        select_options += '<option value="' + esc(option["value"]) + '"' + selected + '>' + esc(option["label"]) + '</option>'
-                    required_badge = ' <span style="color:#dc2626">*</span>' if field["required"] else ' <span style="color:#94a3b8">(אופציונלי)</span>'
-                    mapping_fields_html += (
-                        '<div><label class="field-label">' + field["label"] + required_badge + '</label>'
-                        + '<select name="' + field_name + '" style="padding:9px 12px;border:1.5px solid #e2e8f0;border-radius:8px;font-size:13px;font-family:inherit;outline:none;width:100%;margin-bottom:0;background:white">'
-                        + select_options
-                        + '</select></div>'
-                    )
-                template_options = '<option value="">ללא תבנית שמורה</option>'
-                for template in mapping_templates:
-                    selected = ' selected' if selected_template and str(template["id"]) == str(selected_template["id"]) else ""
-                    template_options += '<option value="' + str(template["id"]) + '"' + selected + '>' + esc(template["name"]) + '</option>'
-                template_name_value = selected_template["name"] if selected_template else inspection["suggested_template_name"]
-                mapping_confirmation_html = (
-                    '<form method="POST" id="mappingConfirmForm">'
-                    + '<input type="hidden" name="flow_mode" value="confirm_mapping">'
-                    + '<input type="hidden" name="temp_upload_path" value="' + esc(inp) + '">'
-                    + '<input type="hidden" name="temp_upload_ext" value="' + esc(ext) + '">'
-                    + '<div style="background:#fafcff;border:1px solid #dbeafe;border-radius:14px;padding:1rem;margin-bottom:1rem">'
-                    + '<div style="font-size:15px;font-weight:700;color:#1e3a8a;margin-bottom:10px">אישור שדות לפני עיבוד</div>'
-                    + '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;margin-bottom:10px">'
-                    + '<div><label class="field-label">תבנית שמורה</label><select name="selected_template_id" style="padding:9px 12px;border:1.5px solid #e2e8f0;border-radius:8px;font-size:13px;font-family:inherit;outline:none;width:100%;margin-bottom:0;background:white">' + template_options + '</select></div>'
-                    + '<div><label class="field-label">שם תבנית</label><input type="text" name="template_name" value="' + esc(template_name_value) + '" placeholder="שם תבנית" style="margin-bottom:0"></div>'
-                    + '<div style="display:flex;align-items:flex-end;gap:8px"><label style="display:flex;align-items:center;gap:6px;font-size:13px;color:#334155"><input type="checkbox" name="save_template" value="1" checked> שמור / עדכן תבנית</label><button type="submit" name="mapping_action" value="apply_template" class="btn btn-gray">טען תבנית</button></div>'
-                    + '</div>'
-                    + '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-bottom:12px">' + mapping_fields_html + '</div>'
-                    + '<div style="font-size:12px;color:#64748b;line-height:1.7;margin-bottom:12px">שדות חובה: שם עובד, מספר עובד, תאריך ואירוע. גם אם חסר שדה חובה ניתן להמשיך, אבל המערכת תציג אזהרה בהתאם.</div>'
-                    + '<div style="display:flex;gap:10px;flex-wrap:wrap;justify-content:center"><button type="submit" name="mapping_action" value="confirm" class="btn btn-blue" style="min-width:220px">אשר הכל והפעל עיבוד</button><a href="/run/' + script_id + '" class="btn btn-gray" style="text-decoration:none;display:inline-flex;align-items:center;justify-content:center;min-width:150px">העלאת קובץ חדש</a></div>'
-                    + '</div></form>'
+                mapping_confirmation_html = build_rimon_mapping_form(
+                    script_id,
+                    inp,
+                    ext,
+                    inspection,
+                    selected_mapping,
+                    mapping_templates,
+                    get_next_mapping_template_name(mapping_templates),
                 )
         elif scr.get("requires_mapping_confirmation") and flow_mode == "confirm_mapping":
             inp = request.form.get("temp_upload_path", "").strip()
@@ -3837,47 +4035,39 @@ def run_script(script_id):
             mapping_templates = get_mapping_templates(session["user_id"], script_id)
             mapping_action = request.form.get("mapping_action", "confirm").strip() or "confirm"
             selected_template_id = request.form.get("selected_template_id", "").strip()
-            if mapping_action == "apply_template":
+            if mapping_action == "delete_template":
+                if not inp or not os.path.exists(inp):
+                    error = '<div class="flash-err">הקובץ הזמני לא נמצא. יש להעלות את הדוח מחדש.</div>'
+                else:
+                    if selected_template_id:
+                        delete_mapping_template(session["user_id"], script_id, selected_template_id)
+                        info_message = '<div class="flash" style="background:#eff6ff;border-color:#bfdbfe;color:#1d4ed8">התבנית נמחקה.</div>'
+                    else:
+                        info_message = '<div class="flash-err">לא נבחרה תבנית למחיקה.</div>'
+                    inspection = build_rimon_mapping_options(inp, ext)
+                    mapping_templates = get_mapping_templates(session["user_id"], script_id)
+                    mapping_confirmation_html = build_rimon_mapping_form(
+                        script_id,
+                        inp,
+                        ext,
+                        inspection,
+                        mapping,
+                        mapping_templates,
+                        get_next_mapping_template_name(mapping_templates),
+                    )
+            elif mapping_action == "apply_template":
                 inspection = build_rimon_mapping_options(inp, ext)
                 selected_mapping, selected_template = apply_selected_template(dict(inspection["suggestions"]), mapping_templates, selected_template_id)
                 selected_mapping.update({key: value for key, value in mapping.items() if value})
                 info_message = '<div class="flash" style="background:#eff6ff;border-color:#bfdbfe;color:#1d4ed8">התבנית נטענה. אפשר לבדוק את השדות ואז להריץ.</div>'
-                mapping_fields_html = ""
-                for field in RIMON_MAPPING_FIELDS:
-                    field_name = field["name"]
-                    select_options = ""
-                    current_value = selected_mapping.get(field_name, "")
-                    for option in inspection["options_by_field"].get(field_name, []):
-                        selected = ' selected' if option["value"] == current_value else ""
-                        select_options += '<option value="' + esc(option["value"]) + '"' + selected + '>' + esc(option["label"]) + '</option>'
-                    required_badge = ' <span style="color:#dc2626">*</span>' if field["required"] else ' <span style="color:#94a3b8">(אופציונלי)</span>'
-                    mapping_fields_html += (
-                        '<div><label class="field-label">' + field["label"] + required_badge + '</label>'
-                        + '<select name="' + field_name + '" style="padding:9px 12px;border:1.5px solid #e2e8f0;border-radius:8px;font-size:13px;font-family:inherit;outline:none;width:100%;margin-bottom:0;background:white">'
-                        + select_options
-                        + '</select></div>'
-                    )
-                template_options = '<option value="">ללא תבנית שמורה</option>'
-                for template in mapping_templates:
-                    selected = ' selected' if selected_template and str(template["id"]) == str(selected_template["id"]) else ""
-                    template_options += '<option value="' + str(template["id"]) + '"' + selected + '>' + esc(template["name"]) + '</option>'
-                template_name_value = request.form.get("template_name", "").strip() or (selected_template["name"] if selected_template else inspection["suggested_template_name"])
-                mapping_confirmation_html = (
-                    '<form method="POST" id="mappingConfirmForm">'
-                    + '<input type="hidden" name="flow_mode" value="confirm_mapping">'
-                    + '<input type="hidden" name="temp_upload_path" value="' + esc(inp) + '">'
-                    + '<input type="hidden" name="temp_upload_ext" value="' + esc(ext) + '">'
-                    + '<div style="background:#fafcff;border:1px solid #dbeafe;border-radius:14px;padding:1rem;margin-bottom:1rem">'
-                    + '<div style="font-size:15px;font-weight:700;color:#1e3a8a;margin-bottom:10px">אישור שדות לפני עיבוד</div>'
-                    + '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;margin-bottom:10px">'
-                    + '<div><label class="field-label">תבנית שמורה</label><select name="selected_template_id" style="padding:9px 12px;border:1.5px solid #e2e8f0;border-radius:8px;font-size:13px;font-family:inherit;outline:none;width:100%;margin-bottom:0;background:white">' + template_options + '</select></div>'
-                    + '<div><label class="field-label">שם תבנית</label><input type="text" name="template_name" value="' + esc(template_name_value) + '" placeholder="שם תבנית" style="margin-bottom:0"></div>'
-                    + '<div style="display:flex;align-items:flex-end;gap:8px"><label style="display:flex;align-items:center;gap:6px;font-size:13px;color:#334155"><input type="checkbox" name="save_template" value="1" checked> שמור / עדכן תבנית</label><button type="submit" name="mapping_action" value="apply_template" class="btn btn-gray">טען תבנית</button></div>'
-                    + '</div>'
-                    + '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-bottom:12px">' + mapping_fields_html + '</div>'
-                    + '<div style="font-size:12px;color:#64748b;line-height:1.7;margin-bottom:12px">שדות חובה: שם עובד, מספר עובד, תאריך ואירוע. גם אם חסר שדה חובה ניתן להמשיך, אבל המערכת תציג אזהרה בהתאם.</div>'
-                    + '<div style="display:flex;gap:10px;flex-wrap:wrap;justify-content:center"><button type="submit" name="mapping_action" value="confirm" class="btn btn-blue" style="min-width:220px">אשר הכל והפעל עיבוד</button><a href="/run/' + script_id + '" class="btn btn-gray" style="text-decoration:none;display:inline-flex;align-items:center;justify-content:center;min-width:150px">העלאת קובץ חדש</a></div>'
-                    + '</div></form>'
+                mapping_confirmation_html = build_rimon_mapping_form(
+                    script_id,
+                    inp,
+                    ext,
+                    inspection,
+                    selected_mapping,
+                    mapping_templates,
+                    request.form.get("template_name", "").strip() or get_next_mapping_template_name(mapping_templates),
                 )
             elif not inp or not os.path.exists(inp):
                 error = '<div class="flash-err">הקובץ הזמני לא נמצא. יש להעלות את הדוח מחדש.</div>'
@@ -3892,8 +4082,8 @@ def run_script(script_id):
                     processing_warnings = execution_result.get("warnings", [])
                     log_user_activity("generate_report", "הפיק דוח", script_id, scr["name"], result_name)
                     if request.form.get("save_template") == "1":
-                        template_name = request.form.get("template_name", "").strip() or "תבנית רימון"
-                        save_mapping_template(session["user_id"], script_id, template_name, mapping, selected_template_id)
+                        template_name = request.form.get("template_name", "").strip() or get_next_mapping_template_name(mapping_templates)
+                        save_mapping_template(session["user_id"], script_id, template_name, mapping)
                 except (xlrd.biffh.XLRDError, BadZipFile, OSError, ValueError):
                     error = '<div class="flash-err">' + scr["processing_error"] + '</div>'
                 except Exception as e:
