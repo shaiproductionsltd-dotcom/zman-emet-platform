@@ -5,6 +5,7 @@ import calendar
 import csv
 from datetime import date, datetime
 import html
+import json
 import os
 import secrets
 import sqlite3
@@ -3000,6 +3001,20 @@ def init_db():
             user_id INTEGER, script_id TEXT,
             PRIMARY KEY (user_id, script_id))"""
         )
+        db.execute(
+            """CREATE TABLE IF NOT EXISTS activity_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            username TEXT,
+            full_name TEXT,
+            event_type TEXT NOT NULL,
+            action_label TEXT NOT NULL,
+            script_id TEXT,
+            script_name TEXT,
+            details TEXT,
+            created_at TEXT NOT NULL)"""
+        )
+        db.execute("CREATE INDEX IF NOT EXISTS idx_activity_logs_created_at ON activity_logs(created_at)")
         existing_columns = get_table_columns(db, "users")
         desired_columns = {
             "company_name": "TEXT",
@@ -3043,6 +3058,18 @@ def esc(value):
     return html.escape(str(value or ""))
 
 
+def format_ui_datetime(value):
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
+        try:
+            return datetime.strptime(text, fmt).strftime("%d/%m/%Y %H:%M")
+        except ValueError:
+            continue
+    return text
+
+
 def parse_iso_date(value):
     text = str(value or "").strip()
     if not text:
@@ -3069,6 +3096,42 @@ def billing_mode_label(value, lang="he"):
         "yearly_prepaid": "שנתי מראש" if lang == "he" else "Yearly prepaid",
     }
     return labels.get(normalized, normalized or ("לא הוגדר" if lang == "he" else "Not set"))
+
+
+def log_user_activity(event_type, action_label, script_id="", script_name="", details=""):
+    user_id = session.get("user_id")
+    if not user_id or session.get("is_admin"):
+        return
+    try:
+        with get_db() as db:
+            db.execute(
+                """INSERT INTO activity_logs(
+                user_id, username, full_name, event_type, action_label, script_id, script_name, details, created_at
+                ) VALUES (?,?,?,?,?,?,?,?,?)""",
+                (
+                    user_id,
+                    session.get("username", ""),
+                    session.get("name", ""),
+                    str(event_type or "")[:80],
+                    str(action_label or "")[:120],
+                    str(script_id or "")[:80],
+                    str(script_name or "")[:120],
+                    str(details or "")[:240],
+                    datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                ),
+            )
+            db.commit()
+    except Exception:
+        pass
+
+
+def resolve_script_from_output_name(filename):
+    logical_name = filename.split("_", 1)[-1] if "_" in filename else filename
+    for script in SCRIPT_REGISTRY.values():
+        suffix = script.get("output_suffix", "")
+        if suffix and logical_name.startswith(suffix + "."):
+            return script
+    return None
 
 
 def get_account_status(user_row):
@@ -3315,7 +3378,7 @@ def dashboard():
             else "Uploaded reports are used only for processing and are not kept as part of a permanent data store. Working files and generated outputs are kept temporarily for processing and download, and are cleaned up automatically afterward."
         )
         + '</div></div>'
-        '<details style="margin-top:1rem;background:#ffffff;border:1px solid #e2e8f0;border-radius:16px;box-shadow:0 2px 16px rgba(0,0,0,.04);overflow:hidden">'
+        '<details id="serviceTerms" style="margin-top:1rem;background:#ffffff;border:1px solid #e2e8f0;border-radius:16px;box-shadow:0 2px 16px rgba(0,0,0,.04);overflow:hidden">'
         '<summary style="list-style:none;cursor:pointer;padding:16px 18px;font-size:15px;font-weight:800;color:#0f172a;display:flex;align-items:center;justify-content:space-between;background:linear-gradient(180deg,#ffffff 0%,#f8fafc 100%);direction:rtl;text-align:right">'
         '<span>פירוט השירות והמנוי</span><span style="font-size:18px;color:#64748b">+</span></summary>'
         '<div style="padding:0 18px 18px;font-size:14px;line-height:1.9;color:#334155;direction:rtl;text-align:right">'
@@ -3326,6 +3389,10 @@ def dashboard():
         'עלות השירות: 250 ש&quot;ח לחודש, בחיוב שנתי מראש, בתוספת מע&quot;מ.'
         '<br>ליצירת קשר ומענה: בוואטסאפ 0525776994 או במייל shaiproductionsltd@gmail.com'
         '</div></details>'
+        '<script>'
+        'function trackUserActivity(eventType, actionLabel, scriptId, scriptName, details){try{var data=new FormData();data.append("event_type",eventType||"");data.append("action_label",actionLabel||"");data.append("script_id",scriptId||"");data.append("script_name",scriptName||"");data.append("details",details||"");if(navigator.sendBeacon){navigator.sendBeacon("/activity",data);}else{fetch("/activity",{method:"POST",body:data,credentials:"same-origin",keepalive:true});}}catch(e){}}'
+        'var serviceTerms=document.getElementById("serviceTerms");if(serviceTerms){serviceTerms.addEventListener("toggle",function(){if(this.open){trackUserActivity("open_service_terms","פתח פירוט שירות ומחיר","","","פירוט השירות והמנוי");}});}'
+        '</script>'
     )
     return render(
         text["dashboard_page_title"],
@@ -3357,6 +3424,8 @@ def run_script(script_id):
     if not perm or scr is None:
         add_flash(text["run_access_denied"])
         return redirect("/dashboard")
+    if request.method == "GET":
+        log_user_activity("open_script", "פתח כלי", script_id, scr["name"], "")
     result = None
     error = ""
 
@@ -3408,6 +3477,7 @@ def run_script(script_id):
                 try:
                     execute_script(scr, inp, out, ext, options)
                     result = result_name
+                    log_user_activity("generate_report", "הפיק דוח", script_id, scr["name"], result_name)
                 except (xlrd.biffh.XLRDError, BadZipFile, OSError, ValueError):
                     error = '<div class="flash-err">' + scr["processing_error"] + '</div>'
                 except Exception as e:
@@ -3486,6 +3556,8 @@ def run_script(script_id):
 
     help_trigger_html = ""
     help_modal_html = ""
+    activity_script_id = json.dumps(script_id)
+    activity_script_name = json.dumps(scr["name"])
     if lang == "he" and scr.get("help_title"):
         help_items_html = "".join(
             '<li style="margin-bottom:6px">' + esc(item) + '</li>'
@@ -3529,7 +3601,10 @@ def run_script(script_id):
         + 'var label=document.getElementById("lbl");'
         + 'var button=document.getElementById("gb");'
         + 'var form=document.getElementById("uploadForm");'
-        + 'function openHelpModal(){var modal=document.getElementById("helpModal");if(modal){modal.style.display="flex";}}'
+        + 'function trackUserActivity(eventType, actionLabel, scriptId, scriptName, details){try{var data=new FormData();data.append("event_type",eventType||"");data.append("action_label",actionLabel||"");data.append("script_id",scriptId||"");data.append("script_name",scriptName||"");data.append("details",details||"");if(navigator.sendBeacon){navigator.sendBeacon("/activity",data);}else{fetch("/activity",{method:"POST",body:data,credentials:"same-origin",keepalive:true});}}catch(e){}}'
+        + 'var activityScriptId=' + activity_script_id + ';'
+        + 'var activityScriptName=' + activity_script_name + ';'
+        + 'function openHelpModal(){var modal=document.getElementById("helpModal");if(modal){modal.style.display="flex";trackUserActivity("open_help_popup","פתח מידע והנחיות נוספות",activityScriptId,activityScriptName,"");}}'
         + 'function closeHelpModal(event){if(event && event.target && event.target.id!=="helpModal"){return;}var modal=document.getElementById("helpModal");if(modal){modal.style.display="none";}}'
         + 'if(fileInput && label){fileInput.addEventListener("change", function(){if(this.files && this.files.length){label.textContent=this.files[0].name;}});}'
         + 'if(form){form.addEventListener("submit", function(event){if(!fileInput || !fileInput.files || !fileInput.files.length){event.preventDefault();return false;}button.disabled=true;button.textContent="' + scr["processing_title"] + '";var box=document.getElementById("processingBox");if(box){box.classList.add("show");}return true;});}'
@@ -3552,7 +3627,28 @@ def download(filename):
         add_flash("File not found")
         return redirect("/dashboard")
     download_name = filename.split("_", 1)[-1] if "_" in filename else filename
+    script = resolve_script_from_output_name(filename)
+    if script:
+        log_user_activity("download_report", "הוריד דוח", script.get("id", ""), script.get("name", ""), download_name)
     return send_file(path, as_attachment=True, download_name=download_name)
+
+
+@app.route("/activity", methods=["POST"])
+@login_required
+def activity():
+    if session.get("is_admin"):
+        return "", 204
+    event_type = request.form.get("event_type", "").strip()
+    action_label = request.form.get("action_label", "").strip()
+    if event_type and action_label:
+        log_user_activity(
+            event_type,
+            action_label,
+            request.form.get("script_id", "").strip(),
+            request.form.get("script_name", "").strip(),
+            request.form.get("details", "").strip(),
+        )
+    return "", 204
 
 
 @app.route("/admin")
@@ -3562,6 +3658,12 @@ def admin():
     with get_db() as db:
         users = db.execute("SELECT * FROM users WHERE is_admin=0").fetchall()
         perms = db.execute("SELECT * FROM permissions").fetchall()
+        activity_logs = db.execute("SELECT * FROM activity_logs ORDER BY created_at DESC, id DESC LIMIT 200").fetchall()
+        total_activity = db.execute("SELECT COUNT(*) AS count FROM activity_logs").fetchone()["count"]
+        generated_reports = db.execute("SELECT COUNT(*) AS count FROM activity_logs WHERE event_type=?", ("generate_report",)).fetchone()["count"]
+        opened_tools = db.execute("SELECT COUNT(*) AS count FROM activity_logs WHERE event_type=?", ("open_script",)).fetchone()["count"]
+        help_opens = db.execute("SELECT COUNT(*) AS count FROM activity_logs WHERE event_type=?", ("open_help_popup",)).fetchone()["count"]
+        terms_opens = db.execute("SELECT COUNT(*) AS count FROM activity_logs WHERE event_type=?", ("open_service_terms",)).fetchone()["count"]
 
     user_perms = {}
     for perm in perms:
@@ -3612,6 +3714,33 @@ def admin():
         + "</tbody></table>"
     ) if users else '<p style="color:#94a3b8;text-align:center;padding:2rem">No users yet</p>'
 
+    activity_rows = ""
+    for entry in activity_logs:
+        user_label = entry["full_name"] or entry["username"] or ("User #" + str(entry["user_id"]))
+        activity_rows += (
+            "<tr>"
+            '<td>' + esc(format_ui_datetime(entry["created_at"])) + "</td>"
+            '<td><div style="font-weight:700;color:#0f172a">' + esc(user_label) + '</div><div style="font-size:12px;color:#64748b">@' + esc(entry["username"] or "") + "</div></td>"
+            '<td>' + esc(entry["action_label"]) + "</td>"
+            '<td>' + esc(entry["script_name"] or "ללא כלי") + "</td>"
+            '<td>' + esc(entry["details"] or "—") + "</td>"
+            "</tr>"
+        )
+    activity_table = (
+        "<table><thead><tr><th>When</th><th>User</th><th>Action</th><th>Tool</th><th>Details</th></tr></thead><tbody>"
+        + activity_rows
+        + "</tbody></table>"
+    ) if activity_logs else '<p style="color:#94a3b8;text-align:center;padding:2rem">No activity logged yet</p>'
+    activity_summary = (
+        '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;margin-bottom:1rem">'
+        + '<div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;padding:12px"><div style="font-size:12px;color:#64748b;margin-bottom:6px">Total events</div><div style="font-size:20px;font-weight:800;color:#0f172a">' + str(total_activity) + '</div></div>'
+        + '<div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;padding:12px"><div style="font-size:12px;color:#64748b;margin-bottom:6px">Tools opened</div><div style="font-size:20px;font-weight:800;color:#0f172a">' + str(opened_tools) + '</div></div>'
+        + '<div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;padding:12px"><div style="font-size:12px;color:#64748b;margin-bottom:6px">Reports generated</div><div style="font-size:20px;font-weight:800;color:#0f172a">' + str(generated_reports) + '</div></div>'
+        + '<div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;padding:12px"><div style="font-size:12px;color:#64748b;margin-bottom:6px">Help opened</div><div style="font-size:20px;font-weight:800;color:#0f172a">' + str(help_opens) + '</div></div>'
+        + '<div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;padding:12px"><div style="font-size:12px;color:#64748b;margin-bottom:6px">Terms opened</div><div style="font-size:20px;font-weight:800;color:#0f172a">' + str(terms_opens) + '</div></div>'
+        + '</div>'
+    )
+
     body = (
         '<div class="card"><h2>&#10133; Add New User</h2><form method="POST" action="/admin/add_user"><div class="form-row">'
         '<div class="form-group"><label class="field-label">Full Name</label><input type="text" name="full_name" placeholder="Customer name" required style="margin-bottom:0"></div>'
@@ -3628,6 +3757,9 @@ def admin():
         '<button type="submit" class="btn btn-blue" style="height:40px;align-self:flex-end">Add</button></div></form></div>'
         '<div class="card"><h2>&#128101; Users In System</h2>'
         + table
+        + '</div><div class="card"><h2>&#128221; User Activity Log</h2>'
+        + activity_summary
+        + activity_table
         + '</div><div class="modal-bg" id="passModal"><div class="modal-box"><h3 style="font-size:15px;font-weight:700;margin-bottom:1rem;color:#1e3a8a">Change Password &#8212; <span id="pname"></span></h3>'
         '<form method="POST" id="pform"><input type="password" name="new_password" placeholder="New password" required>'
         '<div style="display:flex;gap:8px;margin-top:.5rem;justify-content:flex-end"><button type="button" class="btn btn-gray" onclick="closePass()">Cancel</button>'
