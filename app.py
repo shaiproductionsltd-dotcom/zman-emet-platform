@@ -2269,6 +2269,8 @@ def parse_rimon_home_office_report(input_path, extension, mapping):
         home_office_days = 0
         missing_absence_days = 0
         error_days = 0
+        standard_hours_total = 0.0
+        missing_hours_total = 0.0
 
         for day_key in sorted(grouped_dates):
             grouped = grouped_dates[day_key]
@@ -2305,6 +2307,8 @@ def parse_rimon_home_office_report(input_path, extension, mapping):
                 missing_absence_days += 1
             if grouped["error"]:
                 error_days += 1
+            standard_hours_total += parse_hours_or_zero(grouped["standard_hours"])
+            missing_hours_total += parse_hours_or_zero(grouped["missing_hours"])
             detected_months.append(datetime.fromisoformat(grouped["date"]).month)
             detected_dates.add(grouped["date"])
 
@@ -2338,6 +2342,8 @@ def parse_rimon_home_office_report(input_path, extension, mapping):
                 "missing_absence_days": missing_absence_days,
                 "error_days": error_days,
                 "total_grouped_dates": len(grouped_dates),
+                "standard_hours_total": standard_hours_total,
+                "missing_hours_total": missing_hours_total,
             }
         )
 
@@ -2370,7 +2376,7 @@ def parse_rimon_home_office_report(input_path, extension, mapping):
 
 
 def write_rimon_home_office_summary(ws, employee_rows, report_meta):
-    ws.title = safe_sheet_title("סיכום רימון", "Rimon Summary")
+    ws.title = safe_sheet_title("סיכום כולל", "Overall Summary")
     ws.sheet_view.rightToLeft = True
     ws.sheet_view.showGridLines = False
     ws.freeze_panes = "A13"
@@ -2384,6 +2390,8 @@ def write_rimon_home_office_summary(ws, employee_rows, report_meta):
         "ימי עבודה מהבית",
         "ימי היעדרות",
         "ימי שגיאה",
+        "סה\"כ שעות תקן",
+        "סה\"כ שעות חוסר",
         "סה\"כ ימי עבודה שזוהו",
     ]
 
@@ -2405,6 +2413,8 @@ def write_rimon_home_office_summary(ws, employee_rows, report_meta):
     total_office_days = sum(row["office_work_days"] for row in employee_rows)
     total_absence_days = sum(row["missing_absence_days"] for row in employee_rows)
     total_error_days = sum(row["error_days"] for row in employee_rows)
+    total_standard_hours = sum(row.get("standard_hours_total", 0.0) or 0.0 for row in employee_rows)
+    total_missing_hours = sum(row.get("missing_hours_total", 0.0) or 0.0 for row in employee_rows)
     metrics = [
         ("סה\"כ עובדים שנקלטו", len(employee_rows), "E0F2FE"),
         ("סה\"כ ימים לחודש שזוהו", total_days_identified, "E0F2FE"),
@@ -2414,6 +2424,8 @@ def write_rimon_home_office_summary(ws, employee_rows, report_meta):
         ("סה\"כ ימי עבודה מהמשרד", total_office_days, "DCFCE7"),
         ("סה\"כ שגיאות", total_error_days, "FEE2E2"),
         ("סה\"כ היעדרויות", total_absence_days, "FEF3C7"),
+        ("סה\"כ שעות תקן", format_hours(total_standard_hours), "E0F2FE"),
+        ("סה\"כ שעות חוסר", format_hours(total_missing_hours), "FEF3C7"),
     ]
     for idx, (label, value, fill_color) in enumerate(metrics, start=4):
         label_cell = ws.cell(row=idx, column=1, value=label)
@@ -2443,6 +2455,8 @@ def write_rimon_home_office_summary(ws, employee_rows, report_meta):
             row["home_office_days"],
             row["missing_absence_days"],
             row["error_days"],
+            format_hours(row.get("standard_hours_total", 0.0)),
+            format_hours(row.get("missing_hours_total", 0.0)),
             row["office_work_days"] + row["home_office_days"],
         ]
         for col, value in enumerate(values, start=1):
@@ -2451,7 +2465,7 @@ def write_rimon_home_office_summary(ws, employee_rows, report_meta):
             if row_idx % 2 == 0:
                 cell.fill = PatternFill(fill_type="solid", fgColor="F8FAFC")
 
-    widths = [24, 16, 16, 24, 18, 18, 18, 14, 28]
+    widths = [24, 16, 16, 24, 18, 18, 18, 14, 16, 16, 28]
     for col, width in enumerate(widths, start=1):
         ws.column_dimensions[get_column_letter(col)].width = width
 
@@ -3561,6 +3575,12 @@ def filter_rimon_table_options_for_display(options):
     return filtered
 
 
+def filter_rimon_options_for_field(field_name, options):
+    if field_name == "date_source":
+        return [option for option in options if looks_like_excel_date_sample(option.get("sample", ""))]
+    return options
+
+
 def detect_rimon_header_row(sheet, workbook_kind):
     rows, cols = get_excel_dims(sheet, workbook_kind)
     best_row = 11 if rows > 11 else 0
@@ -3732,7 +3752,7 @@ def build_rimon_mapping_options(input_path, extension):
         field_name = field["name"]
         options = [{"value": "", "label": "לא נבחר", "source_kind": "empty"}]
         options.extend(meta_options.get(field_name, []))
-        options.extend(visible_table_options)
+        options.extend(filter_rimon_options_for_field(field_name, visible_table_options))
         options_by_field[field_name] = options
 
         suggested = ""
@@ -3953,13 +3973,22 @@ def build_rimon_mapping_form(script_id, temp_upload_path, temp_upload_ext, inspe
         + '</div>'
         + '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-bottom:12px">' + mapping_fields_html + '</div>'
         + '<div style="font-size:12px;color:#64748b;line-height:1.7;margin-bottom:12px">שדות חובה: שם עובד, מספר עובד, תאריך ואירוע. אם אותו שדה נבחר בקטגוריה אחרת, הבחירה הקודמת תנוקה אוטומטית.</div>'
-        + '<div style="display:flex;gap:10px;flex-wrap:wrap;justify-content:center"><button type="submit" name="mapping_action" value="confirm" class="btn btn-blue" style="min-width:220px">אשר הכל והפעל עיבוד</button><a href="/run/' + script_id + '" class="btn btn-gray" style="text-decoration:none;display:inline-flex;align-items:center;justify-content:center;min-width:150px">העלאת קובץ חדש</a></div>'
+        + '<div style="display:flex;gap:10px;flex-wrap:wrap;justify-content:center"><button type="submit" id="mappingConfirmButton" name="mapping_action" value="confirm" class="btn btn-blue" style="min-width:220px">אשר הכל והפעל עיבוד</button><a href="/run/' + script_id + '" class="btn btn-gray" style="text-decoration:none;display:inline-flex;align-items:center;justify-content:center;min-width:150px">העלאת קובץ חדש</a></div>'
         + '</div></div>'
         + '</div>'
+        + '<div id="mappingProcessingOverlay" style="display:none;position:fixed;inset:0;background:rgba(248,250,252,.78);backdrop-filter:blur(2px);z-index:80;align-items:center;justify-content:center;padding:20px">'
+        + '<div style="width:100%;max-width:320px;background:#ffffff;border:1px solid #dbeafe;border-radius:18px;box-shadow:0 20px 50px rgba(15,23,42,.14);padding:24px 20px;text-align:center">'
+        + '<div style="width:42px;height:42px;border-radius:999px;border:3px solid #bfdbfe;border-top-color:#2563eb;margin:0 auto 14px;animation:mappingSpin .9s linear infinite"></div>'
+        + '<div style="font-size:16px;font-weight:800;color:#1e3a8a;margin-bottom:6px">הדוח בהכנה</div>'
+        + '<div style="font-size:13px;line-height:1.7;color:#475569">המערכת מאשרת את השדות ומעבדת את הקובץ. בדוחות גדולים הפעולה יכולה להימשך מעט זמן.</div>'
+        + '</div></div>'
         + '<script>'
         + '(function(){'
         + 'var templateSelect=document.getElementById("selectedTemplateId");'
         + 'var fieldSelects=Array.prototype.slice.call(document.querySelectorAll(\'select[data-mapping-field="1"]\'));'
+        + 'var form=document.getElementById("mappingConfirmForm");'
+        + 'var confirmButton=document.getElementById("mappingConfirmButton");'
+        + 'var overlay=document.getElementById("mappingProcessingOverlay");'
         + 'var templateMappings=' + json.dumps(template_payload, ensure_ascii=False) + ';'
         + 'var fieldLabels=' + json.dumps(mapping_labels, ensure_ascii=False) + ';'
         + 'var selectStyles={meta:{bg:"#eff6ff",border:"#60a5fa",shadow:"rgba(59,130,246,.12)"},table_exact:{bg:"#ecfdf5",border:"#4ade80",shadow:"rgba(34,197,94,.14)"},table_nearby:{bg:"#fffbeb",border:"#f59e0b",shadow:"rgba(245,158,11,.16)"},empty:{bg:"#ffffff",border:"#e2e8f0",shadow:"rgba(148,163,184,.08)"}};'
@@ -3973,9 +4002,11 @@ def build_rimon_mapping_form(script_id, temp_upload_path, temp_upload_ext, inspe
         + 'function applyTemplate(templateId){var mapping=templateMappings[templateId]||{};if(!templateId){refreshOptionLabels();return;}fieldSelects.forEach(function(sel){sel.value=mapping[sel.name]||"";});var seen={};fieldSelects.forEach(function(sel){if(sel.value && seen[sel.value]){sel.value="";}else if(sel.value){seen[sel.value]=true;}});refreshOptionLabels();}'
         + 'fieldSelects.forEach(function(sel){sel.addEventListener("change",function(){clearDuplicateSelections(sel);});});'
         + 'if(templateSelect){templateSelect.addEventListener("change",function(){applyTemplate(this.value);});}'
+        + 'if(form){form.addEventListener("submit",function(event){var submitter=event.submitter||document.activeElement;if(!submitter||submitter.value!=="confirm"){return;}if(confirmButton){confirmButton.disabled=true;confirmButton.textContent="העיבוד התחיל...";}if(overlay){overlay.style.display="flex";}document.body.style.overflow="hidden";});}'
         + 'refreshOptionLabels();'
         + '})();'
         + '</script>'
+        + '<style>@keyframes mappingSpin{from{transform:rotate(0deg);}to{transform:rotate(360deg);}}</style>'
         + '</form>'
     )
 
