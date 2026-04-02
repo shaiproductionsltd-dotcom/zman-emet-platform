@@ -3553,6 +3553,37 @@ td { padding: 12px; border-bottom: 1px solid #f1f5f9; vertical-align: middle; }
 }
 .modal-bg { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.4); z-index: 100; align-items: center; justify-content: center; }
 .modal-box { background: white; border-radius: 16px; padding: 1.75rem; width: 320px; }
+.admin-user-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(320px,1fr)); gap:16px; }
+.admin-user-card { background:linear-gradient(180deg,#ffffff 0%,#f8fbff 100%); border:1px solid #dbeafe; border-radius:18px; padding:18px; box-shadow:0 8px 28px rgba(37,99,235,.08); }
+.admin-user-head { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; margin-bottom:14px; }
+.admin-user-title { font-size:17px; font-weight:800; color:#0f172a; line-height:1.4; }
+.admin-user-sub { font-size:12px; color:#64748b; line-height:1.7; }
+.admin-user-status { display:inline-flex; align-items:center; padding:7px 12px; border-radius:999px; font-size:12px; font-weight:800; white-space:nowrap; }
+.admin-user-meta { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; margin-bottom:14px; }
+.admin-user-meta-box { background:#ffffff; border:1px solid #e2e8f0; border-radius:14px; padding:12px; }
+.admin-user-meta-box .k { font-size:11px; color:#64748b; margin-bottom:4px; }
+.admin-user-meta-box .v { font-size:14px; font-weight:700; color:#0f172a; line-height:1.6; word-break:break-word; }
+.admin-user-section { margin-top:14px; padding-top:14px; border-top:1px solid #e2e8f0; }
+.admin-user-section-title { font-size:13px; font-weight:800; color:#1e3a8a; margin-bottom:10px; }
+.admin-user-perms { display:flex; flex-wrap:wrap; gap:8px; }
+.admin-user-perms label { display:inline-flex; align-items:center; gap:6px; padding:8px 10px; border-radius:999px; background:#ffffff; border:1px solid #dbeafe; font-size:12px; color:#334155; }
+.admin-user-actions { display:flex; gap:8px; flex-wrap:wrap; }
+.admin-user-summary { display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:10px; margin-bottom:16px; }
+.admin-user-summary-box { background:#f8fafc; border:1px solid #e2e8f0; border-radius:14px; padding:12px; }
+.admin-user-summary-box .k { font-size:12px; color:#64748b; margin-bottom:4px; }
+.admin-user-summary-box .v { font-size:22px; font-weight:800; color:#0f172a; }
+.admin-float-nav { position:fixed; top:92px; left:20px; z-index:20; display:flex; flex-direction:column; gap:10px; }
+.admin-float-nav a { box-shadow:0 8px 24px rgba(15,23,42,.12); background:#ffffff; border:1px solid #dbeafe; min-width:160px; }
+.support-request-list { display:flex; flex-direction:column; gap:14px; }
+.support-request-card { background:linear-gradient(180deg,#ffffff 0%,#f8fbff 100%); border:1px solid #dbeafe; border-radius:18px; padding:16px; }
+.support-request-card-head { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; margin-bottom:12px; flex-wrap:wrap; }
+.support-request-card-meta { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:10px; margin-bottom:12px; }
+.support-request-card-box { background:#ffffff; border:1px solid #e2e8f0; border-radius:14px; padding:12px; }
+.support-request-card-box .k { font-size:11px; color:#64748b; margin-bottom:4px; }
+.support-request-card-box .v { font-size:14px; font-weight:700; color:#0f172a; line-height:1.7; word-break:break-word; }
+.support-request-message { background:#ffffff; border:1px solid #e2e8f0; border-radius:14px; padding:14px; font-size:13px; color:#334155; line-height:1.9; white-space:pre-wrap; margin-bottom:12px; }
+@media (max-width: 1280px) { .admin-float-nav { left:10px; } .admin-float-nav a { min-width:140px; font-size:12px; padding:9px 12px; } }
+@media (max-width: 1100px) { .admin-float-nav { position:static; margin-bottom:1rem; flex-direction:row; flex-wrap:wrap; } .admin-float-nav a { min-width:unset; } }
 """
 
 
@@ -5696,10 +5727,6 @@ def support():
     with get_db() as db:
         user = db.execute("SELECT * FROM users WHERE id=?", (session["user_id"],)).fetchone()
         perms = db.execute("SELECT script_id FROM permissions WHERE user_id=?", (session["user_id"],)).fetchall()
-        existing_requests = db.execute(
-            "SELECT * FROM support_requests WHERE user_id=? ORDER BY created_at DESC, id DESC",
-            (session["user_id"],),
-        ).fetchall()
     if user is None:
         session.clear()
         return redirect("/")
@@ -5745,6 +5772,12 @@ def support():
                 support_type = "new_tool"
                 selected_script_id = ""
                 message_text = ""
+
+    with get_db() as db:
+        existing_requests = db.execute(
+            "SELECT * FROM support_requests WHERE user_id=? ORDER BY created_at DESC, id DESC",
+            (session["user_id"],),
+        ).fetchall()
 
     script_options = '<option value="">בחירת כלי</option>'
     for script in allowed_scripts:
@@ -6568,50 +6601,76 @@ def admin():
     for perm in perms:
         user_perms.setdefault(perm["user_id"], set()).add(perm["script_id"])
 
-    rows = ""
+    active_customers = 0
+    trial_customers = 0
+    inactive_customers = 0
+    user_cards = ""
     for user in users:
         uid = user["id"]
         status = get_account_status(user)
+        if status["status_key"] == "active":
+            active_customers += 1
+        elif status["status_key"] == "trial":
+            trial_customers += 1
+        else:
+            inactive_customers += 1
+        service_style = {
+            "active": ("#ecfdf5", "#047857"),
+            "trial": ("#fff7ed", "#c2410c"),
+            "expired": ("#fef2f2", "#b91c1c"),
+            "unknown": ("#f8fafc", "#475569"),
+        }.get(status["status_key"], ("#f8fafc", "#475569"))
         checks = ""
         for sid, script in SCRIPTS.items():
             checked = "checked" if (uid in user_perms and sid in user_perms[uid]) else ""
             checks += (
-                '<label style="display:flex;align-items:center;gap:5px;font-size:13px;margin-left:10px">'
+                '<label>'
                 '<input type="checkbox" name="scripts" value="' + sid + '" ' + checked + ">"
                 + script["icon"]
                 + " "
                 + script["name"]
                 + "</label>"
             )
-
-        rows += (
-            "<tr>"
-            "<td><strong>" + esc(user["company_name"] or user["full_name"] or user["username"]) + "</strong><br><span style=\"font-size:12px;color:#64748b\">ח.פ: " + esc(user["company_id"] or "לא הוגדר") + "</span></td>"
-            '<td><div style="font-weight:700;color:#0f172a">' + esc(user["full_name"] or "לא הוגדר") + '</div><div style="font-size:12px;color:#64748b">@' + esc(user["username"]) + '</div><div style="font-size:12px;color:#64748b">' + esc(user["email"] or "ללא אימייל") + '</div><div style="font-size:12px;color:#64748b">' + esc(user["phone"] or "ללא טלפון") + '</div><div style="font-size:12px;color:#64748b">הצטרפות: ' + esc(format_ui_date(user["join_date"], "he")) + "</div></td>"
-            '<td><div style="font-weight:700;color:#0f172a">' + esc(status["status_label_he"]) + '</div>'
-            + ('<div style="font-size:12px;color:#64748b">נותרו ' + str(status["days_remaining"]) + ' ימים</div>' if status["days_remaining"] is not None else "")
-            + ('<div style="font-size:12px;color:#64748b">בתוקף עד ' + esc(format_ui_date(status["renewal_date"], "he")) + '</div>' if status["renewal_date"] else "")
-            + '<div style="font-size:12px;color:#64748b">חיוב: ' + esc(billing_mode_label(user["billing_mode"], "he")) + "</div></td>"
-            '<td><form method="POST" action="/admin/permissions/' + str(uid) + '" style="display:inline"><div style="display:flex;flex-wrap:wrap">'
+        user_cards += (
+            '<div class="admin-user-card">'
+            '<div class="admin-user-head">'
+            '<div><div class="admin-user-title">' + esc(user["company_name"] or user["full_name"] or user["username"]) + '</div>'
+            '<div class="admin-user-sub">@' + esc(user["username"]) + ' • ח.פ: ' + esc(user["company_id"] or "לא הוגדר") + '</div></div>'
+            '<span class="admin-user-status" style="background:' + service_style[0] + ';color:' + service_style[1] + '">' + esc(status["status_label_he"]) + '</span>'
+            '</div>'
+            '<div class="admin-user-meta">'
+            '<div class="admin-user-meta-box"><div class="k">איש קשר</div><div class="v">' + esc(user["full_name"] or "לא הוגדר") + '</div></div>'
+            '<div class="admin-user-meta-box"><div class="k">מסלול חיוב</div><div class="v">' + esc(billing_mode_label(user["billing_mode"], "he")) + '</div></div>'
+            '<div class="admin-user-meta-box"><div class="k">אימייל</div><div class="v">' + esc(user["email"] or "ללא אימייל") + '</div></div>'
+            '<div class="admin-user-meta-box"><div class="k">טלפון</div><div class="v">' + esc(user["phone"] or "ללא טלפון") + '</div></div>'
+            '<div class="admin-user-meta-box"><div class="k">תאריך הצטרפות</div><div class="v">' + esc(format_ui_date(user["join_date"], "he")) + '</div></div>'
+            '<div class="admin-user-meta-box"><div class="k">שירות</div><div class="v">'
+            + esc(status["status_label_he"])
+            + ('<br><span style="font-size:12px;font-weight:600;color:#64748b">נותרו ' + str(status["days_remaining"]) + ' ימים</span>' if status["days_remaining"] is not None else "")
+            + ('<br><span style="font-size:12px;font-weight:600;color:#64748b">בתוקף עד ' + esc(format_ui_date(status["renewal_date"], "he")) + '</span>' if status["renewal_date"] else "")
+            + '</div></div>'
+            '</div>'
+            '<div class="admin-user-section"><div class="admin-user-section-title">כלים והרשאות</div>'
+            '<form method="POST" action="/admin/permissions/' + str(uid) + '"><div class="admin-user-perms">'
             + checks
-            + '</div><button type="submit" class="btn btn-gray" style="margin-top:6px;font-size:12px;padding:5px 12px">Save</button></form></td>'
-            + '<td><div style="display:flex;gap:6px;flex-wrap:wrap">'
-            + '<button type="button" class="btn btn-gray" style="font-size:12px;padding:5px 12px" onclick="openPass('
-            + str(uid)
-            + ')">Change password</button>'
-            + '<form method="POST" action="/admin/resetpass/'
-            + str(uid)
-            + '" style="display:inline"><button type="submit" class="btn btn-gray" style="font-size:12px;padding:5px 12px">Temporary password</button></form>'
-            '</div></td>'
-            '<td><a href="/admin/delete/' + str(uid) + '" onclick="return confirm(\'Delete?\');" class="btn btn-red" style="text-decoration:none;font-size:12px;padding:5px 12px">Delete</a></td>'
-            "</tr>"
+            + '</div><button type="submit" class="btn btn-gray" style="margin-top:10px;font-size:12px;padding:6px 14px">שמירת הרשאות</button></form></div>'
+            '<div class="admin-user-section"><div class="admin-user-section-title">פעולות ניהול</div><div class="admin-user-actions">'
+            + '<button type="button" class="btn btn-gray" style="font-size:12px;padding:6px 14px" onclick="openPass(' + str(uid) + ',' + json.dumps(user["full_name"] or user["company_name"] or user["username"] or "") + ')">שינוי סיסמה</button>'
+            + '<form method="POST" action="/admin/resetpass/' + str(uid) + '" style="display:inline"><button type="submit" class="btn btn-gray" style="font-size:12px;padding:6px 14px">סיסמה זמנית</button></form>'
+            + '<a href="/admin/delete/' + str(uid) + '" onclick="return confirm(\'Delete?\');" class="btn btn-red" style="text-decoration:none;font-size:12px;padding:6px 14px">מחיקה</a>'
+            + '</div></div>'
+            '</div>'
         )
 
-    table = (
-        "<table><thead><tr><th>Company</th><th>Contact</th><th>Service</th><th>Permissions</th><th>Password</th><th>Delete</th></tr></thead><tbody>"
-        + rows
-        + "</tbody></table>"
-    ) if users else '<p style="color:#94a3b8;text-align:center;padding:2rem">No users yet</p>'
+    users_overview = (
+        '<div class="admin-user-summary">'
+        '<div class="admin-user-summary-box"><div class="k">סה"כ לקוחות</div><div class="v">' + str(len(users)) + '</div></div>'
+        '<div class="admin-user-summary-box"><div class="k">בשירות פעיל</div><div class="v">' + str(active_customers) + '</div></div>'
+        '<div class="admin-user-summary-box"><div class="k">בתקופת ניסיון</div><div class="v">' + str(trial_customers) + '</div></div>'
+        '<div class="admin-user-summary-box"><div class="k">לא בשירות</div><div class="v">' + str(inactive_customers) + '</div></div>'
+        '</div>'
+    ) if users else ""
+    table = (users_overview + '<div class="admin-user-grid">' + user_cards + '</div>') if users else '<p style="color:#94a3b8;text-align:center;padding:2rem">No users yet</p>'
 
     user_lookup = {str(user["id"]): user for user in users}
     customer_options = ""
@@ -6745,27 +6804,27 @@ def admin():
             contact_bits.append("טלפון: " + entry["phone"])
         contact_text = "<br>".join(esc(bit) for bit in contact_bits) if contact_bits else "—"
         support_rows += (
-            "<tr>"
-            '<td>' + esc(format_ui_datetime(entry["created_at"])) + "</td>"
-            '<td><div style="font-weight:700;color:#0f172a">' + esc(customer_label) + '</div>'
-            + ('<div style="font-size:12px;color:#64748b">@' + esc(entry["username"] or "") + "</div>" if entry["username"] else "")
-            + "</td>"
-            '<td>' + esc(request_type_label) + "</td>"
-            '<td>' + esc(entry["script_name"] or "—") + "</td>"
-            '<td style="max-width:420px;white-space:pre-wrap;line-height:1.7">' + esc(entry["message"] or "") + "</td>"
-            '<td style="font-size:12px;line-height:1.7;color:#475569">' + contact_text + "</td>"
-            '<td><span style="display:inline-flex;align-items:center;padding:7px 12px;border-radius:999px;background:' + meta["bg"] + ';color:' + meta["fg"] + ';font-size:12px;font-weight:800">' + esc(meta["label"]) + '</span></td>'
-            '<td><div style="display:flex;gap:6px;flex-wrap:wrap">'
+            '<div class="support-request-card">'
+            '<div class="support-request-card-head">'
+            '<div><div style="font-size:17px;font-weight:800;color:#0f172a;margin-bottom:4px">' + esc(customer_label) + '</div>'
+            + ('<div style="font-size:12px;color:#64748b">@' + esc(entry["username"] or "") + '</div>' if entry["username"] else '')
+            + '</div>'
+            '<span style="display:inline-flex;align-items:center;padding:7px 12px;border-radius:999px;background:' + meta["bg"] + ';color:' + meta["fg"] + ';font-size:12px;font-weight:800">' + esc(meta["label"]) + '</span>'
+            '</div>'
+            '<div class="support-request-card-meta">'
+            '<div class="support-request-card-box"><div class="k">מועד פתיחה</div><div class="v">' + esc(format_ui_datetime(entry["created_at"])) + '</div></div>'
+            '<div class="support-request-card-box"><div class="k">סוג פנייה</div><div class="v">' + esc(request_type_label) + '</div></div>'
+            '<div class="support-request-card-box"><div class="k">כלי</div><div class="v">' + esc(entry["script_name"] or "—") + '</div></div>'
+            '<div class="support-request-card-box"><div class="k">פרטי קשר</div><div class="v">' + contact_text + '</div></div>'
+            '</div>'
+            '<div class="support-request-message">' + esc(entry["message"] or "") + '</div>'
+            '<div style="display:flex;gap:6px;flex-wrap:wrap">'
             + ('<form method="POST" action="/admin/support/' + str(entry["id"]) + '/status" style="display:inline"><input type="hidden" name="status" value="accepted"><button type="submit" class="btn btn-gray" style="font-size:12px;padding:5px 12px">התקבל</button></form>' if str(entry["status"] or "pending").strip().lower() != "accepted" else "")
             + ('<form method="POST" action="/admin/support/' + str(entry["id"]) + '/status" style="display:inline"><input type="hidden" name="status" value="resolved"><button type="submit" class="btn btn-blue" style="font-size:12px;padding:5px 12px">טופל</button></form>' if str(entry["status"] or "pending").strip().lower() != "resolved" else "")
-            + '</div></td>'
-            "</tr>"
+            + '</div>'
+            '</div>'
         )
-    support_table = (
-        "<table><thead><tr><th>When</th><th>Customer</th><th>Type</th><th>Tool</th><th>Message</th><th>Contact</th><th>Status</th><th>Update</th></tr></thead><tbody>"
-        + support_rows
-        + "</tbody></table>"
-    ) if support_requests else '<p style="color:#94a3b8;text-align:center;padding:2rem">No customer support requests yet</p>'
+    support_table = ('<div class="support-request-list">' + support_rows + '</div>') if support_requests else '<p style="color:#94a3b8;text-align:center;padding:2rem">No customer support requests yet</p>'
 
     admin_side_nav = (
         '<div style="position:sticky;top:88px;display:flex;flex-direction:column;gap:10px">'
@@ -6779,9 +6838,8 @@ def admin():
     )
 
     body = (
-        '<div style="display:grid;grid-template-columns:220px minmax(0,1fr);gap:1rem;align-items:start">'
-        '<div>' + admin_side_nav + '</div>'
-        '<div>'
+        admin_side_nav
+        +
         '<div class="card" id="adminAddUser"><h2>&#10133; Add New User</h2><form method="POST" action="/admin/add_user"><div class="form-row">'
         '<div class="form-group"><label class="field-label">Full Name</label><input type="text" name="full_name" placeholder="Customer name" required style="margin-bottom:0"></div>'
         '<div class="form-group"><label class="field-label">Company Name</label><input type="text" name="company_name" placeholder="Company name" style="margin-bottom:0"></div>'
@@ -6814,7 +6872,6 @@ def admin():
         '</summary><div style="padding:0 20px 20px">'
         + support_table
         + '</div></details>'
-        + '</div>'
         + '</div><div class="modal-bg" id="passModal"><div class="modal-box"><h3 style="font-size:15px;font-weight:700;margin-bottom:1rem;color:#1e3a8a">Change Password &#8212; <span id="pname"></span></h3>'
         '<form method="POST" id="pform"><input type="password" name="new_password" placeholder="New password" required>'
         '<div style="display:flex;gap:8px;margin-top:.5rem;justify-content:flex-end"><button type="button" class="btn btn-gray" onclick="closePass()">Cancel</button>'
