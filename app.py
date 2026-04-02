@@ -2412,15 +2412,15 @@ def write_rimon_home_office_summary(ws, employee_rows, report_meta):
         value_cell.font = Font(bold=True, color="0F172A")
         label_cell.fill = PatternFill(fill_type="solid", fgColor=fill_color)
         value_cell.fill = PatternFill(fill_type="solid", fgColor=fill_color)
-        label_cell.alignment = Alignment(horizontal="center")
-        value_cell.alignment = Alignment(horizontal="center")
+        label_cell.alignment = Alignment(horizontal="right")
+        value_cell.alignment = Alignment(horizontal="right")
 
     header_row = 12
     for col, header in enumerate(headers, start=1):
         cell = ws.cell(row=header_row, column=col, value=header)
         cell.font = Font(bold=True, color="FFFFFF")
         cell.fill = PatternFill(fill_type="solid", fgColor="1E3A8A")
-        cell.alignment = Alignment(horizontal="center")
+        cell.alignment = Alignment(horizontal="right")
 
     sorted_rows = sorted(employee_rows, key=lambda row: (row["employee_name"], row["payroll_number"]))
     for row_idx, row in enumerate(sorted_rows, start=header_row + 1):
@@ -2436,9 +2436,10 @@ def write_rimon_home_office_summary(ws, employee_rows, report_meta):
             row["office_work_days"] + row["home_office_days"],
         ]
         for col, value in enumerate(values, start=1):
-            ws.cell(row=row_idx, column=col, value=value)
+            cell = ws.cell(row=row_idx, column=col, value=value)
+            cell.alignment = Alignment(horizontal="right")
             if row_idx % 2 == 0:
-                ws.cell(row=row_idx, column=col).fill = PatternFill(fill_type="solid", fgColor="F8FAFC")
+                cell.fill = PatternFill(fill_type="solid", fgColor="F8FAFC")
 
     widths = [24, 16, 16, 24, 18, 18, 18, 14, 28]
     for col, width in enumerate(widths, start=1):
@@ -2471,6 +2472,7 @@ def write_rimon_home_office_daily(ws, daily_rows):
         cell = ws.cell(row=1, column=col, value=header)
         cell.font = Font(bold=True, color="FFFFFF")
         cell.fill = PatternFill(fill_type="solid", fgColor="0F766E")
+        cell.alignment = Alignment(horizontal="right")
 
     sorted_rows = sorted(daily_rows, key=lambda row: (row["employee_name"], row["date"]))
     for row_idx, row in enumerate(sorted_rows, start=2):
@@ -2491,9 +2493,10 @@ def write_rimon_home_office_daily(ws, daily_rows):
             row["error_text"],
         ]
         for col, value in enumerate(values, start=1):
-            ws.cell(row=row_idx, column=col, value=value)
+            cell = ws.cell(row=row_idx, column=col, value=value)
+            cell.alignment = Alignment(horizontal="right")
             if row_idx % 2 == 0:
-                ws.cell(row=row_idx, column=col).fill = PatternFill(fill_type="solid", fgColor="ECFDF5")
+                cell.fill = PatternFill(fill_type="solid", fgColor="ECFDF5")
 
     widths = [24, 14, 12, 12, 12, 12, 14, 14, 12, 10, 20, 14, 14, 22]
     for col, width in enumerate(widths, start=1):
@@ -3598,6 +3601,7 @@ def find_rimon_meta_candidates(sheet, workbook_kind, labels, fallback_cells=()):
                             {
                                 "value": source,
                                 "label": f"שדה עליון: {raw_label} (לדוגמה: {candidate})",
+                                "source_kind": "meta",
                             }
                         )
                         seen_sources.add(source)
@@ -3639,6 +3643,7 @@ def build_rimon_mapping_options(input_path, extension):
                 "exact_header": exact_header,
                 "from_nearby": from_nearby,
                 "sample": sample,
+                "source_kind": "table_nearby" if from_nearby else "table_exact",
             }
         )
 
@@ -3672,6 +3677,7 @@ def build_rimon_mapping_options(input_path, extension):
                 {
                     "value": "meta:" + field_name.replace("_source", ""),
                     "label": alias_meta_labels[field_name] + f" (לדוגמה: {field_value})",
+                    "source_kind": "meta",
                 }
             )
         labels, fallback_cells = candidate_meta_labels[field_name]
@@ -3681,10 +3687,9 @@ def build_rimon_mapping_options(input_path, extension):
     suggestions = {}
     for field in RIMON_MAPPING_FIELDS:
         field_name = field["name"]
-        options = [{"value": "", "label": "לא נבחר"}]
+        options = [{"value": "", "label": "לא נבחר", "source_kind": "empty"}]
         options.extend(meta_options.get(field_name, []))
-        filtered_table_options = [option for option in table_options if is_rimon_option_relevant_for_field(field_name, option)]
-        options.extend(dedupe_rimon_field_options(filtered_table_options))
+        options.extend(table_options)
         options_by_field[field_name] = options
 
         suggested = ""
@@ -3836,19 +3841,45 @@ def build_rimon_mapping_form(script_id, temp_upload_path, temp_upload_ext, inspe
     mapping_fields_html = ""
     for field in RIMON_MAPPING_FIELDS:
         field_name = field["name"]
-        select_options = ""
         current_value = str(current_mapping.get(field_name, "") or "")
-        for option in inspection["options_by_field"].get(field_name, []):
+        options = inspection["options_by_field"].get(field_name, [])
+        blank_options = [option for option in options if not option.get("value")]
+        meta_options = [option for option in options if option.get("source_kind") == "meta"]
+        table_exact_options = [option for option in options if option.get("source_kind") == "table_exact"]
+        table_nearby_options = [option for option in options if option.get("source_kind") == "table_nearby"]
+
+        select_options = ""
+
+        def render_option(option):
             selected = ' selected' if option["value"] == current_value else ""
-            select_options += (
-                '<option value="' + esc(option["value"]) + '" data-base-label="' + esc(option["label"]) + '"' + selected + ">"
+            return (
+                '<option value="' + esc(option["value"]) + '" data-base-label="' + esc(option["label"]) + '" data-source-kind="' + esc(option.get("source_kind", "empty")) + '"' + selected + ">"
                 + esc(option["label"])
                 + "</option>"
             )
+
+        for option in blank_options:
+            select_options += render_option(option)
+        if meta_options:
+            select_options += '<optgroup label="שדות עליונים">'
+            for option in meta_options:
+                select_options += render_option(option)
+            select_options += '</optgroup>'
+        if table_exact_options:
+            select_options += '<optgroup label="שדות מהטבלה">'
+            for option in table_exact_options:
+                select_options += render_option(option)
+            select_options += '</optgroup>'
+        if table_nearby_options:
+            select_options += '<optgroup label="שדות מהטבלה (כותרת זוהתה מעמודה סמוכה)">'
+            for option in table_nearby_options:
+                select_options += render_option(option)
+            select_options += '</optgroup>'
+
         required_badge = ' <span style="color:#dc2626">*</span>' if field["required"] else ' <span style="color:#94a3b8">(אופציונלי)</span>'
         mapping_fields_html += (
             '<div><label class="field-label">' + field["label"] + required_badge + '</label>'
-            + '<select name="' + field_name + '" data-mapping-field="1" data-field-label="' + esc(field["label"]) + '" style="padding:9px 12px;border:1.5px solid #e2e8f0;border-radius:8px;font-size:13px;font-family:inherit;outline:none;width:100%;margin-bottom:0;background:white">'
+            + '<select name="' + field_name + '" data-mapping-field="1" data-field-label="' + esc(field["label"]) + '" style="padding:9px 12px;border:1.5px solid #e2e8f0;border-radius:8px;font-size:13px;font-family:inherit;outline:none;width:100%;margin-bottom:0;background:white;transition:background-color .15s ease,border-color .15s ease,box-shadow .15s ease">'
             + select_options
             + '</select></div>'
         )
@@ -3872,6 +3903,11 @@ def build_rimon_mapping_form(script_id, temp_upload_path, temp_upload_ext, inspe
         + '<div style="font-size:12px;color:#64748b;line-height:1.7;margin-top:10px">בחירת תבנית תעדכן את כל השדות בהתאם. שמירה תיצור תבנית חדשה בלבד ולא תדרוס תבנית קיימת.</div>'
         + '</div>'
         + '<div>'
+        + '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">'
+        + '<span style="display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border-radius:999px;background:#eff6ff;border:1px solid #bfdbfe;font-size:12px;color:#1d4ed8">שדה עליון</span>'
+        + '<span style="display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border-radius:999px;background:#ecfdf5;border:1px solid #86efac;font-size:12px;color:#166534">שדה מהטבלה</span>'
+        + '<span style="display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border-radius:999px;background:#fffbeb;border:1px solid #fcd34d;font-size:12px;color:#92400e">שדה מהטבלה שזוהה לפי כותרת סמוכה</span>'
+        + '</div>'
         + '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-bottom:12px">' + mapping_fields_html + '</div>'
         + '<div style="font-size:12px;color:#64748b;line-height:1.7;margin-bottom:12px">שדות חובה: שם עובד, מספר עובד, תאריך ואירוע. אם אותו שדה נבחר בקטגוריה אחרת, הבחירה הקודמת תנוקה אוטומטית.</div>'
         + '<div style="display:flex;gap:10px;flex-wrap:wrap;justify-content:center"><button type="submit" name="mapping_action" value="confirm" class="btn btn-blue" style="min-width:220px">אשר הכל והפעל עיבוד</button><a href="/run/' + script_id + '" class="btn btn-gray" style="text-decoration:none;display:inline-flex;align-items:center;justify-content:center;min-width:150px">העלאת קובץ חדש</a></div>'
@@ -3883,10 +3919,12 @@ def build_rimon_mapping_form(script_id, temp_upload_path, temp_upload_ext, inspe
         + 'var fieldSelects=Array.prototype.slice.call(document.querySelectorAll(\'select[data-mapping-field="1"]\'));'
         + 'var templateMappings=' + json.dumps(template_payload, ensure_ascii=False) + ';'
         + 'var fieldLabels=' + json.dumps(mapping_labels, ensure_ascii=False) + ';'
+        + 'var selectStyles={meta:{bg:"#eff6ff",border:"#60a5fa",shadow:"rgba(59,130,246,.12)"},table_exact:{bg:"#ecfdf5",border:"#4ade80",shadow:"rgba(34,197,94,.14)"},table_nearby:{bg:"#fffbeb",border:"#f59e0b",shadow:"rgba(245,158,11,.16)"},empty:{bg:"#ffffff",border:"#e2e8f0",shadow:"rgba(148,163,184,.08)"}};'
+        + 'function applySelectVisual(sel){var opt=sel.options[sel.selectedIndex];var kind=(opt&&opt.getAttribute("data-source-kind"))||"empty";var style=selectStyles[kind]||selectStyles.empty;sel.style.backgroundColor=style.bg;sel.style.borderColor=style.border;sel.style.boxShadow="0 0 0 3px "+style.shadow;}'
         + 'function refreshOptionLabels(){'
         + 'var assignments={};'
         + 'fieldSelects.forEach(function(sel){if(sel.value){assignments[sel.value]=sel.name;}});'
-        + 'fieldSelects.forEach(function(sel){Array.prototype.forEach.call(sel.options,function(opt){var base=opt.getAttribute("data-base-label")||opt.text;var assigned=assignments[opt.value];var suffix="";if(opt.value && assigned && assigned!==sel.name){suffix=" [נבחר עבור "+(fieldLabels[assigned]||assigned)+"]";}opt.text=base+suffix;});});'
+        + 'fieldSelects.forEach(function(sel){Array.prototype.forEach.call(sel.options,function(opt){var base=opt.getAttribute("data-base-label")||opt.text;var assigned=assignments[opt.value];var suffix="";if(opt.value && assigned && assigned!==sel.name){suffix=" [נבחר עבור "+(fieldLabels[assigned]||assigned)+"]";}opt.text=base+suffix;});applySelectVisual(sel);});'
         + '}'
         + 'function clearDuplicateSelections(changedSelect){if(!changedSelect.value){refreshOptionLabels();return;}fieldSelects.forEach(function(sel){if(sel!==changedSelect && sel.value===changedSelect.value){sel.value="";}});refreshOptionLabels();}'
         + 'function applyTemplate(templateId){var mapping=templateMappings[templateId]||{};if(!templateId){refreshOptionLabels();return;}fieldSelects.forEach(function(sel){sel.value=mapping[sel.name]||"";});var seen={};fieldSelects.forEach(function(sel){if(sel.value && seen[sel.value]){sel.value="";}else if(sel.value){seen[sel.value]=true;}});refreshOptionLabels();}'
