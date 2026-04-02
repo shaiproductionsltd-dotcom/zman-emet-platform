@@ -3765,11 +3765,36 @@ def create_support_request(user_row, request_type, message, script_id="", script
                 script_id or "",
                 script_name or "",
                 message,
-                "open",
+                "pending",
                 now_text,
             ),
         )
         db.commit()
+
+
+def support_status_meta(status_value):
+    normalized = str(status_value or "pending").strip().lower()
+    mapping = {
+        "pending": {
+            "label": "ממתין להתייחסות מנהל מערכת",
+            "short_label": "ממתין",
+            "bg": "#fff7ed",
+            "fg": "#c2410c",
+        },
+        "accepted": {
+            "label": "התקבל",
+            "short_label": "התקבל",
+            "bg": "#eff6ff",
+            "fg": "#1d4ed8",
+        },
+        "resolved": {
+            "label": "טופל",
+            "short_label": "טופל",
+            "bg": "#ecfdf5",
+            "fg": "#047857",
+        },
+    }
+    return mapping.get(normalized, mapping["pending"])
 
 
 def resolve_script_from_output_name(filename):
@@ -5671,6 +5696,10 @@ def support():
     with get_db() as db:
         user = db.execute("SELECT * FROM users WHERE id=?", (session["user_id"],)).fetchone()
         perms = db.execute("SELECT script_id FROM permissions WHERE user_id=?", (session["user_id"],)).fetchall()
+        existing_requests = db.execute(
+            "SELECT * FROM support_requests WHERE user_id=? ORDER BY created_at DESC, id DESC",
+            (session["user_id"],),
+        ).fetchall()
     if user is None:
         session.clear()
         return redirect("/")
@@ -5725,6 +5754,29 @@ def support():
     if status["status_key"] != "active":
         inactive_support_note = '<div id="existingSupportWarning" style="background:#fef2f2;border:1px solid #fecaca;color:#b91c1c;border-radius:12px;padding:12px 14px;font-size:13px;line-height:1.7;margin-bottom:12px">רק לקוחות בשירות פעיל מקבלים תמיכה על כלים קיימים. יש לפנות למנהל הפלטפורמה להסדרת השירות.</div>'
 
+    request_rows = ""
+    for entry in existing_requests:
+        meta = support_status_meta(entry["status"])
+        request_type_label = "בקשה לכלי חדש" if entry["request_type"] == "new_tool" else "תמיכה בכלי קיים"
+        request_rows += (
+            '<div style="border:1px solid #e2e8f0;border-radius:14px;padding:14px;background:#f8fafc;margin-bottom:10px">'
+            '<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:8px">'
+            '<div>'
+            '<div style="font-size:14px;font-weight:800;color:#0f172a">' + esc(request_type_label) + '</div>'
+            '<div style="font-size:12px;color:#64748b">' + esc(format_ui_datetime(entry["created_at"])) + (' • ' + esc(entry["script_name"]) if entry["script_name"] else '') + '</div>'
+            '</div>'
+            '<span style="display:inline-flex;align-items:center;padding:7px 12px;border-radius:999px;background:' + meta["bg"] + ';color:' + meta["fg"] + ';font-size:12px;font-weight:800">' + esc(meta["label"]) + '</span>'
+            '</div>'
+            '<div style="font-size:13px;color:#334155;line-height:1.8;white-space:pre-wrap">' + esc(entry["message"] or "") + '</div>'
+            '</div>'
+        )
+    requests_html = (
+        '<div style="margin-top:1.25rem;padding-top:1.25rem;border-top:1px solid #e2e8f0">'
+        '<div style="font-size:16px;font-weight:800;color:#1e3a8a;margin-bottom:10px">הפניות שלך</div>'
+        + request_rows
+        + '</div>'
+    ) if existing_requests else ""
+
     body = (
         '<a href="/dashboard" style="color:#2563eb;font-size:13px;text-decoration:none;display:block;margin-bottom:1rem">' + text["back_arrow"] + ' ' + ("חזרה לכלים" if lang == "he" else "Back to tools") + '</a>'
         + '<div class="card">'
@@ -5746,6 +5798,7 @@ def support():
         + '<textarea name="support_message" rows="7" style="width:100%;padding:12px;border:1.5px solid #e2e8f0;border-radius:12px;font-size:13px;font-family:inherit;outline:none;resize:vertical;margin-bottom:14px" placeholder="אפשר לכתוב כאן חופשי את הבקשה או את תיאור התקלה">' + esc(message_text) + '</textarea>'
         + '<div style="display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap"><a href="/dashboard" class="btn btn-gray" style="text-decoration:none;display:inline-flex;align-items:center;justify-content:center">חזרה</a><button type="submit" class="btn btn-blue">שליחת פנייה</button></div>'
         + '</form>'
+        + requests_html
         + '<script>'
         + '(function(){var radios=Array.prototype.slice.call(document.querySelectorAll(\'input[name="support_type"]\'));var block=document.getElementById("existingToolFields");function refresh(){var selected=(document.querySelector(\'input[name="support_type"]:checked\')||{}).value||"new_tool";if(block){block.style.display=selected==="existing_tool"?"block":"none";}}radios.forEach(function(r){r.addEventListener("change",refresh);});refresh();})();'
         + '</script>'
@@ -6678,9 +6731,13 @@ def admin():
     )
 
     support_rows = ""
+    pending_support = 0
     for entry in support_requests:
+        meta = support_status_meta(entry["status"])
         request_type_label = "בקשה לכלי חדש" if entry["request_type"] == "new_tool" else "תמיכה בכלי קיים"
         customer_label = entry["company_name"] or entry["full_name"] or entry["username"] or ("User #" + str(entry["user_id"]))
+        if str(entry["status"] or "pending").strip().lower() not in {"accepted", "resolved"}:
+            pending_support += 1
         contact_bits = []
         if entry["email"]:
             contact_bits.append("מייל: " + entry["email"])
@@ -6697,16 +6754,35 @@ def admin():
             '<td>' + esc(entry["script_name"] or "—") + "</td>"
             '<td style="max-width:420px;white-space:pre-wrap;line-height:1.7">' + esc(entry["message"] or "") + "</td>"
             '<td style="font-size:12px;line-height:1.7;color:#475569">' + contact_text + "</td>"
+            '<td><span style="display:inline-flex;align-items:center;padding:7px 12px;border-radius:999px;background:' + meta["bg"] + ';color:' + meta["fg"] + ';font-size:12px;font-weight:800">' + esc(meta["label"]) + '</span></td>'
+            '<td><div style="display:flex;gap:6px;flex-wrap:wrap">'
+            + ('<form method="POST" action="/admin/support/' + str(entry["id"]) + '/status" style="display:inline"><input type="hidden" name="status" value="accepted"><button type="submit" class="btn btn-gray" style="font-size:12px;padding:5px 12px">התקבל</button></form>' if str(entry["status"] or "pending").strip().lower() != "accepted" else "")
+            + ('<form method="POST" action="/admin/support/' + str(entry["id"]) + '/status" style="display:inline"><input type="hidden" name="status" value="resolved"><button type="submit" class="btn btn-blue" style="font-size:12px;padding:5px 12px">טופל</button></form>' if str(entry["status"] or "pending").strip().lower() != "resolved" else "")
+            + '</div></td>'
             "</tr>"
         )
     support_table = (
-        "<table><thead><tr><th>When</th><th>Customer</th><th>Type</th><th>Tool</th><th>Message</th><th>Contact</th></tr></thead><tbody>"
+        "<table><thead><tr><th>When</th><th>Customer</th><th>Type</th><th>Tool</th><th>Message</th><th>Contact</th><th>Status</th><th>Update</th></tr></thead><tbody>"
         + support_rows
         + "</tbody></table>"
     ) if support_requests else '<p style="color:#94a3b8;text-align:center;padding:2rem">No customer support requests yet</p>'
 
+    admin_side_nav = (
+        '<div style="position:sticky;top:88px;display:flex;flex-direction:column;gap:10px">'
+        '<a href="#adminAddUser" class="btn btn-gray" style="text-decoration:none;justify-content:center">הוספת לקוח</a>'
+        '<a href="#adminUsers" class="btn btn-gray" style="text-decoration:none;justify-content:center">לקוחות</a>'
+        '<a href="#adminLogs" class="btn btn-gray" style="text-decoration:none;justify-content:center">לוגים</a>'
+        '<a href="#adminSupport" class="btn btn-gray" style="text-decoration:none;justify-content:center">פניות שירות'
+        + (' (' + str(pending_support) + ')' if pending_support else '')
+        + '</a>'
+        '</div>'
+    )
+
     body = (
-        '<div class="card"><h2>&#10133; Add New User</h2><form method="POST" action="/admin/add_user"><div class="form-row">'
+        '<div style="display:grid;grid-template-columns:220px minmax(0,1fr);gap:1rem;align-items:start">'
+        '<div>' + admin_side_nav + '</div>'
+        '<div>'
+        '<div class="card" id="adminAddUser"><h2>&#10133; Add New User</h2><form method="POST" action="/admin/add_user"><div class="form-row">'
         '<div class="form-group"><label class="field-label">Full Name</label><input type="text" name="full_name" placeholder="Customer name" required style="margin-bottom:0"></div>'
         '<div class="form-group"><label class="field-label">Company Name</label><input type="text" name="company_name" placeholder="Company name" style="margin-bottom:0"></div>'
         '<div class="form-group"><label class="field-label">Company ID / ח.פ</label><input type="text" name="company_id" placeholder="Company ID" style="margin-bottom:0"></div>'
@@ -6719,14 +6795,26 @@ def admin():
         '<div class="form-group"><label class="field-label">Account Type</label><select name="account_type" style="margin-bottom:0"><option value="trial">30-day trial</option><option value="active">Active service</option></select></div>'
         '<div class="form-group"><label class="field-label">Valid Until</label><input type="text" name="service_valid_until" placeholder="YYYY-MM-DD" style="margin-bottom:0"></div>'
         '<button type="submit" class="btn btn-blue" style="height:40px;align-self:flex-end">Add</button></div></form></div>'
-        '<div class="card"><h2>&#128101; Users In System</h2>'
+        '<div class="card" id="adminUsers"><h2>&#128101; Users In System</h2>'
         + table
-        + '</div><div class="card"><h2>&#128221; User Activity Log</h2>'
+        + '</div><details class="card" id="adminLogs" style="padding:0;overflow:hidden">'
+        '<summary style="list-style:none;cursor:pointer;padding:18px 20px;display:flex;align-items:center;justify-content:space-between;gap:12px">'
+        '<div><div style="font-size:22px;font-weight:800;color:#0f172a;margin-bottom:4px">&#128221; User Activity Log</div><div style="font-size:13px;color:#64748b">פתיחה לפי צורך בלבד לצפייה ועבודה על הלוגים</div></div>'
+        '<span style="font-size:18px;color:#64748b">+</span>'
+        '</summary><div style="padding:0 20px 20px">'
         + activity_filter_bar
         + activity_summary
         + activity_table
-        + '</div><div class="card"><h2>&#128172; Customer Support Requests</h2>'
+        + '</div></details><details class="card" id="adminSupport" style="padding:0;overflow:hidden">'
+        '<summary style="list-style:none;cursor:pointer;padding:18px 20px;display:flex;align-items:center;justify-content:space-between;gap:12px">'
+        '<div><div style="font-size:22px;font-weight:800;color:#0f172a;margin-bottom:4px">&#128172; Customer Support Requests</div><div style="font-size:13px;color:#64748b">'
+        + ('יש ' + str(pending_support) + ' פניות שממתינות להתייחסות' if pending_support else 'אין כרגע פניות שממתינות להתייחסות')
+        + '</div></div>'
+        '<span style="font-size:18px;color:#64748b">+</span>'
+        '</summary><div style="padding:0 20px 20px">'
         + support_table
+        + '</div></details>'
+        + '</div>'
         + '</div><div class="modal-bg" id="passModal"><div class="modal-box"><h3 style="font-size:15px;font-weight:700;margin-bottom:1rem;color:#1e3a8a">Change Password &#8212; <span id="pname"></span></h3>'
         '<form method="POST" id="pform"><input type="password" name="new_password" placeholder="New password" required>'
         '<div style="display:flex;gap:8px;margin-top:.5rem;justify-content:flex-end"><button type="button" class="btn btn-gray" onclick="closePass()">Cancel</button>'
@@ -6780,6 +6868,21 @@ def add_user():
             raise
         add_flash("Username already exists")
     return redirect("/admin")
+
+
+@app.route("/admin/support/<int:request_id>/status", methods=["POST"])
+@login_required
+@admin_required
+def update_support_request_status(request_id):
+    new_status = request.form.get("status", "").strip().lower()
+    if new_status not in {"accepted", "resolved"}:
+        add_flash("Invalid support request status")
+        return redirect("/admin#adminSupport")
+    with get_db() as db:
+        db.execute("UPDATE support_requests SET status=? WHERE id=?", (new_status, request_id))
+        db.commit()
+    add_flash("Support request status updated")
+    return redirect("/admin#adminSupport")
 
 
 @app.route("/admin/delete/<int:uid>")
