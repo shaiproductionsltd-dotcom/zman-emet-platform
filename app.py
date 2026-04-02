@@ -3,7 +3,7 @@ from zipfile import BadZipFile, ZIP_DEFLATED, ZipFile
 from collections import defaultdict
 import calendar
 import csv
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 import html
 import json
 import os
@@ -3070,6 +3070,18 @@ def format_ui_datetime(value):
     return text
 
 
+def parse_datetime_value(value):
+    text = str(value or "").strip()
+    if not text:
+        return None
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
+        try:
+            return datetime.strptime(text, fmt)
+        except ValueError:
+            continue
+    return None
+
+
 def parse_iso_date(value):
     text = str(value or "").strip()
     if not text:
@@ -3655,15 +3667,14 @@ def activity():
 @login_required
 @admin_required
 def admin():
+    activity_user_query = request.args.get("activity_user", "").strip()
+    activity_range = request.args.get("activity_range", "all").strip() or "all"
+    activity_from = request.args.get("activity_from", "").strip()
+    activity_to = request.args.get("activity_to", "").strip()
     with get_db() as db:
         users = db.execute("SELECT * FROM users WHERE is_admin=0").fetchall()
         perms = db.execute("SELECT * FROM permissions").fetchall()
-        activity_logs = db.execute("SELECT * FROM activity_logs ORDER BY created_at DESC, id DESC LIMIT 200").fetchall()
-        total_activity = db.execute("SELECT COUNT(*) AS count FROM activity_logs").fetchone()["count"]
-        generated_reports = db.execute("SELECT COUNT(*) AS count FROM activity_logs WHERE event_type=?", ("generate_report",)).fetchone()["count"]
-        opened_tools = db.execute("SELECT COUNT(*) AS count FROM activity_logs WHERE event_type=?", ("open_script",)).fetchone()["count"]
-        help_opens = db.execute("SELECT COUNT(*) AS count FROM activity_logs WHERE event_type=?", ("open_help_popup",)).fetchone()["count"]
-        terms_opens = db.execute("SELECT COUNT(*) AS count FROM activity_logs WHERE event_type=?", ("open_service_terms",)).fetchone()["count"]
+        all_activity_logs = db.execute("SELECT * FROM activity_logs ORDER BY created_at DESC, id DESC").fetchall()
 
     user_perms = {}
     for perm in perms:
@@ -3714,8 +3725,47 @@ def admin():
         + "</tbody></table>"
     ) if users else '<p style="color:#94a3b8;text-align:center;padding:2rem">No users yet</p>'
 
+    filtered_activity_logs = []
+    today = date.today()
+    range_start = None
+    range_end = None
+    if activity_range == "last_30":
+        range_start = datetime.combine(today - timedelta(days=29), datetime.min.time())
+        range_end = datetime.combine(today, datetime.max.time())
+    elif activity_range == "custom":
+        parsed_from = parse_iso_date(activity_from)
+        parsed_to = parse_iso_date(activity_to)
+        if parsed_from:
+            range_start = datetime.combine(parsed_from, datetime.min.time())
+        if parsed_to:
+            range_end = datetime.combine(parsed_to, datetime.max.time())
+
+    for entry in all_activity_logs:
+        username_text = str(entry["username"] or "")
+        full_name_text = str(entry["full_name"] or "")
+        if activity_user_query:
+            query = activity_user_query.lower()
+            if query not in username_text.lower() and query not in full_name_text.lower():
+                continue
+        created_at = parse_datetime_value(entry["created_at"])
+        if range_start and created_at and created_at < range_start:
+            continue
+        if range_end and created_at and created_at > range_end:
+            continue
+        if range_start and not created_at:
+            continue
+        if range_end and not created_at:
+            continue
+        filtered_activity_logs.append(entry)
+
+    total_activity = len(filtered_activity_logs)
+    generated_reports = sum(1 for entry in filtered_activity_logs if entry["event_type"] == "generate_report")
+    opened_tools = sum(1 for entry in filtered_activity_logs if entry["event_type"] == "open_script")
+    help_opens = sum(1 for entry in filtered_activity_logs if entry["event_type"] == "open_help_popup")
+    terms_opens = sum(1 for entry in filtered_activity_logs if entry["event_type"] == "open_service_terms")
+
     activity_rows = ""
-    for entry in activity_logs:
+    for entry in filtered_activity_logs:
         user_label = entry["full_name"] or entry["username"] or ("User #" + str(entry["user_id"]))
         activity_rows += (
             "<tr>"
@@ -3730,7 +3780,7 @@ def admin():
         "<table><thead><tr><th>When</th><th>User</th><th>Action</th><th>Tool</th><th>Details</th></tr></thead><tbody>"
         + activity_rows
         + "</tbody></table>"
-    ) if activity_logs else '<p style="color:#94a3b8;text-align:center;padding:2rem">No activity logged yet</p>'
+    ) if filtered_activity_logs else '<p style="color:#94a3b8;text-align:center;padding:2rem">No activity matches the current filters</p>'
     activity_summary = (
         '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;margin-bottom:1rem">'
         + '<div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;padding:12px"><div style="font-size:12px;color:#64748b;margin-bottom:6px">Total events</div><div style="font-size:20px;font-weight:800;color:#0f172a">' + str(total_activity) + '</div></div>'
@@ -3739,6 +3789,20 @@ def admin():
         + '<div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;padding:12px"><div style="font-size:12px;color:#64748b;margin-bottom:6px">Help opened</div><div style="font-size:20px;font-weight:800;color:#0f172a">' + str(help_opens) + '</div></div>'
         + '<div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;padding:12px"><div style="font-size:12px;color:#64748b;margin-bottom:6px">Terms opened</div><div style="font-size:20px;font-weight:800;color:#0f172a">' + str(terms_opens) + '</div></div>'
         + '</div>'
+    )
+    activity_filter_bar = (
+        '<form method="GET" action="/admin" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;margin-bottom:1rem">'
+        '<div><label class="field-label">User</label><input type="text" name="activity_user" value="' + esc(activity_user_query) + '" placeholder="Name or username" style="margin-bottom:0"></div>'
+        '<div><label class="field-label">Date range</label><select name="activity_range" style="padding:9px 12px;border:1.5px solid #e2e8f0;border-radius:8px;font-size:13px;font-family:inherit;outline:none;width:100%;margin-bottom:0;background:white">'
+        + '<option value="all"' + (' selected' if activity_range == "all" else '') + '>All activity</option>'
+        + '<option value="last_30"' + (' selected' if activity_range == "last_30" else '') + '>Last 30 days</option>'
+        + '<option value="custom"' + (' selected' if activity_range == "custom" else '') + '>From date to date</option>'
+        + '</select></div>'
+        '<div><label class="field-label">From date</label><input type="text" name="activity_from" value="' + esc(activity_from) + '" placeholder="YYYY-MM-DD" style="margin-bottom:0"></div>'
+        '<div><label class="field-label">To date</label><input type="text" name="activity_to" value="' + esc(activity_to) + '" placeholder="YYYY-MM-DD" style="margin-bottom:0"></div>'
+        '<div style="display:flex;gap:8px;align-items:flex-end"><button type="submit" class="btn btn-blue" style="height:40px">Filter</button><a href="/admin" class="btn btn-gray" style="height:40px;display:inline-flex;align-items:center;text-decoration:none">Reset</a></div>'
+        '</form>'
+        '<div style="font-size:12px;color:#64748b;margin-bottom:1rem">Activity is available from the moment logging was enabled. Older button clicks and opens cannot be reconstructed retroactively.</div>'
     )
 
     body = (
@@ -3758,6 +3822,7 @@ def admin():
         '<div class="card"><h2>&#128101; Users In System</h2>'
         + table
         + '</div><div class="card"><h2>&#128221; User Activity Log</h2>'
+        + activity_filter_bar
         + activity_summary
         + activity_table
         + '</div><div class="modal-bg" id="passModal"><div class="modal-box"><h3 style="font-size:15px;font-weight:700;margin-bottom:1rem;color:#1e3a8a">Change Password &#8212; <span id="pname"></span></h3>'
