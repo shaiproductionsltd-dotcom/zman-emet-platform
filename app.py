@@ -2119,13 +2119,13 @@ def extract_rimon_mapping_value(sheet, workbook_kind, mapping_value, row_index=N
     if not source:
         return ""
     if source == "meta:employee_name":
-        return find_rimon_meta_value(sheet, workbook_kind, ["שם לתצוגה", "שם עובד"], [(5, 5)])
+        return find_rimon_meta_value(sheet, workbook_kind, ["שם לתצוגה", "שם עובד"])
     if source == "meta:payroll_number":
-        return find_rimon_meta_value(sheet, workbook_kind, ["מספר שכר", "מספר עובד", "שכר"], [(5, 48), (5, 50)])
+        return find_rimon_meta_value(sheet, workbook_kind, ["מספר שכר", "מספר עובד", "מספר בשכר", "תג עובד", "שכר"])
     if source == "meta:department":
-        return find_rimon_meta_value(sheet, workbook_kind, ["מחלקה"], [(5, 21), (5, 23)])
+        return find_rimon_meta_value(sheet, workbook_kind, ["מחלקה"])
     if source == "meta:id_number":
-        return find_rimon_meta_value(sheet, workbook_kind, ["תעודת זהות", "דרכון"], [(7, 5)])
+        return find_rimon_meta_value(sheet, workbook_kind, ["תעודת זהות", "דרכון"])
     if source.startswith("meta_cell:"):
         try:
             _, row_text, col_text = source.split(":", 2)
@@ -2148,6 +2148,10 @@ def default_rimon_mapping():
         "employee_name_source": "meta:employee_name",
         "payroll_number_source": "meta:payroll_number",
         "date_source": "col:0",
+        "day_name_source": "col:6",
+        "entry_time_source": "col:8",
+        "exit_time_source": "col:12",
+        "total_hours_source": "col:20",
         "event_source": "col:17",
         "error_text_source": "col:51",
         "department_source": "meta:department",
@@ -2174,6 +2178,9 @@ def parse_rimon_home_office_report(input_path, extension, mapping):
     workbook_kind, workbook = open_excel_workbook(input_path, extension)
     employee_rows = []
     daily_rows = []
+    detected_company_name = ""
+    detected_months = []
+    detected_dates = set()
 
     for sheet in iter_excel_sheets(workbook_kind, workbook):
         rows, _ = get_excel_dims(sheet, workbook_kind)
@@ -2184,6 +2191,10 @@ def parse_rimon_home_office_report(input_path, extension, mapping):
         id_number = extract_rimon_mapping_value(sheet, workbook_kind, mapping.get("id_number_source"))
         if not employee_name:
             employee_name = getattr(sheet, "name", "עובד")
+        if not stringify_excel_value(extract_rimon_mapping_value(sheet, workbook_kind, mapping.get("employee_name_source"))) and not stringify_excel_value(extract_rimon_mapping_value(sheet, workbook_kind, mapping.get("payroll_number_source"))):
+            continue
+        if not detected_company_name:
+            detected_company_name = stringify_excel_value(get_excel_cell(sheet, workbook_kind, 0, 0, "")) or stringify_excel_value(get_excel_cell(sheet, workbook_kind, 1, 42, ""))
 
         grouped_dates = {}
         current_date = None
@@ -2201,7 +2212,11 @@ def parse_rimon_home_office_report(input_path, extension, mapping):
 
             event_value = extract_rimon_mapping_value(sheet, workbook_kind, mapping.get("event_source"), row_index)
             error_text = extract_rimon_mapping_value(sheet, workbook_kind, mapping.get("error_text_source"), row_index)
-            if not any([row_date, event_value, error_text]):
+            day_name = stringify_excel_value(extract_rimon_mapping_value(sheet, workbook_kind, mapping.get("day_name_source"), row_index))
+            entry_time = stringify_excel_value(extract_rimon_mapping_value(sheet, workbook_kind, mapping.get("entry_time_source"), row_index))
+            exit_time = stringify_excel_value(extract_rimon_mapping_value(sheet, workbook_kind, mapping.get("exit_time_source"), row_index))
+            total_hours = stringify_excel_value(extract_rimon_mapping_value(sheet, workbook_kind, mapping.get("total_hours_source"), row_index))
+            if not any([row_date, event_value, error_text, entry_time, exit_time, total_hours]):
                 continue
 
             day_key = current_date.isoformat()
@@ -2215,6 +2230,10 @@ def parse_rimon_home_office_report(input_path, extension, mapping):
                     "home_office": False,
                     "missing_absence": False,
                     "error": False,
+                    "day_name": day_name,
+                    "entry_time": "",
+                    "exit_time": "",
+                    "total_hours": "",
                     "events": [],
                     "errors": [],
                 }
@@ -2222,6 +2241,14 @@ def parse_rimon_home_office_report(input_path, extension, mapping):
             grouped = grouped_dates[day_key]
             normalized_event = str(event_value or "").strip()
             grouped["home_office"] = grouped["home_office"] or normalized_event == "עבודה מהבית"
+            if day_name and not grouped["day_name"]:
+                grouped["day_name"] = day_name
+            if entry_time and not grouped["entry_time"]:
+                grouped["entry_time"] = entry_time
+            if exit_time and not grouped["exit_time"]:
+                grouped["exit_time"] = exit_time
+            if total_hours and not grouped["total_hours"]:
+                grouped["total_hours"] = total_hours
             if event_value and event_value not in grouped["events"]:
                 grouped["events"].append(event_value)
             if error_text and error_text not in grouped["errors"]:
@@ -2236,9 +2263,29 @@ def parse_rimon_home_office_report(input_path, extension, mapping):
         for day_key in sorted(grouped_dates):
             grouped = grouped_dates[day_key]
             has_home_event = grouped["home_office"]
-            has_other_event = any(event and str(event).strip() != "עבודה מהבית" for event in grouped["events"])
-            office_work = has_other_event or not grouped["events"]
-            grouped["missing_absence"] = False
+            normalized_events = [str(event).strip() for event in grouped["events"] if str(event).strip()]
+            has_absence_event = any(
+                keyword in event
+                for event in normalized_events
+                for keyword in ("חופשה", "מחלה", "היעדר", "חג", "אבל", "מילואים")
+            )
+            has_other_work_event = any(
+                event != "עבודה מהבית"
+                and not any(keyword in event for keyword in ("חופשה", "מחלה", "היעדר", "חג", "אבל", "מילואים"))
+                for event in normalized_events
+            )
+            has_entry = bool(grouped["entry_time"])
+            has_exit = bool(grouped["exit_time"])
+            has_complete_attendance = has_entry and has_exit
+            has_partial_attendance = (has_entry and not has_exit) or (has_exit and not has_entry)
+            office_work = has_other_work_event or (has_complete_attendance and not has_home_event)
+            grouped["missing_absence"] = has_absence_event and not office_work and not has_home_event and not has_complete_attendance
+            missing_day_error = not has_complete_attendance and not has_partial_attendance and not normalized_events and not grouped["missing_absence"]
+            if has_partial_attendance and "חסר דיווח" not in grouped["errors"]:
+                grouped["errors"].append("חסר דיווח")
+            if missing_day_error and "יום חסר" not in grouped["errors"]:
+                grouped["errors"].append("יום חסר")
+            grouped["error"] = grouped["error"] or missing_day_error or has_partial_attendance
 
             if has_home_event and not office_work:
                 home_office_days += 1
@@ -2248,17 +2295,22 @@ def parse_rimon_home_office_report(input_path, extension, mapping):
                 missing_absence_days += 1
             if grouped["error"]:
                 error_days += 1
+            detected_months.append(datetime.fromisoformat(grouped["date"]).month)
+            detected_dates.add(grouped["date"])
 
             daily_rows.append(
                 {
                     "employee_name": grouped["employee_name"],
                     "date": grouped["date"],
+                    "day_name": grouped["day_name"],
+                    "entry_time": grouped["entry_time"],
+                    "exit_time": grouped["exit_time"],
                     "home_office": grouped["home_office"],
                     "office_work": office_work,
                     "missing_absence": grouped["missing_absence"],
                     "error": grouped["error"],
                     "event": " | ".join(grouped["events"]),
-                    "total_hours": "",
+                    "total_hours": grouped["total_hours"],
                     "standard_hours": "",
                     "missing_hours": "",
                     "error_text": " | ".join(grouped["errors"]),
@@ -2281,31 +2333,37 @@ def parse_rimon_home_office_report(input_path, extension, mapping):
 
     if workbook_kind == "xlsx":
         workbook.close()
-    return employee_rows, daily_rows
+    report_month = ""
+    if detected_months:
+        month_names_he = {
+            1: "ינואר",
+            2: "פברואר",
+            3: "מרץ",
+            4: "אפריל",
+            5: "מאי",
+            6: "יוני",
+            7: "יולי",
+            8: "אוגוסט",
+            9: "ספטמבר",
+            10: "אוקטובר",
+            11: "נובמבר",
+            12: "דצמבר",
+        }
+        month_number = max(set(detected_months), key=detected_months.count)
+        report_month = month_names_he.get(month_number, "")
+    report_meta = {
+        "company_name": detected_company_name,
+        "report_month": report_month,
+        "identified_day_count": len(detected_dates),
+    }
+    return employee_rows, daily_rows, report_meta
 
 
-def write_rimon_home_office_summary(ws, employee_rows):
+def write_rimon_home_office_summary(ws, employee_rows, report_meta):
     ws.title = safe_sheet_title("סיכום רימון", "Rimon Summary")
     ws.sheet_view.rightToLeft = True
     ws.sheet_view.showGridLines = False
-    ws.freeze_panes = "A7"
-
-    ws["A1"] = "דוח סיכום עבודה מהבית - רימון"
-    ws["A1"].font = Font(bold=True, size=18, color="0F172A")
-    ws["A1"].fill = PatternFill(fill_type="solid", fgColor="BFDBFE")
-
-    metrics = [
-        ("סה\"כ ימי עבודה", sum(row["office_work_days"] + row["home_office_days"] for row in employee_rows), "DBEAFE"),
-        ("סה\"כ ימי עבודה מהבית", sum(row["home_office_days"] for row in employee_rows), "DDD6FE"),
-        ("סה\"כ ימי עבודה מהמשרד", sum(row["office_work_days"] for row in employee_rows), "DCFCE7"),
-    ]
-    for idx, (label, value, fill_color) in enumerate(metrics, start=3):
-        label_cell = ws.cell(row=idx, column=1, value=label)
-        value_cell = ws.cell(row=idx, column=2, value=value)
-        label_cell.font = Font(bold=True, color="334155")
-        value_cell.font = Font(bold=True, color="0F172A")
-        label_cell.fill = PatternFill(fill_type="solid", fgColor=fill_color)
-        value_cell.fill = PatternFill(fill_type="solid", fgColor=fill_color)
+    ws.freeze_panes = "A13"
 
     headers = [
         "שם עובד",
@@ -2314,15 +2372,55 @@ def write_rimon_home_office_summary(ws, employee_rows):
         "מחלקה",
         "ימי עבודה מהמשרד",
         "ימי עבודה מהבית",
-        "ימי חסר/היעדרות",
+        "ימי היעדרות",
         "ימי שגיאה",
         "סה\"כ ימי עבודה שזוהו",
     ]
-    header_row = 6
+
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(headers))
+    ws["A1"] = "דוח סיכום עבודה מהבית מול עבודה מהמשרד"
+    ws["A1"].font = Font(bold=True, size=18, color="0F172A")
+    ws["A1"].fill = PatternFill(fill_type="solid", fgColor="BFDBFE")
+    ws["A1"].alignment = Alignment(horizontal="center")
+
+    company_name = report_meta.get("company_name", "")
+    if company_name:
+        ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=len(headers))
+        ws["A2"] = company_name
+        ws["A2"].font = Font(bold=True, size=13, color="334155")
+        ws["A2"].alignment = Alignment(horizontal="center")
+
+    total_days_identified = report_meta.get("identified_day_count", 0)
+    total_home_days = sum(row["home_office_days"] for row in employee_rows)
+    total_office_days = sum(row["office_work_days"] for row in employee_rows)
+    total_absence_days = sum(row["missing_absence_days"] for row in employee_rows)
+    total_error_days = sum(row["error_days"] for row in employee_rows)
+    metrics = [
+        ("סה\"כ עובדים שנקלטו", len(employee_rows), "E0F2FE"),
+        ("סה\"כ ימים לחודש שזוהו", total_days_identified, "E0F2FE"),
+        ("חודש הדוח", report_meta.get("report_month", ""), "E0F2FE"),
+        ("סה\"כ ימי עבודה", total_office_days + total_home_days, "DBEAFE"),
+        ("סה\"כ ימי עבודה מהבית", total_home_days, "DDD6FE"),
+        ("סה\"כ ימי עבודה מהמשרד", total_office_days, "DCFCE7"),
+        ("סה\"כ שגיאות", total_error_days, "FEE2E2"),
+        ("סה\"כ היעדרויות", total_absence_days, "FEF3C7"),
+    ]
+    for idx, (label, value, fill_color) in enumerate(metrics, start=4):
+        label_cell = ws.cell(row=idx, column=1, value=label)
+        value_cell = ws.cell(row=idx, column=2, value=value)
+        label_cell.font = Font(bold=True, color="334155")
+        value_cell.font = Font(bold=True, color="0F172A")
+        label_cell.fill = PatternFill(fill_type="solid", fgColor=fill_color)
+        value_cell.fill = PatternFill(fill_type="solid", fgColor=fill_color)
+        label_cell.alignment = Alignment(horizontal="center")
+        value_cell.alignment = Alignment(horizontal="center")
+
+    header_row = 12
     for col, header in enumerate(headers, start=1):
         cell = ws.cell(row=header_row, column=col, value=header)
         cell.font = Font(bold=True, color="FFFFFF")
         cell.fill = PatternFill(fill_type="solid", fgColor="1E3A8A")
+        cell.alignment = Alignment(horizontal="center")
 
     sorted_rows = sorted(employee_rows, key=lambda row: (row["employee_name"], row["payroll_number"]))
     for row_idx, row in enumerate(sorted_rows, start=header_row + 1):
@@ -2356,12 +2454,15 @@ def write_rimon_home_office_daily(ws, daily_rows):
     headers = [
         "עובד",
         "תאריך",
+        "סוג יום",
+        "שעת כניסה",
+        "שעת יציאה",
+        "סה\"כ שעות",
         "עבודה מהבית",
         "עבודה מהמשרד",
-        "חסר/היעדרות",
+        "היעדרות",
         "שגיאה",
         "אירוע",
-        "סה\"כ שעות",
         "שעות תקן",
         "שעות חסר",
         "פירוט שגיאה",
@@ -2376,12 +2477,15 @@ def write_rimon_home_office_daily(ws, daily_rows):
         values = [
             row["employee_name"],
             row["date"],
+            row["day_name"],
+            row["entry_time"],
+            row["exit_time"],
+            row["total_hours"],
             yes_no(row["home_office"]),
             yes_no(row["office_work"]),
             yes_no(row["missing_absence"]),
             yes_no(row["error"]),
             row["event"],
-            row["total_hours"],
             row["standard_hours"],
             row["missing_hours"],
             row["error_text"],
@@ -2391,7 +2495,7 @@ def write_rimon_home_office_daily(ws, daily_rows):
             if row_idx % 2 == 0:
                 ws.cell(row=row_idx, column=col).fill = PatternFill(fill_type="solid", fgColor="ECFDF5")
 
-    widths = [24, 14, 14, 14, 18, 10, 20, 14, 14, 14, 22]
+    widths = [24, 14, 12, 12, 12, 12, 14, 14, 12, 10, 20, 14, 14, 22]
     for col, width in enumerate(widths, start=1):
         ws.column_dimensions[get_column_letter(col)].width = width
 
@@ -2402,9 +2506,9 @@ def run_rimon_home_office_summary(input_path, output_path, extension, options=No
     options = options or {}
     mapping = default_rimon_mapping()
     mapping.update({key: value for key, value in options.items() if key.endswith("_source")})
-    employee_rows, daily_rows = parse_rimon_home_office_report(input_path, extension, mapping)
+    employee_rows, daily_rows, report_meta = parse_rimon_home_office_report(input_path, extension, mapping)
     wb = Workbook()
-    write_rimon_home_office_summary(wb.active, employee_rows)
+    write_rimon_home_office_summary(wb.active, employee_rows, report_meta)
     write_rimon_home_office_daily(wb.create_sheet(), daily_rows)
     wb.save(output_path)
     return {"warnings": build_rimon_mapping_warnings(mapping)}
@@ -2829,6 +2933,17 @@ SCRIPTS["rimon_home_office_summary"] = {
     "help_intro": "יש להעלות דוח מפורט חודשי.",
     "help_items": ["המערכת מזהה ימי עבודה מהבית", "ימי עבודה מהמשרד", "היעדרויות", "ושגיאות בדיווח"],
     "help_note": "הפלט מחזיר סיכום ברור לפי עובד",
+    "rules_label": "איך הסקריפט מחשב",
+    "rules_title": "איך הסקריפט מחשב את הימים?",
+    "rules_intro": "הסקריפט מסכם כל יום לפי כללי ההכרעה הבאים:",
+    "rules_items": [
+        "אם יש גם עבודה מהבית וגם עבודה מהמשרד באותו יום, עבודה מהמשרד גוברת",
+        "אם יש גם נוכחות וגם היעדרות באותו יום, נוכחות גוברת",
+        "אם יש שעת כניסה ושעת יציאה, היום נחשב לנוכחות",
+        "אם יש רק שעת כניסה או רק שעת יציאה, היום מסומן כשגיאה מסוג חסר דיווח",
+        "אם אין נוכחות ואין אירוע, היום מסומן כשגיאה מסוג יום חסר",
+    ],
+    "rules_note": "כך אפשר להבין בדיוק איך כל יום מסווג בפלט הסופי.",
     "accept": ".xls,.xlsx",
     "icon": "🏠",
 }
@@ -2897,7 +3012,7 @@ SCRIPT_REGISTRY["matan_manual_corrections"] = {
 SCRIPT_REGISTRY["rimon_home_office_summary"] = {
     **SCRIPTS["rimon_home_office_summary"],
     "processor": run_rimon_home_office_summary,
-    "output_suffix": "rimon_home_office_summary",
+    "output_suffix": "home_office_report",
     "success_title": "דוח הסיכום מוכן",
     "success_action": "הורדת הדוח",
     "retry_action": "עיבוד קובץ נוסף",
@@ -3216,6 +3331,10 @@ RIMON_MAPPING_FIELDS = [
     {"name": "employee_name_source", "label": "שם עובד", "required": True},
     {"name": "payroll_number_source", "label": "מספר עובד", "required": True},
     {"name": "date_source", "label": "תאריך", "required": True},
+    {"name": "day_name_source", "label": "סוג יום", "required": False},
+    {"name": "entry_time_source", "label": "שעת כניסה", "required": False},
+    {"name": "exit_time_source", "label": "שעת יציאה", "required": False},
+    {"name": "total_hours_source", "label": "סה\"כ שעות", "required": False},
     {"name": "event_source", "label": "אירוע", "required": True},
     {"name": "error_text_source", "label": "שדה שגיאה", "required": False},
     {"name": "department_source", "label": "מחלקה", "required": False},
@@ -3227,6 +3346,10 @@ RIMON_SUGGESTION_KEYWORDS = {
     "employee_name_source": ["שםלתצוגה", "שםעובד", "עובד", "employee", "name"],
     "payroll_number_source": ["מספרשכר", "מספרעובד", "שכר", "עובד", "payroll", "employeeid"],
     "date_source": ["תאריך", "date"],
+    "day_name_source": ["יום", "day"],
+    "entry_time_source": ["כניסה", "entry", "checkin"],
+    "exit_time_source": ["יציאה", "exit", "checkout"],
+    "total_hours_source": ["סהכ", "סה\"כ", "total", "hours"],
     "event_source": ["אירוע", "event", "סטטוס"],
     "error_text_source": ["שגיאה", "שגיאות", "error", "errors"],
     "department_source": ["מחלקה", "department"],
@@ -3319,6 +3442,16 @@ def looks_like_excel_date_sample(sample_text):
     return False
 
 
+def looks_like_time_sample(sample_text):
+    text = str(sample_text or "").strip().replace("*", "").replace("?", "")
+    return bool(re.fullmatch(r"\d{1,2}:\d{2}", text))
+
+
+def looks_like_day_name_sample(sample_text):
+    text = str(sample_text or "").strip()
+    return text in {"א", "ב", "ג", "ד", "ה", "ו", "שבת", "יום שישי", "ראשון", "שני", "שלישי", "רביעי", "חמישי", "שישי"}
+
+
 def detect_rimon_header_row(sheet, workbook_kind):
     rows, cols = get_excel_dims(sheet, workbook_kind)
     best_row = 11 if rows > 11 else 0
@@ -3366,6 +3499,8 @@ def find_rimon_meta_value(sheet, workbook_kind, labels, fallback_cells=()):
             if token in normalized_labels:
                 for next_col in range(col_index + 1, min(cols, col_index + 6)):
                     candidate = stringify_excel_value(get_excel_cell(sheet, workbook_kind, row_index, next_col, ""))
+                    if candidate and normalize_token(candidate) in RIMON_META_LABEL_TOKENS:
+                        break
                     if candidate:
                         return candidate
     for row_index, col_index in fallback_cells:
@@ -3450,10 +3585,10 @@ def build_rimon_mapping_options(input_path, extension):
         "id_number_source": [],
     }
     alias_meta_values = {
-        "employee_name_source": find_rimon_meta_value(first_sheet, workbook_kind, ["שם לתצוגה", "שם עובד"], [(5, 5)]),
-        "payroll_number_source": find_rimon_meta_value(first_sheet, workbook_kind, ["מספר שכר", "מספר עובד", "מספר בשכר", "תג עובד"], [(5, 23), (5, 50)]),
-        "department_source": find_rimon_meta_value(first_sheet, workbook_kind, ["מחלקה"], [(5, 13), (5, 21), (5, 23)]),
-        "id_number_source": find_rimon_meta_value(first_sheet, workbook_kind, ["תעודת זהות", "דרכון"], [(7, 5)]),
+        "employee_name_source": find_rimon_meta_value(first_sheet, workbook_kind, ["שם לתצוגה", "שם עובד"]),
+        "payroll_number_source": find_rimon_meta_value(first_sheet, workbook_kind, ["מספר שכר", "מספר עובד", "מספר בשכר", "תג עובד"]),
+        "department_source": find_rimon_meta_value(first_sheet, workbook_kind, ["מחלקה"]),
+        "id_number_source": find_rimon_meta_value(first_sheet, workbook_kind, ["תעודת זהות", "דרכון"]),
     }
     alias_meta_labels = {
         "employee_name_source": "שדה עליון: שם עובד",
@@ -3462,10 +3597,10 @@ def build_rimon_mapping_options(input_path, extension):
         "id_number_source": "שדה עליון: תעודת זהות",
     }
     candidate_meta_labels = {
-        "employee_name_source": (["שם לתצוגה", "שם עובד"], [(5, 5)]),
-        "payroll_number_source": (["מספר שכר", "מספר עובד", "מספר בשכר", "תג עובד"], [(5, 23), (5, 50)]),
-        "department_source": (["מחלקה"], [(5, 13), (5, 21), (5, 23)]),
-        "id_number_source": (["תעודת זהות", "דרכון"], [(7, 5)]),
+        "employee_name_source": (["שם לתצוגה", "שם עובד"], []),
+        "payroll_number_source": (["מספר שכר", "מספר עובד", "מספר בשכר", "תג עובד"], []),
+        "department_source": (["מחלקה"], []),
+        "id_number_source": (["תעודת זהות", "דרכון"], []),
     }
     for field_name, field_value in alias_meta_values.items():
         if field_value:
@@ -3500,6 +3635,26 @@ def build_rimon_mapping_options(input_path, extension):
                     if (
                         (any(keyword in exact_token for keyword in keywords) or any(keyword in header_token for keyword in keywords))
                         and looks_like_excel_date_sample(option.get("sample", ""))
+                    ):
+                        suggested = option["value"]
+                        break
+            elif field_name == "day_name_source":
+                for option in ranked_options:
+                    header_token = normalize_token(option["header"])
+                    exact_token = normalize_token(option.get("exact_header", ""))
+                    if (
+                        (header_token == "יום" or exact_token == "יום" or any(keyword in exact_token for keyword in keywords))
+                        and looks_like_day_name_sample(option.get("sample", ""))
+                    ):
+                        suggested = option["value"]
+                        break
+            elif field_name in {"entry_time_source", "exit_time_source", "total_hours_source"}:
+                for option in ranked_options:
+                    header_token = normalize_token(option["header"])
+                    exact_token = normalize_token(option.get("exact_header", ""))
+                    if (
+                        (any(keyword in exact_token for keyword in keywords) or (not option.get("from_nearby") and any(keyword in header_token for keyword in keywords)))
+                        and looks_like_time_sample(option.get("sample", ""))
                     ):
                         suggested = option["value"]
                         break
@@ -4229,6 +4384,8 @@ def run_script(script_id):
 
     help_trigger_html = ""
     help_modal_html = ""
+    rules_trigger_html = ""
+    rules_modal_html = ""
     activity_script_id = json.dumps(script_id)
     activity_script_name = json.dumps(scr["name"])
     if lang == "he" and scr.get("help_title"):
@@ -4256,6 +4413,31 @@ def run_script(script_id):
             + '<div style="margin-top:1rem"><button type="button" class="btn btn-blue" style="width:100%" onclick="closeHelpModal()">סגור</button></div>'
             + '</div></div>'
         )
+    if lang == "he" and scr.get("rules_title"):
+        rules_items_html = "".join(
+            '<li style="margin-bottom:6px">' + esc(item) + '</li>'
+            for item in scr.get("rules_items", [])
+        )
+        rules_trigger_html = (
+            '<button type="button" onclick="openRulesModal()" style="display:inline-flex;align-items:center;gap:6px;border:1px solid #c7d2fe;background:#eef2ff;color:#4338ca;border-radius:999px;padding:6px 10px;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit">'
+            '<span style="display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:999px;background:#e0e7ff">i</span>'
+            + esc(scr.get("rules_label", "איך זה עובד"))
+            + '</button>'
+        )
+        rules_modal_html = (
+            '<div class="modal-bg" id="rulesModal" onclick="closeRulesModal(event)">'
+            '<div class="modal-box" style="width:100%;max-width:560px;padding:1.5rem 1.5rem 1.25rem;border-radius:18px">'
+            '<div style="font-size:18px;font-weight:800;color:#0f172a;margin-bottom:.75rem">' + esc(scr["rules_title"]) + '</div>'
+            '<div style="font-size:14px;line-height:1.8;color:#334155">'
+            + esc(scr.get("rules_intro", ""))
+            + '<ul style="margin:.6rem 0 .75rem;padding-inline-start:1.2rem">'
+            + rules_items_html
+            + '</ul>'
+            + esc(scr.get("rules_note", ""))
+            + '</div>'
+            + '<div style="margin-top:1rem"><button type="button" class="btn btn-blue" style="width:100%" onclick="closeRulesModal()">סגור</button></div>'
+            + '</div></div>'
+        )
 
     body = (
         '<a href="/dashboard" style="color:#2563eb;font-size:13px;text-decoration:none;display:block;margin-bottom:1rem">' + text["back_arrow"] + ' ' + scr["back_label"] + '</a>'
@@ -4265,10 +4447,12 @@ def run_script(script_id):
         + '<div style="display:flex;align-items:center;justify-content:center;gap:10px;flex-wrap:wrap;margin-bottom:1.75rem">'
         + '<div style="font-size:13px;color:#64748b">' + scr["desc"] + '</div>'
         + help_trigger_html
+        + rules_trigger_html
         + '</div>'
         + content
         + '</div>'
         + help_modal_html
+        + rules_modal_html
         + '<script>'
         + 'var fileInput=document.getElementById("fi");'
         + 'var label=document.getElementById("lbl");'
@@ -4279,6 +4463,8 @@ def run_script(script_id):
         + 'var activityScriptName=' + activity_script_name + ';'
         + 'function openHelpModal(){var modal=document.getElementById("helpModal");if(modal){modal.style.display="flex";trackUserActivity("open_help_popup","פתח מידע והנחיות נוספות",activityScriptId,activityScriptName,"");}}'
         + 'function closeHelpModal(event){if(event && event.target && event.target.id!=="helpModal"){return;}var modal=document.getElementById("helpModal");if(modal){modal.style.display="none";}}'
+        + 'function openRulesModal(){var modal=document.getElementById("rulesModal");if(modal){modal.style.display="flex";trackUserActivity("open_logic_popup","פתח הסבר על אופן החישוב",activityScriptId,activityScriptName,"");}}'
+        + 'function closeRulesModal(event){if(event && event.target && event.target.id!=="rulesModal"){return;}var modal=document.getElementById("rulesModal");if(modal){modal.style.display="none";}}'
         + 'if(fileInput && label){fileInput.addEventListener("change", function(){if(this.files && this.files.length){label.textContent=this.files[0].name;}});}'
         + 'if(form){form.addEventListener("submit", function(event){if(!fileInput || !fileInput.files || !fileInput.files.length){event.preventDefault();return false;}button.disabled=true;button.textContent="' + scr["processing_title"] + '";var box=document.getElementById("processingBox");if(box){box.classList.add("show");}return true;});}'
         + '</script>'
