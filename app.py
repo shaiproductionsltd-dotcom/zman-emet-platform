@@ -3608,6 +3608,23 @@ def init_db():
             updated_at TEXT NOT NULL)"""
         )
         db.execute("CREATE INDEX IF NOT EXISTS idx_mapping_templates_user_script ON mapping_templates(user_id, script_id)")
+        db.execute(
+            """CREATE TABLE IF NOT EXISTS support_requests (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            username TEXT,
+            full_name TEXT,
+            company_name TEXT,
+            email TEXT,
+            phone TEXT,
+            request_type TEXT NOT NULL,
+            script_id TEXT,
+            script_name TEXT,
+            message TEXT NOT NULL,
+            status TEXT NOT NULL,
+            created_at TEXT NOT NULL)"""
+        )
+        db.execute("CREATE INDEX IF NOT EXISTS idx_support_requests_created_at ON support_requests(created_at)")
         existing_columns = get_table_columns(db, "users")
         desired_columns = {
             "company_name": "TEXT",
@@ -3728,6 +3745,31 @@ def log_user_activity(event_type, action_label, script_id="", script_name="", de
             db.commit()
     except Exception:
         pass
+
+
+def create_support_request(user_row, request_type, message, script_id="", script_name=""):
+    now_text = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with get_db() as db:
+        db.execute(
+            """INSERT INTO support_requests(
+            user_id, username, full_name, company_name, email, phone, request_type, script_id, script_name, message, status, created_at
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                user_row["id"],
+                user_row["username"] or "",
+                user_row["full_name"] or "",
+                user_row["company_name"] or "",
+                user_row["email"] or "",
+                user_row["phone"] or "",
+                request_type,
+                script_id or "",
+                script_name or "",
+                message,
+                "open",
+                now_text,
+            ),
+        )
+        db.commit()
 
 
 def resolve_script_from_output_name(filename):
@@ -5329,6 +5371,14 @@ def get_account_status(user_row):
 
     if trial_start:
         days_remaining = max(0, 30 - (today - trial_start).days)
+        if days_remaining == 0:
+            return {
+                "status_key": "expired",
+                "status_label_he": "לא בשירות",
+                "status_label_en": "Not in service",
+                "renewal_date": None,
+                "days_remaining": None,
+            }
         return {
             "status_key": "trial",
             "status_label_he": "ניסיון ל-30 יום",
@@ -5339,8 +5389,8 @@ def get_account_status(user_row):
 
     return {
         "status_key": "unknown",
-        "status_label_he": "סטטוס לא הוגדר",
-        "status_label_en": "Status not set",
+        "status_label_he": "לא בשירות",
+        "status_label_en": "Not in service",
         "renewal_date": None,
         "days_remaining": None,
     }
@@ -5569,6 +5619,12 @@ def dashboard():
         + '</div><div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:1rem">'
         + cards
         + '</div></div>'
+        '<div class="card" style="margin-top:1rem;background:linear-gradient(135deg,#ffffff 0%,#f8fbff 100%);border:1px solid #dbeafe">'
+        '<div style="display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap">'
+        '<div><div style="font-size:18px;font-weight:800;color:#1e3a8a;margin-bottom:6px">' + ("שירות לקוחות" if lang == "he" else "Customer support") + '</div>'
+        '<div style="font-size:14px;color:#475569;line-height:1.7">' + ("לבקשה לכלי חדש או לדיווח על תקלה בכלי קיים" if lang == "he" else "Request a new tool or report an issue in an existing tool") + '</div></div>'
+        '<a href="/support" class="btn btn-blue" style="text-decoration:none;display:inline-flex;align-items:center;justify-content:center;min-width:180px">' + ("פתיחת פנייה" if lang == "he" else "Open request") + '</a>'
+        '</div></div>'
         '<div class="card" style="margin-top:1rem;background:linear-gradient(135deg,#eff6ff 0%,#f8fafc 100%);border:1px solid #bfdbfe">'
         '<div style="font-size:18px;font-weight:800;color:#1e3a8a;margin-bottom:8px">' + ("אבטחת מידע ופרטיות" if lang == "he" else "Security and privacy") + '</div>'
         '<div style="font-size:14px;line-height:1.8;color:#334155">'
@@ -5596,6 +5652,107 @@ def dashboard():
     )
     return render(
         text["dashboard_page_title"],
+        body,
+        lang=lang,
+        topbar_greeting=text["topbar_greeting"],
+        logout_label=text["logout"],
+        show_lang_switch=True,
+    )
+
+
+@app.route("/support", methods=["GET", "POST"])
+@login_required
+def support():
+    if session.get("is_admin"):
+        return redirect("/admin")
+
+    lang = get_flow_lang()
+    text = get_flow_text(lang)
+    with get_db() as db:
+        user = db.execute("SELECT * FROM users WHERE id=?", (session["user_id"],)).fetchone()
+        perms = db.execute("SELECT script_id FROM permissions WHERE user_id=?", (session["user_id"],)).fetchall()
+    if user is None:
+        session.clear()
+        return redirect("/")
+
+    status = get_account_status(user)
+    allowed_scripts = [get_localized_script(SCRIPTS[p["script_id"]], lang) for p in perms if p["script_id"] in SCRIPTS]
+    support_type = request.form.get("support_type", "new_tool").strip() or "new_tool"
+    selected_script_id = request.form.get("support_script_id", "").strip()
+    message_text = request.form.get("support_message", "").strip()
+    error = ""
+    success = ""
+
+    if request.method == "POST":
+        if support_type not in {"new_tool", "existing_tool"}:
+            support_type = "new_tool"
+        if not message_text:
+            error = '<div class="flash-err">יש לכתוב את תוכן הפנייה לפני השליחה.</div>'
+        elif support_type == "existing_tool" and status["status_key"] != "active":
+            error = '<div class="flash-err">רק לקוחות בשירות פעיל מקבלים תמיכה על כלים קיימים. יש לפנות למנהל הפלטפורמה להסדרת השירות.</div>'
+        else:
+            selected_script = next((script for script in allowed_scripts if script["id"] == selected_script_id), None)
+            if support_type == "existing_tool" and selected_script is None:
+                error = '<div class="flash-err">יש לבחור כלי קיים מהרשימה לפני שליחת הפנייה.</div>'
+            else:
+                create_support_request(
+                    user,
+                    support_type,
+                    message_text,
+                    selected_script["id"] if selected_script else "",
+                    selected_script["name"] if selected_script else "",
+                )
+                log_user_activity(
+                    "open_support_request",
+                    "שלח פנייה לשירות לקוחות",
+                    selected_script["id"] if selected_script else "",
+                    selected_script["name"] if selected_script else "",
+                    "בקשה לכלי חדש" if support_type == "new_tool" else "תמיכה בכלי קיים",
+                )
+                if support_type == "new_tool":
+                    success = '<div class="flash">תודה על פנייתך. נתפנה לעיון בבקשה בקרוב וניצור קשר דרך הנייד או האימייל הכתובים לנו במערכת.</div>'
+                else:
+                    success = '<div class="flash">הפנייה נקלטה בהצלחה. נתפנה לטפל בה בהקדם וניצור קשר לפי הפרטים שכתובים לנו.</div>'
+                support_type = "new_tool"
+                selected_script_id = ""
+                message_text = ""
+
+    script_options = '<option value="">בחירת כלי</option>'
+    for script in allowed_scripts:
+        script_options += '<option value="' + esc(script["id"]) + '"' + (' selected' if selected_script_id == script["id"] else '') + '>' + esc(script["name"]) + '</option>'
+
+    inactive_support_note = ""
+    if status["status_key"] != "active":
+        inactive_support_note = '<div id="existingSupportWarning" style="background:#fef2f2;border:1px solid #fecaca;color:#b91c1c;border-radius:12px;padding:12px 14px;font-size:13px;line-height:1.7;margin-bottom:12px">רק לקוחות בשירות פעיל מקבלים תמיכה על כלים קיימים. יש לפנות למנהל הפלטפורמה להסדרת השירות.</div>'
+
+    body = (
+        '<a href="/dashboard" style="color:#2563eb;font-size:13px;text-decoration:none;display:block;margin-bottom:1rem">' + text["back_arrow"] + ' ' + ("חזרה לכלים" if lang == "he" else "Back to tools") + '</a>'
+        + '<div class="card">'
+        + '<div style="font-size:18px;font-weight:800;color:#1e3a8a;margin-bottom:8px">שירות לקוחות</div>'
+        + '<div style="font-size:14px;color:#475569;line-height:1.7;margin-bottom:1rem">אפשר לפתוח פנייה לבקשה לכלי חדש או לקבלת תמיכה בכלי קיים.</div>'
+        + success
+        + error
+        + '<form method="POST" id="supportRequestForm">'
+        + '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin-bottom:14px">'
+        + '<label style="display:flex;align-items:flex-start;gap:10px;background:#f8fafc;border:1px solid #dbeafe;border-radius:14px;padding:14px;cursor:pointer"><input type="radio" name="support_type" value="new_tool"' + (' checked' if support_type == 'new_tool' else '') + '><span><span style="display:block;font-size:15px;font-weight:700;color:#0f172a;margin-bottom:4px">בקשה לכלי חדש</span><span style="display:block;font-size:12px;color:#64748b;line-height:1.6">כתיבת בקשה חופשית לכלי או דוח חדש שתרצו שנבחן.</span></span></label>'
+        + '<label style="display:flex;align-items:flex-start;gap:10px;background:#f8fafc;border:1px solid #dbeafe;border-radius:14px;padding:14px;cursor:pointer"><input type="radio" name="support_type" value="existing_tool"' + (' checked' if support_type == 'existing_tool' else '') + '><span><span style="display:block;font-size:15px;font-weight:700;color:#0f172a;margin-bottom:4px">תמיכה בכלי קיים</span><span style="display:block;font-size:12px;color:#64748b;line-height:1.6">דיווח על תקלה או בעיה באחד הכלים שכבר פתוחים לכם במערכת.</span></span></label>'
+        + '</div>'
+        + '<div id="existingToolFields" style="display:' + ('block' if support_type == 'existing_tool' else 'none') + ';margin-bottom:12px">'
+        + inactive_support_note
+        + '<label class="field-label">בחירת כלי קיים</label>'
+        + '<select name="support_script_id" style="padding:9px 12px;border:1.5px solid #e2e8f0;border-radius:8px;font-size:13px;font-family:inherit;outline:none;width:100%;margin-bottom:0;background:white">' + script_options + '</select>'
+        + '</div>'
+        + '<label class="field-label">תיאור הפנייה</label>'
+        + '<textarea name="support_message" rows="7" style="width:100%;padding:12px;border:1.5px solid #e2e8f0;border-radius:12px;font-size:13px;font-family:inherit;outline:none;resize:vertical;margin-bottom:14px" placeholder="אפשר לכתוב כאן חופשי את הבקשה או את תיאור התקלה">' + esc(message_text) + '</textarea>'
+        + '<div style="display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap"><a href="/dashboard" class="btn btn-gray" style="text-decoration:none;display:inline-flex;align-items:center;justify-content:center">חזרה</a><button type="submit" class="btn btn-blue">שליחת פנייה</button></div>'
+        + '</form>'
+        + '<script>'
+        + '(function(){var radios=Array.prototype.slice.call(document.querySelectorAll(\'input[name="support_type"]\'));var block=document.getElementById("existingToolFields");function refresh(){var selected=(document.querySelector(\'input[name="support_type"]:checked\')||{}).value||"new_tool";if(block){block.style.display=selected==="existing_tool"?"block":"none";}}radios.forEach(function(r){r.addEventListener("change",refresh);});refresh();})();'
+        + '</script>'
+        + '</div>'
+    )
+    return render(
+        "שירות לקוחות" if lang == "he" else "Customer support",
         body,
         lang=lang,
         topbar_greeting=text["topbar_greeting"],
@@ -6352,6 +6509,7 @@ def admin():
         users = db.execute("SELECT * FROM users WHERE is_admin=0").fetchall()
         perms = db.execute("SELECT * FROM permissions").fetchall()
         all_activity_logs = db.execute("SELECT * FROM activity_logs ORDER BY created_at DESC, id DESC").fetchall()
+        support_requests = db.execute("SELECT * FROM support_requests ORDER BY created_at DESC, id DESC").fetchall()
 
     user_perms = {}
     for perm in perms:
@@ -6519,6 +6677,34 @@ def admin():
         + ('<div style="font-size:12px;color:#1d4ed8;margin-bottom:1rem">Showing ' + str(len(displayed_activity_logs)) + ' of ' + str(total_activity) + ' matching log entries.</div>' if total_activity > activity_limit else "")
     )
 
+    support_rows = ""
+    for entry in support_requests:
+        request_type_label = "בקשה לכלי חדש" if entry["request_type"] == "new_tool" else "תמיכה בכלי קיים"
+        customer_label = entry["company_name"] or entry["full_name"] or entry["username"] or ("User #" + str(entry["user_id"]))
+        contact_bits = []
+        if entry["email"]:
+            contact_bits.append("מייל: " + entry["email"])
+        if entry["phone"]:
+            contact_bits.append("טלפון: " + entry["phone"])
+        contact_text = "<br>".join(esc(bit) for bit in contact_bits) if contact_bits else "—"
+        support_rows += (
+            "<tr>"
+            '<td>' + esc(format_ui_datetime(entry["created_at"])) + "</td>"
+            '<td><div style="font-weight:700;color:#0f172a">' + esc(customer_label) + '</div>'
+            + ('<div style="font-size:12px;color:#64748b">@' + esc(entry["username"] or "") + "</div>" if entry["username"] else "")
+            + "</td>"
+            '<td>' + esc(request_type_label) + "</td>"
+            '<td>' + esc(entry["script_name"] or "—") + "</td>"
+            '<td style="max-width:420px;white-space:pre-wrap;line-height:1.7">' + esc(entry["message"] or "") + "</td>"
+            '<td style="font-size:12px;line-height:1.7;color:#475569">' + contact_text + "</td>"
+            "</tr>"
+        )
+    support_table = (
+        "<table><thead><tr><th>When</th><th>Customer</th><th>Type</th><th>Tool</th><th>Message</th><th>Contact</th></tr></thead><tbody>"
+        + support_rows
+        + "</tbody></table>"
+    ) if support_requests else '<p style="color:#94a3b8;text-align:center;padding:2rem">No customer support requests yet</p>'
+
     body = (
         '<div class="card"><h2>&#10133; Add New User</h2><form method="POST" action="/admin/add_user"><div class="form-row">'
         '<div class="form-group"><label class="field-label">Full Name</label><input type="text" name="full_name" placeholder="Customer name" required style="margin-bottom:0"></div>'
@@ -6539,6 +6725,8 @@ def admin():
         + activity_filter_bar
         + activity_summary
         + activity_table
+        + '</div><div class="card"><h2>&#128172; Customer Support Requests</h2>'
+        + support_table
         + '</div><div class="modal-bg" id="passModal"><div class="modal-box"><h3 style="font-size:15px;font-weight:700;margin-bottom:1rem;color:#1e3a8a">Change Password &#8212; <span id="pname"></span></h3>'
         '<form method="POST" id="pform"><input type="password" name="new_password" placeholder="New password" required>'
         '<div style="display:flex;gap:8px;margin-top:.5rem;justify-content:flex-end"><button type="button" class="btn btn-gray" onclick="closePass()">Cancel</button>'
