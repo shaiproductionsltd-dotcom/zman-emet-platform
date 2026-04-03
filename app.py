@@ -2150,7 +2150,8 @@ def _detect_corrections_daily_structure(workbook, sheet):
     return {"header_row": best_row, "data_start": data_start, "entry_col": star_entry, "exit_col": star_exit, "date_col": date_col}
 
 
-def parse_matan_manual_corrections(input_path):
+def parse_matan_manual_corrections(input_path, mapping=None):
+    mapping = mapping or {}
     workbook = xlrd.open_workbook(input_path)
     employee_rows = []
     daily_rows = []
@@ -2169,6 +2170,23 @@ def parse_matan_manual_corrections(input_path):
         exit_col = struct["exit_col"]
         date_col = struct["date_col"]
         data_start = struct["data_start"]
+
+        # Override with user-confirmed column mapping if provided
+        if mapping.get("entry_col_source", "").startswith("col:"):
+            try:
+                entry_col = int(mapping["entry_col_source"].split(":", 1)[1])
+            except ValueError:
+                pass
+        if mapping.get("exit_col_source", "").startswith("col:"):
+            try:
+                exit_col = int(mapping["exit_col_source"].split(":", 1)[1])
+            except ValueError:
+                pass
+        if mapping.get("date_col_source", "").startswith("col:"):
+            try:
+                date_col = int(mapping["date_col_source"].split(":", 1)[1])
+            except ValueError:
+                pass
 
         raw_corrections = 0
         entry_corrections = 0
@@ -2736,7 +2754,8 @@ def run_matan_manual_corrections(input_path, output_path, extension, options=Non
     if extension != "xls":
         raise ValueError("Matan manual-corrections tool currently supports XLS export only")
     options = options or {}
-    employee_rows, daily_rows = parse_matan_manual_corrections(input_path)
+    mapping = {k: v for k, v in options.items() if k.endswith("_source")}
+    employee_rows, daily_rows = parse_matan_manual_corrections(input_path, mapping)
     filtered_rows = apply_matan_manual_corrections_filters(employee_rows, options)
     allowed_names = {row["employee_name"] for row in filtered_rows}
     wb = Workbook()
@@ -3967,6 +3986,7 @@ SCRIPT_REGISTRY["matan_manual_corrections"] = {
     **SCRIPTS["matan_manual_corrections"],
     "processor": run_matan_manual_corrections,
     "output_suffix": "matan_manual_corrections",
+    "requires_mapping_confirmation": True,
     "success_title": "דוח התיקונים מוכן",
     "success_action": "הורדת הדוח",
     "retry_action": "עיבוד קובץ נוסף",
@@ -3981,10 +4001,6 @@ SCRIPT_REGISTRY["matan_manual_corrections"] = {
     "processing_title": "דוח התיקונים בהכנה",
     "processing_note": "המערכת סופרת תיקוני נוכחות ידניים לכל עובד. הפעולה עשויה להימשך כמה דקות.",
     "file_picker_label": "בחירת דוח נוכחות חודשי",
-    "filter_fields": [
-        {"name": "min_corrections", "label": "מינימום תיקונים", "placeholder": "לדוגמה 4"},
-        {"name": "max_corrections", "label": "מקסימום תיקונים", "placeholder": "לדוגמה 12"},
-    ],
 }
 
 SCRIPT_REGISTRY["rimon_home_office_summary"] = {
@@ -4656,6 +4672,12 @@ ORG_HIERARCHY_MAPPING_FIELDS = [
     {"name": "employment_percent_source", "label": "אחוז משרה", "required": False},
     {"name": "agreement_number_source", "label": "מס' הסכם", "required": False},
     {"name": "agreement_name_source", "label": "שם הסכם", "required": False},
+]
+
+MATAN_CORRECTIONS_MAPPING_FIELDS = [
+    {"name": "entry_col_source", "label": "עמודת כניסה", "required": True, "critical": True},
+    {"name": "exit_col_source", "label": "עמודת יציאה", "required": True, "critical": True},
+    {"name": "date_col_source", "label": "עמודת תאריך", "required": False},
 ]
 
 
@@ -5876,6 +5898,175 @@ def apply_selected_template(default_mapping, templates, template_id):
     return dict(default_mapping), None
 
 
+def build_matan_corrections_mapping_options(input_path, extension):
+    workbook = xlrd.open_workbook(input_path)
+    first_sheet = workbook.sheets()[0]
+    struct = _detect_corrections_daily_structure(workbook, first_sheet)
+    header_row = struct["header_row"]
+    data_start = struct["data_start"]
+
+    table_options = []
+    seen_values = set()
+    for col_index in range(first_sheet.ncols):
+        header_text = str(first_sheet.cell_value(header_row, col_index)).strip() if header_row < first_sheet.nrows else ""
+        sample = ""
+        for r in range(data_start, min(data_start + 20, first_sheet.nrows)):
+            v = str(first_sheet.cell_value(r, col_index)).strip()
+            if v:
+                sample = v
+                break
+        if not header_text and not sample:
+            continue
+        column_letter = get_column_letter(col_index + 1)
+        label = f"עמודה {column_letter}"
+        if header_text:
+            label += f" - {header_text}"
+        if sample:
+            label += f" (לדוגמה: {sample})"
+        option_value = f"col:{col_index}"
+        if option_value in seen_values:
+            continue
+        seen_values.add(option_value)
+        table_options.append({
+            "value": option_value,
+            "label": label,
+            "header": header_text,
+            "sample": sample,
+            "source_kind": "table_exact",
+        })
+
+    suggestions = {}
+    if struct["entry_col"] >= 0:
+        suggestions["entry_col_source"] = f"col:{struct['entry_col']}"
+    if struct["exit_col"] >= 0:
+        suggestions["exit_col_source"] = f"col:{struct['exit_col']}"
+    if struct["date_col"] >= 0:
+        suggestions["date_col_source"] = f"col:{struct['date_col']}"
+
+    blank_option = [{"value": "", "label": "לא נבחר", "source_kind": "empty"}]
+    options_by_field = {field["name"]: blank_option + list(table_options) for field in MATAN_CORRECTIONS_MAPPING_FIELDS}
+    return {"options_by_field": options_by_field, "suggestions": suggestions}
+
+
+def build_matan_corrections_mapping_form(script_id, temp_upload_path, temp_upload_ext, inspection, current_mapping, templates, template_name_value, current_filters):
+    template_options = '<option value="">ללא תבנית שמורה</option>'
+    for template in templates:
+        template_options += '<option value="' + str(template["id"]) + '">' + esc(template["name"]) + '</option>'
+
+    mapping_labels = {field["name"]: field["label"] for field in MATAN_CORRECTIONS_MAPPING_FIELDS}
+    template_payload = {
+        str(template["id"]): {key: str(value or "") for key, value in template["mapping"].items()}
+        for template in templates
+    }
+
+    mapping_fields_html = ""
+    for field in MATAN_CORRECTIONS_MAPPING_FIELDS:
+        field_name = field["name"]
+        current_value = str(current_mapping.get(field_name, "") or "")
+        options = inspection["options_by_field"].get(field_name, [])
+        blank_options = [o for o in options if not o.get("value")]
+        table_exact_options = [o for o in options if o.get("source_kind") == "table_exact"]
+
+        select_options = ""
+
+        def render_opt(option):
+            selected = " selected" if option["value"] == current_value else ""
+            return (
+                '<option value="' + esc(option["value"]) + '" data-base-label="' + esc(option["label"]) + '" data-source-kind="' + esc(option.get("source_kind", "empty")) + '"' + selected + ">"
+                + esc(option["label"])
+                + "</option>"
+            )
+
+        for option in blank_options:
+            select_options += render_opt(option)
+        if table_exact_options:
+            select_options += '<optgroup label="עמודות מהקובץ">'
+            for option in table_exact_options:
+                select_options += render_opt(option)
+            select_options += '</optgroup>'
+
+        is_critical = field.get("critical", False)
+        required_badge = ' <span style="color:#dc2626">*</span>' if field["required"] else ' <span style="color:#94a3b8">(אופציונלי)</span>'
+        border_style = "border:1.5px solid #fca5a5;" if is_critical else "border:1.5px solid #e2e8f0;"
+        mapping_fields_html += (
+            '<div><label class="field-label">' + field["label"] + required_badge + '</label>'
+            + '<select name="' + field_name + '" data-mapping-field="1" data-field-label="' + esc(field["label"]) + '" style="padding:9px 12px;' + border_style + 'border-radius:8px;font-size:13px;font-family:inherit;outline:none;width:100%;margin-bottom:0;background:white;transition:background-color .15s ease,border-color .15s ease,box-shadow .15s ease">'
+            + select_options
+            + '</select></div>'
+        )
+
+    min_corrections_val = esc(str(current_filters.get("min_corrections", "") or ""))
+    max_corrections_val = esc(str(current_filters.get("max_corrections", "") or ""))
+    filters_html = (
+        '<div style="margin-top:12px;padding-top:12px;border-top:1px solid #e2e8f0">'
+        + '<div style="font-size:13px;font-weight:600;color:#334155;margin-bottom:8px">סינון תוצאות (אופציונלי)</div>'
+        + '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">'
+        + '<div><label class="field-label">מינימום תיקונים</label><input type="text" name="min_corrections" value="' + min_corrections_val + '" placeholder="לדוגמה 4" style="margin-bottom:0"></div>'
+        + '<div><label class="field-label">מקסימום תיקונים</label><input type="text" name="max_corrections" value="' + max_corrections_val + '" placeholder="לדוגמה 12" style="margin-bottom:0"></div>'
+        + '</div></div>'
+    )
+
+    return (
+        '<form method="POST" id="mappingConfirmForm">'
+        + '<input type="hidden" name="flow_mode" value="confirm_mapping">'
+        + '<input type="hidden" name="temp_upload_path" value="' + esc(temp_upload_path) + '">'
+        + '<input type="hidden" name="temp_upload_ext" value="' + esc(temp_upload_ext) + '">'
+        + '<div style="background:#fafcff;border:1px solid #dbeafe;border-radius:14px;padding:1rem;margin-bottom:1rem">'
+        + '<div style="font-size:15px;font-weight:700;color:#1e3a8a;margin-bottom:10px">אישור שדות לפני עיבוד</div>'
+        + '<div style="font-size:12px;color:#475569;background:#f0fdf4;border:1px solid #86efac;border-radius:8px;padding:8px 12px;margin-bottom:12px">שם עובד, מחלקה, ת.ז ומספר תג מזוהים אוטומטית מכותרות כל גיליון. יש לאשר כאן רק את עמודות הכניסה, היציאה והתאריך בטבלה היומית.</div>'
+        + '<div style="display:grid;grid-template-columns:260px minmax(0,1fr);gap:14px;align-items:start">'
+        + '<div style="background:#ffffff;border:1px solid #e2e8f0;border-radius:12px;padding:12px">'
+        + '<div style="font-size:14px;font-weight:700;color:#0f172a;margin-bottom:10px">תבניות שמורות</div>'
+        + '<label class="field-label">בחירת תבנית</label>'
+        + '<div style="display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:center;margin-bottom:12px">'
+        + '<select id="selectedTemplateId" name="selected_template_id" style="padding:9px 12px;border:1.5px solid #e2e8f0;border-radius:8px;font-size:13px;font-family:inherit;outline:none;width:100%;background:white">' + template_options + '</select>'
+        + '<button type="submit" name="mapping_action" value="delete_template" class="btn btn-gray" style="min-width:104px;padding-inline:14px;white-space:nowrap">מחיקה</button>'
+        + '</div>'
+        + '<label style="display:flex;align-items:center;gap:6px;font-size:13px;color:#334155;margin-bottom:10px"><input type="checkbox" name="save_template" value="1"> שמור כתבנית חדשה</label>'
+        + '<label class="field-label">שם תבנית חדשה</label>'
+        + '<input type="text" name="template_name" value="' + esc(template_name_value) + '" placeholder="שם תבנית" style="margin-bottom:0">'
+        + '</div>'
+        + '<div>'
+        + '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">'
+        + '<span style="display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border-radius:999px;background:#ecfdf5;border:1px solid #86efac;font-size:12px;color:#166534">עמודה מהטבלה</span>'
+        + '</div>'
+        + '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-bottom:12px">' + mapping_fields_html + '</div>'
+        + '<div style="font-size:12px;color:#64748b;line-height:1.7;margin-bottom:12px">שדות חובה: עמודת כניסה ועמודת יציאה. המערכת מזהה תיקון לפי סימן * בערך הזמן.</div>'
+        + filters_html
+        + '<div style="display:flex;gap:10px;flex-wrap:wrap;justify-content:center;margin-top:14px"><button type="submit" id="mappingConfirmButton" name="mapping_action" value="confirm" class="btn btn-blue" style="min-width:220px">אשר הכל והפעל עיבוד</button><a href="/run/' + script_id + '" class="btn btn-gray" style="text-decoration:none;display:inline-flex;align-items:center;justify-content:center;min-width:150px">העלאת קובץ חדש</a></div>'
+        + '</div></div>'
+        + '</div>'
+        + '<div id="mappingProcessingOverlay" style="display:none;position:fixed;inset:0;background:rgba(248,250,252,.78);backdrop-filter:blur(2px);z-index:80;align-items:center;justify-content:center;padding:20px">'
+        + '<div style="width:100%;max-width:320px;background:#ffffff;border:1px solid #dbeafe;border-radius:18px;box-shadow:0 20px 50px rgba(15,23,42,.14);padding:24px 20px;text-align:center">'
+        + '<div style="width:42px;height:42px;border-radius:999px;border:3px solid #bfdbfe;border-top-color:#2563eb;margin:0 auto 14px;animation:mappingSpin .9s linear infinite"></div>'
+        + '<div style="font-size:16px;font-weight:800;color:#1e3a8a;margin-bottom:6px">הדוח בהכנה</div>'
+        + '<div style="font-size:13px;line-height:1.7;color:#475569">המערכת מאשרת את השדות ומעבדת את הקובץ. בדוחות גדולים הפעולה יכולה להימשך מעט זמן.</div>'
+        + '</div></div>'
+        + '<script>'
+        + '(function(){'
+        + 'var templateSelect=document.getElementById("selectedTemplateId");'
+        + 'var fieldSelects=Array.prototype.slice.call(document.querySelectorAll(\'select[data-mapping-field="1"]\'));'
+        + 'var form=document.getElementById("mappingConfirmForm");'
+        + 'var confirmButton=document.getElementById("mappingConfirmButton");'
+        + 'var overlay=document.getElementById("mappingProcessingOverlay");'
+        + 'var templateMappings=' + json.dumps(template_payload, ensure_ascii=False) + ';'
+        + 'var fieldLabels=' + json.dumps(mapping_labels, ensure_ascii=False) + ';'
+        + 'var selectStyles={table_exact:{bg:"#ecfdf5",border:"#4ade80",shadow:"rgba(34,197,94,.14)"},empty:{bg:"#ffffff",border:"#e2e8f0",shadow:"rgba(148,163,184,.08)"}};'
+        + 'function applySelectVisual(sel){var opt=sel.options[sel.selectedIndex];var kind=(opt&&opt.getAttribute("data-source-kind"))||"empty";var style=selectStyles[kind]||selectStyles.empty;sel.style.backgroundColor=style.bg;sel.style.borderColor=style.border;sel.style.boxShadow="0 0 0 3px "+style.shadow;}'
+        + 'function refreshOptionLabels(){var assignments={};fieldSelects.forEach(function(sel){if(sel.value){assignments[sel.value]=sel.name;}});fieldSelects.forEach(function(sel){Array.prototype.forEach.call(sel.options,function(opt){var base=opt.getAttribute("data-base-label")||opt.text;var assigned=assignments[opt.value];var suffix="";if(opt.value && assigned && assigned!==sel.name){suffix=" [נבחר עבור "+(fieldLabels[assigned]||assigned)+"]";}opt.text=base+suffix;});applySelectVisual(sel);});}'
+        + 'function clearDuplicateSelections(changedSelect){if(!changedSelect.value){refreshOptionLabels();return;}fieldSelects.forEach(function(sel){if(sel!==changedSelect && sel.value===changedSelect.value){sel.value="";}});refreshOptionLabels();}'
+        + 'function applyTemplate(templateId){var mapping=templateMappings[templateId]||{};if(!templateId){refreshOptionLabels();return;}fieldSelects.forEach(function(sel){sel.value=mapping[sel.name]||"";});var seen={};fieldSelects.forEach(function(sel){if(sel.value && seen[sel.value]){sel.value="";}else if(sel.value){seen[sel.value]=true;}});refreshOptionLabels();}'
+        + 'fieldSelects.forEach(function(sel){sel.addEventListener("change",function(){clearDuplicateSelections(sel);});});'
+        + 'if(templateSelect){templateSelect.addEventListener("change",function(){applyTemplate(this.value);});}'
+        + 'if(form){form.addEventListener("submit",function(event){var submitter=event.submitter||document.activeElement;if(!submitter||submitter.value!=="confirm"){return;}if(confirmButton){confirmButton.disabled=true;confirmButton.textContent="העיבוד התחיל...";}if(overlay){overlay.style.display="flex";}document.body.style.overflow="hidden";});}'
+        + 'refreshOptionLabels();'
+        + '})();'
+        + '</script>'
+        + '<style>@keyframes mappingSpin{from{transform:rotate(0deg);}to{transform:rotate(360deg);}}</style>'
+        + '</form>'
+    )
+
+
 def build_rimon_mapping_form(script_id, temp_upload_path, temp_upload_ext, inspection, current_mapping, templates, template_name_value):
     template_options = '<option value="">ללא תבנית שמורה</option>'
     for template in templates:
@@ -7014,6 +7205,9 @@ def run_script(script_id):
                     inspection = build_org_hierarchy_mapping_options(inp, ext)
                     selected_mapping = dict(default_org_hierarchy_mapping())
                     selected_mapping.update(inspection["suggestions"])
+                elif script_id == "matan_manual_corrections":
+                    inspection = build_matan_corrections_mapping_options(inp, ext)
+                    selected_mapping = dict(inspection["suggestions"])
                 else:
                     inspection = build_rimon_mapping_options(inp, ext)
                     selected_mapping = dict(inspection["suggestions"])
@@ -7069,6 +7263,20 @@ def run_script(script_id):
                         get_next_mapping_template_name(mapping_templates),
                         request.form.get("output_type", "").strip() or "powerpoint",
                     )
+                elif script_id == "matan_manual_corrections":
+                    mapping_confirmation_html = build_matan_corrections_mapping_form(
+                        script_id,
+                        inp,
+                        ext,
+                        inspection,
+                        selected_mapping,
+                        mapping_templates,
+                        get_next_mapping_template_name(mapping_templates),
+                        {
+                            "min_corrections": request.form.get("min_corrections", "").strip(),
+                            "max_corrections": request.form.get("max_corrections", "").strip(),
+                        },
+                    )
                 else:
                     mapping_confirmation_html = build_rimon_mapping_form(
                         script_id,
@@ -7083,7 +7291,7 @@ def run_script(script_id):
             inp = request.form.get("temp_upload_path", "").strip()
             ext = request.form.get("temp_upload_ext", "").strip().lower()
             mapping = {}
-            mapping_fields = FLAMINGO_MAPPING_FIELDS if script_id == "flamingo_payroll" else MATAN_MISSING_MAPPING_FIELDS if script_id == "matan_missing" else INACTIVE_WORKERS_MAPPING_FIELDS if script_id == "inactive_workers" else ORG_HIERARCHY_MAPPING_FIELDS if script_id == "org_hierarchy_report" else RIMON_MAPPING_FIELDS
+            mapping_fields = FLAMINGO_MAPPING_FIELDS if script_id == "flamingo_payroll" else MATAN_MISSING_MAPPING_FIELDS if script_id == "matan_missing" else INACTIVE_WORKERS_MAPPING_FIELDS if script_id == "inactive_workers" else ORG_HIERARCHY_MAPPING_FIELDS if script_id == "org_hierarchy_report" else MATAN_CORRECTIONS_MAPPING_FIELDS if script_id == "matan_manual_corrections" else RIMON_MAPPING_FIELDS
             for field in mapping_fields:
                 mapping[field["name"]] = request.form.get(field["name"], "").strip()
             manual_hourly_rate = request.form.get("manual_hourly_rate", "").strip() if script_id == "flamingo_payroll" else ""
@@ -7098,6 +7306,10 @@ def run_script(script_id):
             org_options = {
                 "output_type": request.form.get("output_type", "").strip() or "powerpoint",
             }
+            corrections_filters = {
+                "min_corrections": request.form.get("min_corrections", "").strip(),
+                "max_corrections": request.form.get("max_corrections", "").strip(),
+            }
             mapping_templates = get_mapping_templates(session["user_id"], script_id)
             mapping_action = request.form.get("mapping_action", "confirm").strip() or "confirm"
             selected_template_id = request.form.get("selected_template_id", "").strip()
@@ -7110,7 +7322,7 @@ def run_script(script_id):
                         info_message = '<div class="flash" style="background:#eff6ff;border-color:#bfdbfe;color:#1d4ed8">התבנית נמחקה.</div>'
                     else:
                         info_message = '<div class="flash-err">לא נבחרה תבנית למחיקה.</div>'
-                    inspection = build_flamingo_mapping_options(inp, ext) if script_id == "flamingo_payroll" else build_matan_missing_mapping_options(inp, ext) if script_id == "matan_missing" else build_inactive_workers_mapping_options(inp, ext) if script_id == "inactive_workers" else build_org_hierarchy_mapping_options(inp, ext) if script_id == "org_hierarchy_report" else build_rimon_mapping_options(inp, ext)
+                    inspection = build_flamingo_mapping_options(inp, ext) if script_id == "flamingo_payroll" else build_matan_missing_mapping_options(inp, ext) if script_id == "matan_missing" else build_inactive_workers_mapping_options(inp, ext) if script_id == "inactive_workers" else build_org_hierarchy_mapping_options(inp, ext) if script_id == "org_hierarchy_report" else build_matan_corrections_mapping_options(inp, ext) if script_id == "matan_manual_corrections" else build_rimon_mapping_options(inp, ext)
                     mapping_templates = get_mapping_templates(session["user_id"], script_id)
                     if script_id == "flamingo_payroll":
                         mapping_confirmation_html = build_flamingo_mapping_form(
@@ -7156,6 +7368,17 @@ def run_script(script_id):
                             get_next_mapping_template_name(mapping_templates),
                             org_options["output_type"],
                         )
+                    elif script_id == "matan_manual_corrections":
+                        mapping_confirmation_html = build_matan_corrections_mapping_form(
+                            script_id,
+                            inp,
+                            ext,
+                            inspection,
+                            mapping,
+                            mapping_templates,
+                            get_next_mapping_template_name(mapping_templates),
+                            corrections_filters,
+                        )
                     else:
                         mapping_confirmation_html = build_rimon_mapping_form(
                             script_id,
@@ -7167,7 +7390,7 @@ def run_script(script_id):
                             get_next_mapping_template_name(mapping_templates),
                         )
             elif mapping_action == "apply_template":
-                inspection = build_flamingo_mapping_options(inp, ext) if script_id == "flamingo_payroll" else build_matan_missing_mapping_options(inp, ext) if script_id == "matan_missing" else build_inactive_workers_mapping_options(inp, ext) if script_id == "inactive_workers" else build_org_hierarchy_mapping_options(inp, ext) if script_id == "org_hierarchy_report" else build_rimon_mapping_options(inp, ext)
+                inspection = build_flamingo_mapping_options(inp, ext) if script_id == "flamingo_payroll" else build_matan_missing_mapping_options(inp, ext) if script_id == "matan_missing" else build_inactive_workers_mapping_options(inp, ext) if script_id == "inactive_workers" else build_org_hierarchy_mapping_options(inp, ext) if script_id == "org_hierarchy_report" else build_matan_corrections_mapping_options(inp, ext) if script_id == "matan_manual_corrections" else build_rimon_mapping_options(inp, ext)
                 selected_mapping, selected_template = apply_selected_template(
                     dict(default_flamingo_mapping()) if script_id == "flamingo_payroll" else dict(default_matan_missing_mapping()) if script_id == "matan_missing" else dict(default_inactive_workers_mapping()) if script_id == "inactive_workers" else dict(default_org_hierarchy_mapping()) if script_id == "org_hierarchy_report" else dict(inspection["suggestions"]),
                     mapping_templates,
@@ -7220,6 +7443,17 @@ def run_script(script_id):
                         mapping_templates,
                         request.form.get("template_name", "").strip() or get_next_mapping_template_name(mapping_templates),
                         org_options["output_type"],
+                    )
+                elif script_id == "matan_manual_corrections":
+                    mapping_confirmation_html = build_matan_corrections_mapping_form(
+                        script_id,
+                        inp,
+                        ext,
+                        inspection,
+                        selected_mapping,
+                        mapping_templates,
+                        request.form.get("template_name", "").strip() or get_next_mapping_template_name(mapping_templates),
+                        corrections_filters,
                     )
                 else:
                     mapping_confirmation_html = build_rimon_mapping_form(
@@ -7538,6 +7772,30 @@ def run_script(script_id):
                             logout_label=text["logout"],
                             show_lang_switch=True,
                         )
+                elif script_id == "matan_manual_corrections":
+                    if not mapping.get("entry_col_source") or not mapping.get("exit_col_source"):
+                        inspection = build_matan_corrections_mapping_options(inp, ext)
+                        error = '<div class="flash-err">יש לבחור עמודת כניסה ועמודת יציאה לפני יצירת הדוח.</div>'
+                        mapping_confirmation_html = build_matan_corrections_mapping_form(
+                            script_id,
+                            inp,
+                            ext,
+                            inspection,
+                            mapping,
+                            mapping_templates,
+                            request.form.get("template_name", "").strip() or get_next_mapping_template_name(mapping_templates),
+                            corrections_filters,
+                        )
+                        return render(
+                            scr["name"],
+                            '<a href="/dashboard" style="color:#2563eb;font-size:13px;text-decoration:none;display:block;margin-bottom:1rem">' + text["back_arrow"] + ' ' + scr["back_label"] + '</a>'
+                            + '<div class="card"><div style="font-size:40px;margin-bottom:.5rem">' + scr["icon"] + '</div><div style="font-size:20px;font-weight:700;color:#1e3a8a;margin-bottom:4px">' + scr["name"] + '</div>'
+                            + error + mapping_confirmation_html + '</div>',
+                            lang=lang,
+                            topbar_greeting=text["topbar_greeting"],
+                            logout_label=text["logout"],
+                            show_lang_switch=True,
+                        )
                 uid = str(uuid.uuid4())[:8]
                 options = {key: value for key, value in mapping.items()}
                 if script_id == "flamingo_payroll":
@@ -7548,6 +7806,8 @@ def run_script(script_id):
                     options.update(inactive_filters)
                 elif script_id == "org_hierarchy_report":
                     options.update(org_options)
+                elif script_id == "matan_manual_corrections":
+                    options.update(corrections_filters)
                 result_name = build_output_filename(scr, uid, options)
                 out = str(OUTPUT_FOLDER / result_name)
                 try:
