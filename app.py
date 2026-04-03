@@ -6555,10 +6555,10 @@ def dashboard():
     report_jobs_html = (
         '<div class="card" style="margin-top:1rem;background:linear-gradient(135deg,#ffffff 0%,#f8fbff 100%);border:1px solid #dbeafe">'
         '<div style="display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap;margin-bottom:12px">'
-        '<div><div style="font-size:18px;font-weight:800;color:#1e3a8a;margin-bottom:6px">דוחות בעיבוד והורדה</div>'
-        '<div style="font-size:14px;color:#475569;line-height:1.7">דוחות ניקוי שנשלחו לעיבוד ברקע יופיעו כאן. הדוח נשמר עד להורדה או עד 3 ימים, המוקדם מביניהם.</div></div>'
+        '<div><div style="font-size:18px;font-weight:800;color:#1e3a8a;margin-bottom:6px">דוחות כבדים לעיבוד</div>'
+        '<div style="font-size:14px;color:#475569;line-height:1.7">כרגע הדוח היחיד שדורש המתנה ארוכה הוא הכלי: ניקוי דוח נוכחות. דוחות שנשלחו לעיבוד ברקע יופיעו כאן ונשמרים עד להורדה או עד 3 ימים, המוקדם מביניהם.</div></div>'
         '</div>'
-        + (report_job_rows if report_job_rows else '<div style="text-align:center;padding:1rem 0;color:#94a3b8">עדיין אין דוחות בעיבוד או דוחות מוכנים להורדה</div>')
+        + (report_job_rows if report_job_rows else '<div style="text-align:center;padding:1rem 0;color:#94a3b8">עדיין אין דוחות כבדים בעיבוד או דוחות מוכנים להורדה</div>')
         + '</div>'
     )
     body = (
