@@ -2571,7 +2571,7 @@ def write_matan_corrections_summary(ws, employee_rows, filters_used):
     ws.title = safe_sheet_title("סיכום תיקונים", "Corrections Summary")
     ws.sheet_view.rightToLeft = True
     ws.sheet_view.showGridLines = False
-    ws.freeze_panes = "A8"
+    ws.freeze_panes = "A12"
 
     ws["A1"] = "דוח תיקונים ידניים"
     ws["A1"].font = Font(bold=True, size=18, color="0F172A")
