@@ -2057,16 +2057,118 @@ def parse_excel_date(workbook, value):
     return None
 
 
+def _detect_corrections_employee_meta(sheet):
+    """Auto-detect employee name, ID, department, payroll number, tag from the sheet header section."""
+    meta = {"employee_name": sheet.name, "department": "", "payroll_number": "", "id_number": "", "tag_number": ""}
+    name_kws = ("שםעובד", "שםמלא", "שם")
+    dept_kws = ("מחלקה", "מדור", "יחידה", "אגף")
+    payroll_kws = ("מספרשכר", "מסשכר", "מספרעובד", "מסעובד", "מסעובד")
+    id_kws = ("ת.ז", "תז", "תעודתזהות", "דרכון", "פספורט", "passport")
+    tag_kws = ("מספרתג", "מסתג", "תג", "badge", "כרטיס")
+
+    for r in range(min(12, sheet.nrows)):
+        for c in range(sheet.ncols - 1):
+            raw_label = str(sheet.cell_value(r, c)).strip()
+            if not raw_label:
+                continue
+            tok = normalize_token(raw_label)
+            next_val = ""
+            for off in range(1, min(10, sheet.ncols - c)):
+                v = str(sheet.cell_value(r, c + off)).strip()
+                if v:
+                    try:
+                        fv = float(v)
+                        if fv == int(fv):
+                            v = str(int(fv))
+                    except (ValueError, TypeError):
+                        pass
+                    next_val = v
+                    break
+            if not next_val:
+                continue
+            if (not meta["employee_name"] or meta["employee_name"] == sheet.name) and any(kw in tok for kw in name_kws):
+                meta["employee_name"] = next_val
+            elif not meta["department"] and any(kw in tok for kw in dept_kws):
+                meta["department"] = next_val
+            elif not meta["payroll_number"] and any(kw in tok for kw in payroll_kws):
+                meta["payroll_number"] = next_val
+            elif not meta["id_number"] and any(kw in tok for kw in id_kws):
+                meta["id_number"] = next_val
+            elif not meta["tag_number"] and any(kw in tok for kw in tag_kws):
+                meta["tag_number"] = next_val
+    return meta
+
+
+def _detect_corrections_daily_structure(workbook, sheet):
+    """Auto-detect header row, entry/exit columns, and date column for daily correction data."""
+    entry_kws = ("כניסה",)
+    exit_kws = ("יציאה",)
+
+    best_row, best_score = 10, 0
+    for r in range(min(18, sheet.nrows)):
+        score = sum(
+            1 for c in range(sheet.ncols)
+            if any(k in normalize_token(str(sheet.cell_value(r, c))) for k in entry_kws + exit_kws)
+        )
+        if score > best_score:
+            best_score, best_row = score, r
+
+    data_start = best_row + 1
+    header_tokens = [normalize_token(str(sheet.cell_value(best_row, c))) for c in range(sheet.ncols)]
+
+    # Find columns that actually contain * corrections in data rows
+    star_entry, star_exit = -1, -1
+    for r in range(data_start, min(data_start + 80, sheet.nrows)):
+        for c in range(sheet.ncols):
+            if "*" in str(sheet.cell_value(r, c)):
+                tok = header_tokens[c] if c < len(header_tokens) else ""
+                if star_entry < 0 and any(k in tok for k in entry_kws):
+                    star_entry = c
+                elif star_exit < 0 and any(k in tok for k in exit_kws):
+                    star_exit = c
+        if star_entry >= 0 and star_exit >= 0:
+            break
+
+    # Fallback: use header column positions if no * found yet
+    if star_entry < 0:
+        cands = [c for c, t in enumerate(header_tokens) if any(k in t for k in entry_kws)]
+        if cands:
+            star_entry = cands[-1]
+    if star_exit < 0:
+        cands = [c for c, t in enumerate(header_tokens) if any(k in t for k in exit_kws)]
+        if cands:
+            star_exit = cands[-1]
+
+    # Date column: first column with an Excel date serial in the first data row
+    date_col = 0
+    for c in range(sheet.ncols):
+        v = sheet.cell_value(data_start, c) if data_start < sheet.nrows else None
+        if isinstance(v, float) and 35000 < v < 65000:
+            date_col = c
+            break
+
+    return {"header_row": best_row, "data_start": data_start, "entry_col": star_entry, "exit_col": star_exit, "date_col": date_col}
+
+
 def parse_matan_manual_corrections(input_path):
     workbook = xlrd.open_workbook(input_path)
     employee_rows = []
     daily_rows = []
 
     for sheet in workbook.sheets():
-        employee_name = str(get_sheet_cell(sheet, 5, 5, "")).strip() or sheet.name
-        department = str(get_sheet_cell(sheet, 5, 23, "")).strip()
-        payroll_number = str(get_sheet_cell(sheet, 5, 50, "")).strip()
-        id_number = str(get_sheet_cell(sheet, 7, 5, "")).strip()
+        meta = _detect_corrections_employee_meta(sheet)
+        struct = _detect_corrections_daily_structure(workbook, sheet)
+
+        employee_name = meta["employee_name"]
+        department = meta["department"]
+        payroll_number = meta["payroll_number"]
+        id_number = meta["id_number"]
+        tag_number = meta["tag_number"]
+
+        entry_col = struct["entry_col"]
+        exit_col = struct["exit_col"]
+        date_col = struct["date_col"]
+        data_start = struct["data_start"]
 
         raw_corrections = 0
         entry_corrections = 0
@@ -2076,20 +2178,19 @@ def parse_matan_manual_corrections(input_path):
         work_days = 0
         month_days = 0
 
-        for row_index in range(12, sheet.nrows):
-            entry_value = str(get_sheet_cell(sheet, row_index, 13, "")).strip()
-            exit_value = str(get_sheet_cell(sheet, row_index, 18, "")).strip()
-            event_value = str(get_sheet_cell(sheet, row_index, 22, "")).strip()
-            total_hours = str(get_sheet_cell(sheet, row_index, 30, "")).strip()
-            day_date = parse_excel_date(workbook, get_sheet_cell(sheet, row_index, 0, ""))
+        for row_index in range(data_start, sheet.nrows):
+            entry_value = str(get_sheet_cell(sheet, row_index, entry_col, "")).strip() if entry_col >= 0 else ""
+            exit_value = str(get_sheet_cell(sheet, row_index, exit_col, "")).strip() if exit_col >= 0 else ""
+            date_raw = get_sheet_cell(sheet, row_index, date_col, "")
+            day_date = parse_excel_date(workbook, date_raw)
 
-            if not any([day_date, entry_value, exit_value, event_value, total_hours]):
+            has_time = bool(entry_value or exit_value)
+            if not has_time and not day_date:
                 continue
 
             if day_date and not month_days:
                 month_days = calendar.monthrange(day_date.year, day_date.month)[1]
-
-            if any([entry_value, exit_value, event_value, total_hours]):
+            if has_time:
                 work_days += 1
 
             entry_corrected = "*" in entry_value
@@ -2097,42 +2198,41 @@ def parse_matan_manual_corrections(input_path):
             raw_daily = int(entry_corrected) + int(exit_corrected)
             capped_daily = min(raw_daily, 2)
 
-            if raw_daily:
+            if raw_daily > 0:
                 days_with_corrections += 1
                 raw_corrections += raw_daily
                 entry_corrections += int(entry_corrected)
                 exit_corrections += int(exit_corrected)
                 capped_corrections += capped_daily
-
-            daily_rows.append(
-                {
+                daily_rows.append({
                     "employee_name": employee_name,
                     "payroll_number": payroll_number,
                     "id_number": id_number,
+                    "tag_number": tag_number,
                     "department": department,
                     "date": day_date.isoformat() if day_date else "",
+                    "entry_value": entry_value,
+                    "exit_value": exit_value,
                     "entry_corrected": entry_corrected,
                     "exit_corrected": exit_corrected,
                     "raw_daily_corrections": raw_daily,
                     "capped_daily_corrections": capped_daily,
-                }
-            )
+                })
 
-        employee_rows.append(
-            {
-                "employee_name": employee_name,
-                "payroll_number": payroll_number,
-                "id_number": id_number,
-                "department": department,
-                "raw_correction_count": raw_corrections,
-                "entry_correction_count": entry_corrections,
-                "exit_correction_count": exit_corrections,
-                "days_with_corrections": days_with_corrections,
-                "capped_correction_count": capped_corrections,
-                "average_per_calendar_day": (capped_corrections / month_days) if month_days else 0.0,
-                "average_per_work_day": (capped_corrections / work_days) if work_days else 0.0,
-            }
-        )
+        employee_rows.append({
+            "employee_name": employee_name,
+            "payroll_number": payroll_number,
+            "id_number": id_number,
+            "tag_number": tag_number,
+            "department": department,
+            "raw_correction_count": raw_corrections,
+            "entry_correction_count": entry_corrections,
+            "exit_correction_count": exit_corrections,
+            "days_with_corrections": days_with_corrections,
+            "capped_correction_count": capped_corrections,
+            "average_per_calendar_day": (capped_corrections / month_days) if month_days else 0.0,
+            "average_per_work_day": (capped_corrections / work_days) if work_days else 0.0,
+        })
 
     return employee_rows, daily_rows
 
@@ -2449,15 +2549,18 @@ def write_matan_corrections_summary(ws, employee_rows, filters_used):
     ws.sheet_view.showGridLines = False
     ws.freeze_panes = "A8"
 
-    ws["A1"] = "דוח תיקונים ידניים - מתן"
+    ws["A1"] = "דוח תיקונים ידניים"
     ws["A1"].font = Font(bold=True, size=18, color="0F172A")
     ws["A1"].fill = PatternFill(fill_type="solid", fgColor="BFDBFE")
 
+    total_entry = sum(row["entry_correction_count"] for row in employee_rows)
+    total_exit = sum(row["exit_correction_count"] for row in employee_rows)
     metrics = [
         ("עובדים בתוצאה", len(employee_rows), "DBEAFE"),
-        ("סה\"כ תיקונים גולמיים", sum(row["raw_correction_count"] for row in employee_rows), "FEE2E2"),
-        ("סה\"כ תיקונים לאחר תקרה", sum(row["capped_correction_count"] for row in employee_rows), "DCFCE7"),
-        ("סה\"כ ימים עם תיקונים", sum(row["days_with_corrections"] for row in employee_rows), "FEF3C7"),
+        ("סה\"כ תיקונים", sum(row["raw_correction_count"] for row in employee_rows), "FEE2E2"),
+        ("תיקוני כניסה", total_entry, "FEF3C7"),
+        ("תיקוני יציאה", total_exit, "FEF3C7"),
+        ("סה\"כ ימים עם תיקונים", sum(row["days_with_corrections"] for row in employee_rows), "DCFCE7"),
     ]
     for idx, (label, value, fill_color) in enumerate(metrics, start=3):
         label_cell = ws.cell(row=idx, column=1, value=label)
@@ -2473,17 +2576,18 @@ def write_matan_corrections_summary(ws, employee_rows, filters_used):
         ws.cell(row=idx, column=4, value=label).font = Font(bold=True)
         ws.cell(row=idx, column=5, value=value or "ללא")
 
-    header_row = 7
+    header_row = 9
     headers = [
         "שם עובד",
         "מספר שכר",
         "תעודת זהות",
+        "מספר תג",
         "מחלקה",
-        "כמות תיקונים גולמית",
+        "סה\"כ תיקונים",
         "תיקוני כניסה",
         "תיקוני יציאה",
         "ימים עם תיקונים",
-        "כמות תיקונים לאחר תקרה",
+        "תיקונים לאחר תקרה",
         "ממוצע ליום קלנדרי",
         "ממוצע ליום עבודה",
     ]
@@ -2498,6 +2602,7 @@ def write_matan_corrections_summary(ws, employee_rows, filters_used):
             row["employee_name"],
             row["payroll_number"],
             row["id_number"],
+            row.get("tag_number", ""),
             row["department"],
             row["raw_correction_count"],
             row["entry_correction_count"],
@@ -2511,14 +2616,53 @@ def write_matan_corrections_summary(ws, employee_rows, filters_used):
             ws.cell(row=row_idx, column=col, value=value)
             if row_idx % 2 == 0:
                 ws.cell(row=row_idx, column=col).fill = PatternFill(fill_type="solid", fgColor="F8FAFC")
-        ws.cell(row=row_idx, column=5).fill = PatternFill(fill_type="solid", fgColor="FEE2E2")
-        ws.cell(row=row_idx, column=9).fill = PatternFill(fill_type="solid", fgColor="DCFCE7")
-        ws.cell(row=row_idx, column=5).font = Font(bold=True, color="991B1B")
-        ws.cell(row=row_idx, column=9).font = Font(bold=True, color="166534")
-        ws.cell(row=row_idx, column=10).number_format = "0.00"
+        ws.cell(row=row_idx, column=6).fill = PatternFill(fill_type="solid", fgColor="FEE2E2")
+        ws.cell(row=row_idx, column=7).fill = PatternFill(fill_type="solid", fgColor="FEF3C7")
+        ws.cell(row=row_idx, column=8).fill = PatternFill(fill_type="solid", fgColor="FEF3C7")
+        ws.cell(row=row_idx, column=10).fill = PatternFill(fill_type="solid", fgColor="DCFCE7")
+        ws.cell(row=row_idx, column=6).font = Font(bold=True, color="991B1B")
+        ws.cell(row=row_idx, column=10).font = Font(bold=True, color="166534")
         ws.cell(row=row_idx, column=11).number_format = "0.00"
+        ws.cell(row=row_idx, column=12).number_format = "0.00"
 
-    widths = [24, 16, 16, 24, 18, 18, 18, 18, 20, 20, 18]
+    widths = [24, 16, 16, 14, 22, 16, 16, 16, 18, 20, 20, 18]
+    for col, width in enumerate(widths, start=1):
+        ws.column_dimensions[get_column_letter(col)].width = width
+
+
+def write_matan_corrections_by_department(ws, employee_rows):
+    ws.title = safe_sheet_title("לפי מחלקה", "By Department")
+    ws.sheet_view.rightToLeft = True
+    ws.sheet_view.showGridLines = False
+    ws.freeze_panes = "A2"
+
+    dept_data = defaultdict(lambda: {"total": 0, "entry": 0, "exit": 0, "count": 0})
+    for row in employee_rows:
+        dept = row["department"] or "ללא מחלקה"
+        dept_data[dept]["total"] += row["raw_correction_count"]
+        dept_data[dept]["entry"] += row["entry_correction_count"]
+        dept_data[dept]["exit"] += row["exit_correction_count"]
+        dept_data[dept]["count"] += 1
+
+    headers = ["מחלקה", "מספר עובדים", "סה\"כ תיקונים", "תיקוני כניסה", "תיקוני יציאה", "ממוצע תיקונים לעובד"]
+    for col, header in enumerate(headers, start=1):
+        cell = ws.cell(row=1, column=col, value=header)
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = PatternFill(fill_type="solid", fgColor="7C3AED")
+
+    sorted_depts = sorted(dept_data.items(), key=lambda x: -x[1]["total"])
+    for row_idx, (dept_name, data) in enumerate(sorted_depts, start=2):
+        count = data["count"]
+        avg = round(data["total"] / count, 2) if count else 0.0
+        values = [dept_name, count, data["total"], data["entry"], data["exit"], avg]
+        for col, value in enumerate(values, start=1):
+            cell = ws.cell(row=row_idx, column=col, value=value)
+            if row_idx % 2 == 0:
+                cell.fill = PatternFill(fill_type="solid", fgColor="F5F3FF")
+        ws.cell(row=row_idx, column=3).font = Font(bold=True, color="5B21B6")
+        ws.cell(row=row_idx, column=6).number_format = "0.00"
+
+    widths = [28, 16, 18, 18, 18, 22]
     for col, width in enumerate(widths, start=1):
         ws.column_dimensions[get_column_letter(col)].width = width
 
@@ -2531,11 +2675,13 @@ def write_matan_corrections_daily(ws, daily_rows, allowed_names):
 
     headers = [
         "עובד",
+        "מחלקה",
         "תאריך",
+        "שעת כניסה",
+        "שעת יציאה",
         "כניסה תוקנה",
         "יציאה תוקנה",
-        "תיקונים יומיים גולמיים",
-        "תיקונים יומיים לאחר תקרה",
+        "תיקונים יומיים",
     ]
     for col, header in enumerate(headers, start=1):
         cell = ws.cell(row=1, column=col, value=header)
@@ -2544,25 +2690,27 @@ def write_matan_corrections_daily(ws, daily_rows, allowed_names):
 
     row_idx = 2
     for row in daily_rows:
-        if row["employee_name"] not in allowed_names or row["raw_daily_corrections"] <= 0:
+        if row["employee_name"] not in allowed_names:
             continue
         values = [
             row["employee_name"],
+            row.get("department", ""),
             row["date"],
+            row.get("entry_value", ""),
+            row.get("exit_value", ""),
             yes_no(row["entry_corrected"]),
             yes_no(row["exit_corrected"]),
             row["raw_daily_corrections"],
-            row["capped_daily_corrections"],
         ]
         for col, value in enumerate(values, start=1):
             ws.cell(row=row_idx, column=col, value=value)
             if row_idx % 2 == 0:
                 ws.cell(row=row_idx, column=col).fill = PatternFill(fill_type="solid", fgColor="ECFDF5")
-        ws.cell(row=row_idx, column=5).fill = PatternFill(fill_type="solid", fgColor="FEF2F2")
-        ws.cell(row=row_idx, column=6).fill = PatternFill(fill_type="solid", fgColor="ECFDF5")
+        ws.cell(row=row_idx, column=4).fill = PatternFill(fill_type="solid", fgColor="FEF2F2" if row["entry_corrected"] else "F8FAFC")
+        ws.cell(row=row_idx, column=5).fill = PatternFill(fill_type="solid", fgColor="FEF2F2" if row["exit_corrected"] else "F8FAFC")
         row_idx += 1
 
-    widths = [24, 14, 16, 16, 20, 22]
+    widths = [24, 22, 14, 16, 16, 16, 16, 16]
     for col, width in enumerate(widths, start=1):
         ws.column_dimensions[get_column_letter(col)].width = width
 
@@ -2583,6 +2731,7 @@ def run_matan_manual_corrections(input_path, output_path, extension, options=Non
             "מקסימום תיקונים": options.get("max_corrections", ""),
         },
     )
+    write_matan_corrections_by_department(wb.create_sheet(), filtered_rows)
     write_matan_corrections_daily(wb.create_sheet(), daily_rows, allowed_names)
     wb.save(output_path)
 
@@ -3675,12 +3824,28 @@ SCRIPTS["inactive_workers"] = {
 SCRIPTS["matan_manual_corrections"] = {
     "id": "matan_manual_corrections",
     "name": "דוח תיקונים ידניים",
-    "desc": "איתור וסיכום של תיקוני נוכחות ידניים מתוך הדוח, כולל ספירה ותצוגה נוחה לבדיקה",
+    "desc": "איתור וסיכום של תיקוני נוכחות ידניים מתוך הדוח, כולל ספירה לפי כניסות, יציאות ומחלקות",
     "help_label": "דרישות לקובץ",
     "help_title": "מה צריך להעלות?",
     "help_intro": "יש להעלות דוח מפורט חודשי הכולל תיקוני כניסה ויציאה ידניים.",
-    "help_items": ["המערכת מזהה תיקונים ידניים מתוך הדוח", "סופרת את התיקונים לכל עובד", "ומציגה סיכום ברור ונוח לבדיקה"],
-    "help_note": "מיועד למצבים שבהם רוצים לעקוב אחר תיקונים ידניים בדיווחי הנוכחות",
+    "help_items": [
+        "המערכת מזהה אוטומטית את עמודות הכניסה והיציאה מתוך הדוח",
+        "מזהה תיקונים לפי סימן כוכבית (*) לפני ערך הזמן",
+        "מזהה שם עובד, ת.ז., מספר תג, מספר שכר ומחלקה מפרטי הגיליון",
+        "מפיקה סיכום לכל עובד ולשונית סיכום נפרדת לפי מחלקות",
+    ],
+    "help_note": "הכלי תומך בפורמטים שונים של דוח מפורט חודשי — אין צורך לוודא עמודות ידנית",
+    "rules_label": "איך הכלי מזהה תיקונים",
+    "rules_title": "מה נחשב תיקון ידני?",
+    "rules_intro": "הכלי מחפש כוכבית (*) לפני ערך הזמן בשדות הכניסה והיציאה.",
+    "rules_items": [
+        "תיקון כניסה = ערך כניסה שמתחיל בסימן * כגון *08:30",
+        "תיקון יציאה = ערך יציאה שמתחיל בסימן * כגון *17:00",
+        "לכל עובד נספרים תיקוני כניסה ותיקוני יציאה בנפרד",
+        "לשונית מחלקות מציגה סיכום תיקונים לפי מחלקה וממוצע לעובד",
+        "הפירוט היומי כולל את ערכי הזמן המתוקנים בפועל",
+    ],
+    "rules_note": "הספירה מבוצעת על כל עובד בנפרד לאורך כל ימי החודש שבדוח",
     "accept": ".xls",
     "icon": "📝",
 }
