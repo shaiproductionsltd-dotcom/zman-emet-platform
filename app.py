@@ -2177,6 +2177,8 @@ def parse_matan_manual_corrections(input_path):
         capped_corrections = 0
         work_days = 0
         month_days = 0
+        detected_month = ""
+        detected_year = 0
 
         for row_index in range(data_start, sheet.nrows):
             entry_value = str(get_sheet_cell(sheet, row_index, entry_col, "")).strip() if entry_col >= 0 else ""
@@ -2190,6 +2192,8 @@ def parse_matan_manual_corrections(input_path):
 
             if day_date and not month_days:
                 month_days = calendar.monthrange(day_date.year, day_date.month)[1]
+                detected_month = f"{day_date.month:02d}/{day_date.year}"
+                detected_year = day_date.year
             if has_time:
                 work_days += 1
 
@@ -2225,13 +2229,15 @@ def parse_matan_manual_corrections(input_path):
             "id_number": id_number,
             "tag_number": tag_number,
             "department": department,
+            "detected_month": detected_month,
+            "month_days": month_days,
+            "work_days": work_days,
             "raw_correction_count": raw_corrections,
             "entry_correction_count": entry_corrections,
             "exit_correction_count": exit_corrections,
             "days_with_corrections": days_with_corrections,
             "capped_correction_count": capped_corrections,
-            "average_per_calendar_day": (capped_corrections / month_days) if month_days else 0.0,
-            "average_per_work_day": (capped_corrections / work_days) if work_days else 0.0,
+            "avg_per_work_day": round(raw_corrections / work_days, 2) if work_days else 0.0,
         })
 
     return employee_rows, daily_rows
@@ -2553,10 +2559,24 @@ def write_matan_corrections_summary(ws, employee_rows, filters_used):
     ws["A1"].font = Font(bold=True, size=18, color="0F172A")
     ws["A1"].fill = PatternFill(fill_type="solid", fgColor="BFDBFE")
 
+    # Detect month/days from the most common value across all employees
+    month_label = ""
+    month_days_global = 0
+    if employee_rows:
+        from collections import Counter
+        month_counts = Counter(r.get("detected_month", "") for r in employee_rows if r.get("detected_month"))
+        if month_counts:
+            month_label = month_counts.most_common(1)[0][0]
+        month_days_vals = [r.get("month_days", 0) for r in employee_rows if r.get("month_days")]
+        if month_days_vals:
+            month_days_global = max(month_days_vals)
+
     total_entry = sum(row["entry_correction_count"] for row in employee_rows)
     total_exit = sum(row["exit_correction_count"] for row in employee_rows)
     metrics = [
         ("עובדים בתוצאה", len(employee_rows), "DBEAFE"),
+        ("חודש שזוהה", month_label or "לא זוהה", "E0F2FE"),
+        ("ימי חודש", month_days_global or "לא זוהה", "E0F2FE"),
         ("סה\"כ תיקונים", sum(row["raw_correction_count"] for row in employee_rows), "FEE2E2"),
         ("תיקוני כניסה", total_entry, "FEF3C7"),
         ("תיקוני יציאה", total_exit, "FEF3C7"),
@@ -2576,7 +2596,7 @@ def write_matan_corrections_summary(ws, employee_rows, filters_used):
         ws.cell(row=idx, column=4, value=label).font = Font(bold=True)
         ws.cell(row=idx, column=5, value=value or "ללא")
 
-    header_row = 9
+    header_row = 11
     headers = [
         "שם עובד",
         "מספר שכר",
@@ -2587,9 +2607,9 @@ def write_matan_corrections_summary(ws, employee_rows, filters_used):
         "תיקוני כניסה",
         "תיקוני יציאה",
         "ימים עם תיקונים",
-        "תיקונים לאחר תקרה",
-        "ממוצע ליום קלנדרי",
-        "ממוצע ליום עבודה",
+        "ימי חודש",
+        "ימי עבודה",
+        "ממוצע תיקונים ליום עבודה",
     ]
     for col, header in enumerate(headers, start=1):
         cell = ws.cell(row=header_row, column=col, value=header)
@@ -2608,9 +2628,9 @@ def write_matan_corrections_summary(ws, employee_rows, filters_used):
             row["entry_correction_count"],
             row["exit_correction_count"],
             row["days_with_corrections"],
-            row["capped_correction_count"],
-            row["average_per_calendar_day"],
-            row["average_per_work_day"],
+            row.get("month_days", ""),
+            row.get("work_days", ""),
+            row.get("avg_per_work_day", 0.0),
         ]
         for col, value in enumerate(values, start=1):
             ws.cell(row=row_idx, column=col, value=value)
@@ -2619,13 +2639,10 @@ def write_matan_corrections_summary(ws, employee_rows, filters_used):
         ws.cell(row=row_idx, column=6).fill = PatternFill(fill_type="solid", fgColor="FEE2E2")
         ws.cell(row=row_idx, column=7).fill = PatternFill(fill_type="solid", fgColor="FEF3C7")
         ws.cell(row=row_idx, column=8).fill = PatternFill(fill_type="solid", fgColor="FEF3C7")
-        ws.cell(row=row_idx, column=10).fill = PatternFill(fill_type="solid", fgColor="DCFCE7")
         ws.cell(row=row_idx, column=6).font = Font(bold=True, color="991B1B")
-        ws.cell(row=row_idx, column=10).font = Font(bold=True, color="166534")
-        ws.cell(row=row_idx, column=11).number_format = "0.00"
         ws.cell(row=row_idx, column=12).number_format = "0.00"
 
-    widths = [24, 16, 16, 14, 22, 16, 16, 16, 18, 20, 20, 18]
+    widths = [24, 16, 16, 14, 22, 16, 16, 16, 18, 14, 14, 26]
     for col, width in enumerate(widths, start=1):
         ws.column_dimensions[get_column_letter(col)].width = width
 
