@@ -6881,10 +6881,7 @@ def dashboard():
     info_items = [
         ("שם חברה" if lang == "he" else "Company", user["company_name"] or user["full_name"] or user["username"]),
         ("שם משתמש" if lang == "he" else "Username", user["username"]),
-        ("איש קשר" if lang == "he" else "Contact name", user["full_name"]),
         ("ח.פ / מזהה חברה" if lang == "he" else "Company ID", user["company_id"]),
-        ("אימייל" if lang == "he" else "Email", user["email"]),
-        ("טלפון" if lang == "he" else "Phone", user["phone"]),
         ("תאריך הצטרפות" if lang == "he" else "Join date", format_ui_date(user["join_date"], lang)),
     ]
     info_grid = "".join(
@@ -6971,7 +6968,7 @@ def dashboard():
         + '<div class="card" style="margin-top:1rem;background:linear-gradient(135deg,#ffffff 0%,#f8fbff 100%);border:1px solid #dbeafe">'
         + '<div style="display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap">'
         + '<div><div style="font-size:18px;font-weight:800;color:#1e3a8a;margin-bottom:6px">' + ("שירות לקוחות" if lang == "he" else "Customer support") + '</div>'
-        + '<div style="font-size:14px;color:#475569;line-height:1.7">' + ("לבקשה לכלי חדש או לדיווח על תקלה בכלי קיים" if lang == "he" else "Request a new tool or report an issue in an existing tool") + '</div></div>'
+        + '<div style="font-size:14px;color:#475569;line-height:1.7">' + ("לדיווח על תקלה או לכל שאלה" if lang == "he" else "Report an issue or ask a question") + '</div></div>'
         + '<a href="/support" class="btn btn-blue" style="text-decoration:none;display:inline-flex;align-items:center;justify-content:center;min-width:180px">' + ("פתיחת פנייה" if lang == "he" else "Open request") + '</a>'
         + '</div></div>'
         + '<div class="card" style="margin-top:1rem;background:linear-gradient(135deg,#eff6ff 0%,#f8fafc 100%);border:1px solid #bfdbfe">'
@@ -6983,20 +6980,8 @@ def dashboard():
             else "Uploaded reports are used only for processing and are not kept as part of a permanent data store. In most tools, working files and outputs are deleted immediately after download. For the attendance cleanup tool, when a report is sent to background processing it is kept until download or for up to 3 days, whichever comes first."
         )
         + '</div></div>'
-        + '<details id="serviceTerms" style="margin-top:1rem;background:#ffffff;border:1px solid #e2e8f0;border-radius:16px;box-shadow:0 2px 16px rgba(0,0,0,.04);overflow:hidden">'
-        + '<summary style="list-style:none;cursor:pointer;padding:16px 18px;font-size:15px;font-weight:800;color:#0f172a;display:flex;align-items:center;justify-content:space-between;background:linear-gradient(180deg,#ffffff 0%,#f8fafc 100%);direction:rtl;text-align:right">'
-        + '<span>פירוט השירות והמנוי</span><span style="font-size:18px;color:#64748b">+</span></summary>'
-        + '<div style="padding:0 18px 18px;font-size:14px;line-height:1.9;color:#334155;direction:rtl;text-align:right">'
-        + 'הפלטפורמה מרכזת כלים ודוחות שפותחו מתוך צרכים אמיתיים שעלו מהשטח.<br>'
-        + 'לקוחות מנויים נהנים מגישה לכלל הכלים הזמינים במערכת.<br>'
-        + 'פיתוח של כלי חדש מתבצע בתמחור חד־פעמי נפרד, בהתאם להיקף העבודה ובהצעת מחיר מראש.<br>'
-        + 'לקוחות בתקופת ניסיון אינם כלולים בשירות המלא.<br>'
-        + 'עלות השירות: 250 ש&quot;ח לחודש, בחיוב שנתי מראש, בתוספת מע&quot;מ.'
-        + '<br>ליצירת קשר ומענה: בוואטסאפ 0525776994 או במייל shaiproductionsltd@gmail.com'
-        + '</div></details>'
         + '<script>'
         + 'function trackUserActivity(eventType, actionLabel, scriptId, scriptName, details){try{var data=new FormData();data.append("event_type",eventType||"");data.append("action_label",actionLabel||"");data.append("script_id",scriptId||"");data.append("script_name",scriptName||"");data.append("details",details||"");if(navigator.sendBeacon){navigator.sendBeacon("/activity",data);}else{fetch("/activity",{method:"POST",body:data,credentials:"same-origin",keepalive:true});}}catch(e){}}'
-        + 'var serviceTerms=document.getElementById("serviceTerms");if(serviceTerms){serviceTerms.addEventListener("toggle",function(){if(this.open){trackUserActivity("open_service_terms","פתח פירוט שירות ומחיר","","","פירוט השירות והמנוי");}});}'
         + '</script>'
     )
     return render(
