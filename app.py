@@ -4289,6 +4289,7 @@ def init_db():
             "trial_start_date": "TEXT",
             "service_valid_until": "TEXT",
             "billing_mode": "TEXT DEFAULT 'monthly'",
+            "trial_days": "INTEGER DEFAULT 30",
         }
         for column_name, column_sql in desired_columns.items():
             if column_name not in existing_columns:
@@ -6662,7 +6663,8 @@ def get_account_status(user_row):
         }
 
     if trial_start:
-        days_remaining = max(0, 30 - (today - trial_start).days)
+        trial_days = user_row["trial_days"] or 30
+        days_remaining = max(0, trial_days - (today - trial_start).days)
         if days_remaining == 0:
             return {
                 "status_key": "expired",
@@ -6673,8 +6675,8 @@ def get_account_status(user_row):
             }
         return {
             "status_key": "trial",
-            "status_label_he": "ניסיון ל-30 יום",
-            "status_label_en": "30-day trial",
+            "status_label_he": "ניסיון ל-" + str(trial_days) + " יום",
+            "status_label_en": str(trial_days) + "-day trial",
             "renewal_date": None,
             "days_remaining": days_remaining,
         }
@@ -6750,7 +6752,7 @@ def login_required(f):
     @wraps(f)
     def decorated(*args, **kwargs):
         if "user_id" not in session:
-            return redirect("/")
+            return redirect("/login")
         return f(*args, **kwargs)
 
     return decorated
@@ -6768,7 +6770,290 @@ def admin_required(f):
     return decorated
 
 
-@app.route("/", methods=["GET", "POST"])
+@app.route("/")
+def homepage():
+    if "user_id" in session:
+        return redirect("/admin" if session.get("is_admin") else "/dashboard")
+    return (
+        '<!DOCTYPE html>'
+        '<html dir="rtl" lang="he">'
+        '<head>'
+        '<meta charset="UTF-8">'
+        '<meta name="viewport" content="width=device-width,initial-scale=1">'
+        '<title>Scriptly — אוטומציה חכמה לניהול נוכחות ושכר</title>'
+        '<meta name="description" content="פלטפורמת Scriptly מפשטת עבודה עם דוחות נוכחות ושכר. התחילו בחינם, ללא כרטיס אשראי, ללא התחייבות.">'
+        '<meta name="keywords" content="אוטומציה, דוחות נוכחות, שכר, HR, חינם, ללא כרטיס אשראי, דוח חוסר, סיכום שכר, מבנה ארגוני">'
+        '<meta property="og:title" content="Scriptly — אוטומציה חכמה לניהול נוכחות ושכר">'
+        '<meta property="og:description" content="פלטפורמת Scriptly מפשטת עבודה עם דוחות נוכחות ושכר. התחילו בחינם, ללא כרטיס אשראי.">'
+        '<meta property="og:type" content="website">'
+        '<meta property="og:url" content="https://script-ly.com">'
+        '<style>'
+        '*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }'
+        'html { scroll-behavior: smooth; }'
+        "body { font-family: 'Segoe UI', Arial, sans-serif; background: #f0f4ff; color: #1e293b; direction: rtl; }"
+        '.hp-nav { position: fixed; top: 0; right: 0; left: 0; z-index: 100; background: rgba(30,58,138,.95); backdrop-filter: blur(8px); height: 58px; display: flex; align-items: center; justify-content: space-between; padding: 0 2rem; }'
+        '.hp-nav-brand { color: white; font-size: 17px; font-weight: 700; text-decoration: none; display: flex; align-items: center; gap: 8px; }'
+        '.hp-nav-links { display: flex; gap: 12px; align-items: center; }'
+        '.hp-nav-links a { color: #93c5fd; font-size: 13px; text-decoration: none; padding: 6px 14px; border-radius: 8px; transition: background .2s; }'
+        '.hp-nav-links a:hover { background: rgba(255,255,255,.1); }'
+        '.hp-nav-links .btn-cta { background: #2563eb; color: white; font-weight: 600; }'
+        '.hp-nav-links .btn-cta:hover { background: #1d4ed8; }'
+        '.hp-hero { min-height: 100vh; display: flex; align-items: center; justify-content: center; text-align: center; padding: 80px 2rem 3rem; background: linear-gradient(135deg, #1e3a8a 0%, #2563eb 50%, #3b82f6 100%); position: relative; overflow: hidden; }'
+        '.hp-hero::before { content: ""; position: absolute; width: 500px; height: 500px; background: rgba(255,255,255,.04); border-radius: 50%; top: -120px; left: -80px; animation: heroFloat 8s ease-in-out infinite; }'
+        '.hp-hero::after { content: ""; position: absolute; width: 350px; height: 350px; background: rgba(255,255,255,.03); border-radius: 50%; bottom: -60px; right: -60px; animation: heroFloat 6s ease-in-out 2s infinite reverse; }'
+        '.hp-hero-content { position: relative; z-index: 1; max-width: 700px; animation: fadeInUp .8s ease-out both; }'
+        '.hp-hero-icon { font-size: 64px; margin-bottom: 1rem; animation: pulse 3s ease-in-out infinite; }'
+        '.hp-hero h1 { font-size: clamp(28px, 5vw, 48px); font-weight: 800; color: white; margin-bottom: .75rem; line-height: 1.3; }'
+        '.hp-hero p { font-size: clamp(15px, 2.5vw, 19px); color: #bfdbfe; margin-bottom: 2rem; line-height: 1.7; }'
+        '.hp-hero-btns { display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; }'
+        '.hp-hero-btns a { padding: 14px 32px; border-radius: 12px; font-size: 16px; font-weight: 700; text-decoration: none; transition: transform .2s, box-shadow .2s; }'
+        '.hp-hero-btns a:first-child { background: white; color: #1e3a8a; box-shadow: 0 4px 20px rgba(0,0,0,.15); }'
+        '.hp-hero-btns a:first-child:hover { transform: translateY(-2px); box-shadow: 0 8px 30px rgba(0,0,0,.2); }'
+        '.hp-hero-btns a:last-child { background: transparent; color: white; border: 2px solid rgba(255,255,255,.4); }'
+        '.hp-hero-btns a:last-child:hover { border-color: white; background: rgba(255,255,255,.1); }'
+        '.hp-section { padding: 5rem 2rem; max-width: 1000px; margin: 0 auto; }'
+        '.hp-section-title { text-align: center; font-size: clamp(22px, 4vw, 32px); font-weight: 800; color: #1e3a8a; margin-bottom: .5rem; }'
+        '.hp-section-sub { text-align: center; font-size: 15px; color: #64748b; margin-bottom: 3rem; }'
+        '.hp-features { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1.5rem; }'
+        '.hp-feature { background: white; border-radius: 16px; padding: 2rem; box-shadow: 0 2px 16px rgba(37,99,235,.08); text-align: center; opacity: 0; transform: translateY(30px); transition: opacity .6s ease-out, transform .6s ease-out; }'
+        '.hp-feature.visible { opacity: 1; transform: translateY(0); }'
+        '.hp-feature-icon { font-size: 40px; margin-bottom: 1rem; }'
+        '.hp-feature h3 { font-size: 16px; font-weight: 700; color: #1e3a8a; margin-bottom: .5rem; }'
+        '.hp-feature p { font-size: 13px; color: #64748b; line-height: 1.6; }'
+        '.hp-steps { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 2rem; counter-reset: step; }'
+        '.hp-step { text-align: center; opacity: 0; transform: translateY(30px); transition: opacity .6s ease-out, transform .6s ease-out; }'
+        '.hp-step.visible { opacity: 1; transform: translateY(0); }'
+        '.hp-step-num { width: 48px; height: 48px; background: linear-gradient(135deg, #2563eb, #3b82f6); color: white; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 20px; font-weight: 800; margin-bottom: 1rem; }'
+        '.hp-step h3 { font-size: 16px; font-weight: 700; color: #1e3a8a; margin-bottom: .5rem; }'
+        '.hp-step p { font-size: 13px; color: #64748b; line-height: 1.6; }'
+        '.hp-trust { background: linear-gradient(135deg, #eff6ff, #dbeafe); border-radius: 20px; padding: 3rem 2rem; text-align: center; margin-top: 2rem; }'
+        '.hp-trust-badges { display: flex; gap: 2rem; justify-content: center; flex-wrap: wrap; margin-top: 1.5rem; }'
+        '.hp-trust-badge { font-size: 14px; font-weight: 600; color: #1e3a8a; display: flex; align-items: center; gap: 6px; }'
+        '.hp-footer { background: #1e3a8a; color: #93c5fd; padding: 2rem; text-align: center; font-size: 13px; }'
+        '.hp-footer a { color: #bfdbfe; text-decoration: none; margin: 0 10px; }'
+        '.hp-footer a:hover { color: white; }'
+        '@keyframes fadeInUp { from { opacity: 0; transform: translateY(30px); } to { opacity: 1; transform: translateY(0); } }'
+        '@keyframes heroFloat { 0%, 100% { transform: translate(0, 0); } 50% { transform: translate(20px, -20px); } }'
+        '@keyframes pulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.05); } }'
+        '@media (max-width: 600px) {'
+        '  .hp-nav { padding: 0 1rem; }'
+        '  .hp-hero { padding: 70px 1rem 2rem; min-height: auto; }'
+        '  .hp-section { padding: 3rem 1rem; }'
+        '  .hp-hero-btns a { padding: 12px 24px; font-size: 14px; }'
+        '}'
+        '</style>'
+        '</head>'
+        '<body>'
+        '<nav class="hp-nav">'
+        '<a href="/" class="hp-nav-brand">&#9201; Scriptly</a>'
+        '<div class="hp-nav-links">'
+        '<a href="/login">כניסה</a>'
+        '<a href="/register" class="btn-cta">הרשמה בחינם</a>'
+        '</div>'
+        '</nav>'
+        '<section class="hp-hero">'
+        '<div class="hp-hero-content">'
+        '<div class="hp-hero-icon">&#9201;</div>'
+        '<h1>אוטומציה חכמה לניהול<br>נוכחות ושכר</h1>'
+        '<p>Scriptly מפשטת את העבודה עם דוחות נוכחות ושכר.<br>'
+        'העלו קובץ, אשרו את השדות, קבלו דוח מוכן &mdash; בלחיצה אחת.</p>'
+        '<div class="hp-hero-btns">'
+        '<a href="/register">התחל בחינם &larr;</a>'
+        '<a href="/login">כניסה למערכת</a>'
+        '</div>'
+        '</div>'
+        '</section>'
+        '<section class="hp-section">'
+        '<h2 class="hp-section-title">מה Scriptly עושה בשבילכם?</h2>'
+        '<p class="hp-section-sub">כלים חכמים שחוסכים שעות עבודה בכל חודש</p>'
+        '<div class="hp-features">'
+
+        '<div class="hp-feature">'
+        '<div class="hp-feature-icon">&#128270;</div>'
+        '<h3>זיהוי שדות אוטומטי</h3>'
+        '<p>המערכת מזהה את מבנה הקובץ ומתאימה את השדות &mdash; בלי הגדרה ידנית.</p>'
+        '</div>'
+
+        '<div class="hp-feature">'
+        '<div class="hp-feature-icon">&#128202;</div>'
+        '<h3>דוחות חכמים</h3>'
+        '<p>סיכומי שכר, דוחות חוסר, ניקוי נוכחות ועוד &mdash; הכל אוטומטי ומדויק.</p>'
+        '</div>'
+
+        '<div class="hp-feature">'
+        '<div class="hp-feature-icon">&#128196;</div>'
+        '<h3>Excel ו-PowerPoint</h3>'
+        '<p>קבלו את הפלט בפורמטים מוכנים לשימוש &mdash; Excel, PowerPoint או ZIP.</p>'
+        '</div>'
+
+        '<div class="hp-feature">'
+        '<div class="hp-feature-icon">&#9889;</div>'
+        '<h3>מהיר ופשוט</h3>'
+        '<p>ממשק נקי, בעברית, ללא צורך בהתקנה. העלו קובץ וקבלו תוצאה תוך שניות.</p>'
+        '</div>'
+
+        '</div>'
+        '</section>'
+        '<section class="hp-section" style="background:#f8fafc;border-radius:0;max-width:100%;padding-bottom:4rem">'
+        '<div style="max-width:1000px;margin:0 auto">'
+        '<h2 class="hp-section-title">איך זה עובד?</h2>'
+        '<p class="hp-section-sub">שלושה צעדים פשוטים &mdash; מקובץ גולמי לדוח מוכן</p>'
+        '<div class="hp-steps">'
+
+        '<div class="hp-step">'
+        '<div class="hp-step-num">1</div>'
+        '<h3>העלאת קובץ</h3>'
+        '<p>בחרו את הסקריפט המתאים והעלו קובץ Excel או דוח נוכחות.</p>'
+        '</div>'
+
+        '<div class="hp-step">'
+        '<div class="hp-step-num">2</div>'
+        '<h3>אישור שדות</h3>'
+        '<p>המערכת מזהה את השדות &mdash; אשרו או התאימו בלחיצה.</p>'
+        '</div>'
+
+        '<div class="hp-step">'
+        '<div class="hp-step-num">3</div>'
+        '<h3>הורדת הדוח</h3>'
+        '<p>קבלו דוח מעוצב ומוכן להדפסה או העברה להנהלה.</p>'
+        '</div>'
+
+        '</div>'
+        '</div>'
+        '</section>'
+        '<section class="hp-section">'
+        '<div class="hp-trust">'
+        '<h2 class="hp-section-title" style="margin-bottom:1rem">התחילו בחינם &mdash; ללא התחייבות</h2>'
+        '<p style="font-size:15px;color:#475569;margin-bottom:1.5rem">'
+        '30 ימי ניסיון חינם. ללא כרטיס אשראי. ללא התחייבות.<br>'
+        'גלו איך Scriptly חוסכת לכם זמן כבר מהיום הראשון.</p>'
+        '<a href="/register" style="display:inline-block;padding:14px 40px;background:#2563eb;color:white;border-radius:12px;font-size:16px;font-weight:700;text-decoration:none;box-shadow:0 4px 20px rgba(37,99,235,.3);transition:transform .2s">'
+        'הרשמה חינם &larr;</a>'
+        '<div class="hp-trust-badges">'
+        '<span class="hp-trust-badge">&#10003; חינם</span>'
+        '<span class="hp-trust-badge">&#10003; ללא כרטיס אשראי</span>'
+        '<span class="hp-trust-badge">&#10003; ללא התחייבות</span>'
+        '<span class="hp-trust-badge">&#10003; התנסות חינם 30 יום</span>'
+        '</div>'
+        '</div>'
+        '</section>'
+        '<footer class="hp-footer">'
+        '<p>&#169; 2026 Scriptly &mdash; אוטומציה חכמה לדוחות נוכחות ושכר</p>'
+        '<p style="margin-top:8px">'
+        '<a href="/login">כניסה</a>'
+        '<a href="/register">הרשמה</a>'
+        '</p>'
+        '</footer>'
+        '<script>'
+        '(function(){'
+        'var els=document.querySelectorAll(".hp-feature,.hp-step");'
+        'if(!("IntersectionObserver" in window)){els.forEach(function(e){e.classList.add("visible")});return;}'
+        'var obs=new IntersectionObserver(function(entries){'
+        'entries.forEach(function(entry){'
+        'if(entry.isIntersecting){entry.target.classList.add("visible");obs.unobserve(entry.target);}'
+        '});'
+        '},{threshold:0.15});'
+        'els.forEach(function(el,i){el.style.transitionDelay=(i%4)*0.12+"s";obs.observe(el);});'
+        '})();'
+        '</script>'
+        '</body></html>'
+    )
+
+
+@app.route("/register", methods=["GET", "POST"])
+def register():
+    if "user_id" in session:
+        return redirect("/admin" if session.get("is_admin") else "/dashboard")
+
+    lang = get_flow_lang()
+    error = ""
+
+    if request.method == "POST":
+        full_name = request.form.get("full_name", "").strip()
+        company_name = request.form.get("company_name", "").strip()
+        company_id = request.form.get("company_id", "").strip()
+        email = request.form.get("email", "").strip()
+        phone = request.form.get("phone", "").strip()
+        username = request.form.get("username", "").strip()
+        password = request.form.get("password", "").strip()
+
+        if not full_name or not email or not username or not password:
+            error = '<div class="flash-err">יש למלא את כל שדות החובה</div>' if lang == "he" else '<div class="flash-err">Please fill all required fields</div>'
+        elif len(password) < 4:
+            error = '<div class="flash-err">הסיסמה חייבת להכיל לפחות 4 תווים</div>' if lang == "he" else '<div class="flash-err">Password must be at least 4 characters</div>'
+        else:
+            try:
+                join_date = date.today().isoformat()
+                with get_db() as db:
+                    db.execute(
+                        """INSERT INTO users(
+                        username, password, full_name, company_name, company_id, email, phone,
+                        join_date, trial_start_date, trial_days, active, is_admin, billing_mode
+                        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        (
+                            username,
+                            generate_password_hash(password),
+                            full_name,
+                            company_name,
+                            company_id,
+                            email,
+                            phone,
+                            join_date,
+                            join_date,
+                            30,
+                            1,
+                            0,
+                            "monthly",
+                        ),
+                    )
+                    db.commit()
+                add_flash("נרשמת בהצלחה! כעת ניתן להתחבר" if lang == "he" else "Registration successful! You can now log in")
+                return redirect("/login")
+            except Exception:
+                error = '<div class="flash-err">שם המשתמש כבר קיים במערכת</div>' if lang == "he" else '<div class="flash-err">Username already exists</div>'
+
+    lbl = {
+        "he": {"title": "הרשמה", "full_name": "שם מלא *", "company_name": "שם חברה", "company_id": "ח.פ / מזהה חברה", "email": "אימייל *", "phone": "טלפון", "username": "שם משתמש *", "password": "סיסמה *", "submit": "הרשמה", "login_link": "יש לך חשבון?", "login_text": "התחברות"},
+        "en": {"title": "Register", "full_name": "Full Name *", "company_name": "Company Name", "company_id": "Company ID", "email": "Email *", "phone": "Phone", "username": "Username *", "password": "Password *", "submit": "Register", "login_link": "Already have an account?", "login_text": "Log in"},
+    }
+    t = lbl.get(lang, lbl["he"])
+
+    body = (
+        '<div class="card" style="padding:2rem">'
+        '<div style="text-align:center;margin-bottom:1.5rem">'
+        '<div style="font-size:40px">&#9201;</div>'
+        '<h1 style="font-size:20px;font-weight:700;color:#1e3a8a;margin-top:8px">Scriptly</h1>'
+        '<p style="font-size:13px;color:#64748b;margin-top:4px">' + t["title"] + '</p>'
+        '</div>'
+        + error
+        + '<form method="POST">'
+        + '<label class="field-label">' + t["full_name"] + '</label>'
+        '<input type="text" name="full_name" required value="' + esc(request.form.get("full_name", "")) + '">'
+        + '<label class="field-label">' + t["company_name"] + '</label>'
+        '<input type="text" name="company_name" value="' + esc(request.form.get("company_name", "")) + '">'
+        + '<label class="field-label">' + t["company_id"] + '</label>'
+        '<input type="text" name="company_id" value="' + esc(request.form.get("company_id", "")) + '">'
+        + '<label class="field-label">' + t["email"] + '</label>'
+        '<input type="text" name="email" required value="' + esc(request.form.get("email", "")) + '">'
+        + '<label class="field-label">' + t["phone"] + '</label>'
+        '<input type="text" name="phone" value="' + esc(request.form.get("phone", "")) + '">'
+        + '<label class="field-label">' + t["username"] + '</label>'
+        '<input type="text" name="username" required value="' + esc(request.form.get("username", "")) + '">'
+        + '<label class="field-label">' + t["password"] + '</label>'
+        '<input type="password" name="password" required>'
+        + '<button type="submit" class="btn btn-blue" style="width:100%;padding:12px;font-size:15px;margin-top:.5rem">' + t["submit"] + '</button>'
+        '</form>'
+        '<p style="text-align:center;margin-top:1rem;font-size:13px;color:#64748b">'
+        + t["login_link"] + ' '
+        '<a href="/login" style="color:#2563eb;font-weight:600;text-decoration:none">' + t["login_text"] + '</a>'
+        '</p>'
+        '<p style="text-align:center;margin-top:1rem;font-size:11px;color:#bbb">&#169; Scriptly</p>'
+        '</div>'
+    )
+    return render(t["title"], body, nav=False, lang=lang)
+
+
+@app.route("/login", methods=["GET", "POST"])
 def login():
     if "user_id" in session:
         return redirect("/admin" if session.get("is_admin") else "/dashboard")
@@ -6809,7 +7094,12 @@ def login():
         '<input type="password" name="password" required>'
         + '<button type="submit" class="btn btn-blue" style="width:100%;padding:12px;font-size:15px;margin-top:.5rem">' + text["login_submit"] + '</button>'
         "</form>"
-        '<p style="text-align:center;margin-top:1.5rem;font-size:11px;color:#bbb">&#169; Scriptly</p>'
+        '<p style="text-align:center;margin-top:1rem;font-size:13px;color:#64748b">'
+        + ("אין לך חשבון? " if lang == "he" else "Don't have an account? ")
+        + '<a href="/register" style="color:#2563eb;font-weight:600;text-decoration:none">'
+        + ("הרשמה בחינם" if lang == "he" else "Register free")
+        + "</a></p>"
+        '<p style="text-align:center;margin-top:1rem;font-size:11px;color:#bbb">&#169; Scriptly</p>'
         "</div>"
     )
     return render(text["login_page_title"], body, nav=False, lang=lang)
@@ -6818,7 +7108,7 @@ def login():
 @app.route("/logout")
 def logout():
     session.clear()
-    return redirect("/")
+    return redirect("/login")
 
 
 @app.route("/dashboard")
@@ -6836,7 +7126,7 @@ def dashboard():
         report_jobs = db.execute("SELECT * FROM report_jobs WHERE user_id=? AND status<>'downloaded' ORDER BY created_at DESC, id DESC LIMIT 8", (session["user_id"],)).fetchall()
     if user is None:
         session.clear()
-        return redirect("/")
+        return redirect("/login")
 
     allowed = [get_localized_script(SCRIPTS[p["script_id"]], lang) for p in perms if p["script_id"] in SCRIPTS]
     status = get_account_status(user)
@@ -7015,7 +7305,7 @@ def support():
         perms = db.execute("SELECT script_id FROM permissions WHERE user_id=?", (session["user_id"],)).fetchall()
     if user is None:
         session.clear()
-        return redirect("/")
+        return redirect("/login")
 
     status = get_account_status(user)
     allowed_scripts = [get_localized_script(SCRIPTS[p["script_id"]], lang) for p in perms if p["script_id"] in SCRIPTS]
@@ -8185,14 +8475,46 @@ def admin():
                 + script["name"]
                 + "</label>"
             )
+        is_active = bool(user["active"])
+        active_color = "#047857" if is_active else "#b91c1c"
+        active_bg = "#ecfdf5" if is_active else "#fef2f2"
+        active_label = "פעיל" if is_active else "מושבת"
+        trial_extend_html = ""
+        if status["status_key"] == "trial":
+            trial_extend_html = (
+                '<div class="admin-user-section"><div class="admin-user-section-title">הארכת ניסיון</div>'
+                '<form method="POST" action="/admin/extend_trial/' + str(uid) + '" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">'
+                '<select name="extend_days" style="padding:6px 10px;border:1.5px solid #e2e8f0;border-radius:8px;font-size:13px;font-family:inherit">'
+                '<option value="30">30 יום</option><option value="60">60 יום</option><option value="90">90 יום</option></select>'
+                '<button type="submit" class="btn btn-blue" style="font-size:12px;padding:6px 14px">הארכה</button>'
+                '<span style="font-size:12px;color:#64748b">תקופת ניסיון נוכחית: ' + str(user["trial_days"] or 30) + ' יום</span>'
+                '</form></div>'
+            )
+        current_account_type = "active" if user["service_valid_until"] else "trial"
         user_cards += (
             '<details class="admin-user-card">'
             '<summary class="admin-collapsible-summary">'
             '<div><div class="admin-user-title">' + esc(user["company_name"] or user["full_name"] or user["username"]) + '</div>'
             '<div class="admin-user-sub">@' + esc(user["username"]) + ' • ח.פ: ' + esc(user["company_id"] or "לא הוגדר") + '</div>'
             '<div class="admin-user-sub">' + esc(user["full_name"] or "לא הוגדר") + ' • ' + esc(user["email"] or "ללא אימייל") + '</div></div>'
-            '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap"><span class="admin-user-status" style="background:' + service_style[0] + ';color:' + service_style[1] + '">' + esc(status["status_label_he"]) + '</span><span style="font-size:18px;color:#64748b">+</span></div>'
+            '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">'
+            '<span style="display:inline-flex;align-items:center;padding:5px 10px;border-radius:999px;background:' + active_bg + ';color:' + active_color + ';font-size:11px;font-weight:800">' + active_label + '</span>'
+            '<span class="admin-user-status" style="background:' + service_style[0] + ';color:' + service_style[1] + '">' + esc(status["status_label_he"]) + '</span>'
+            '<span style="font-size:18px;color:#64748b">+</span></div>'
             '</summary>'
+            # Active toggle
+            '<div style="padding:12px 20px 0;display:flex;align-items:center;gap:10px;flex-wrap:wrap">'
+            '<form method="POST" action="/admin/toggle_active/' + str(uid) + '" style="display:inline">'
+            '<label style="display:inline-flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;font-weight:700;color:#334155">'
+            '<span>גישה למערכת:</span>'
+            '<span style="position:relative;display:inline-block;width:44px;height:24px">'
+            '<input type="checkbox" onchange="this.form.submit()" ' + ('checked ' if is_active else '') + 'style="opacity:0;width:0;height:0;position:absolute">'
+            '<span style="position:absolute;top:0;left:0;right:0;bottom:0;background:' + ('#047857' if is_active else '#cbd5e1') + ';border-radius:24px;transition:background .2s"></span>'
+            '<span style="position:absolute;top:2px;' + ('left:22px' if is_active else 'left:2px') + ';width:20px;height:20px;background:white;border-radius:50%;transition:left .2s;box-shadow:0 1px 3px rgba(0,0,0,.2)"></span>'
+            '</span>'
+            '<span style="font-size:12px;color:' + active_color + '">' + active_label + '</span>'
+            '</label></form></div>'
+            # Meta boxes
             '<div class="admin-user-meta">'
             '<div class="admin-user-meta-box"><div class="k">איש קשר</div><div class="v">' + esc(user["full_name"] or "לא הוגדר") + '</div></div>'
             '<div class="admin-user-meta-box"><div class="k">מסלול חיוב</div><div class="v">' + esc(billing_mode_label(user["billing_mode"], "he")) + '</div></div>'
@@ -8205,7 +8527,27 @@ def admin():
             + ('<br><span style="font-size:12px;font-weight:600;color:#64748b">בתוקף עד ' + esc(format_ui_date(status["renewal_date"], "he")) + '</span>' if status["renewal_date"] else "")
             + '</div></div>'
             '</div>'
-            '<div class="admin-user-section"><div class="admin-user-section-title">כלים והרשאות</div>'
+            # Edit form
+            '<div class="admin-user-section"><div class="admin-user-section-title">עריכת פרטים</div>'
+            '<form method="POST" action="/admin/edit_user/' + str(uid) + '">'
+            '<div class="form-row">'
+            '<div class="form-group"><label class="field-label">שם מלא</label><input type="text" name="full_name" value="' + esc(user["full_name"] or "") + '" style="margin-bottom:0"></div>'
+            '<div class="form-group"><label class="field-label">שם חברה</label><input type="text" name="company_name" value="' + esc(user["company_name"] or "") + '" style="margin-bottom:0"></div>'
+            '<div class="form-group"><label class="field-label">ח.פ / מזהה חברה</label><input type="text" name="company_id" value="' + esc(user["company_id"] or "") + '" style="margin-bottom:0"></div>'
+            '</div><div class="form-row">'
+            '<div class="form-group"><label class="field-label">אימייל</label><input type="text" name="email" value="' + esc(user["email"] or "") + '" style="margin-bottom:0"></div>'
+            '<div class="form-group"><label class="field-label">טלפון</label><input type="text" name="phone" value="' + esc(user["phone"] or "") + '" style="margin-bottom:0"></div>'
+            '<div class="form-group"><label class="field-label">מסלול חיוב</label><select name="billing_mode" style="margin-bottom:0"><option value="monthly"' + (' selected' if (user["billing_mode"] or "monthly") == "monthly" else '') + '>חודשי</option><option value="yearly_prepaid"' + (' selected' if user["billing_mode"] == "yearly_prepaid" else '') + '>שנתי מראש</option></select></div>'
+            '</div><div class="form-row">'
+            '<div class="form-group"><label class="field-label">סוג חשבון</label><select name="account_type" style="margin-bottom:0"><option value="trial"' + (' selected' if current_account_type == "trial" else '') + '>תקופת ניסיון</option><option value="active"' + (' selected' if current_account_type == "active" else '') + '>שירות פעיל</option></select></div>'
+            '<div class="form-group"><label class="field-label">תחילת ניסיון</label><input type="text" name="trial_start_date" value="' + esc(user["trial_start_date"] or "") + '" placeholder="YYYY-MM-DD" style="margin-bottom:0"></div>'
+            '<div class="form-group"><label class="field-label">בתוקף עד</label><input type="text" name="service_valid_until" value="' + esc(user["service_valid_until"] or "") + '" placeholder="YYYY-MM-DD" style="margin-bottom:0"></div>'
+            '<button type="submit" class="btn btn-blue" style="height:40px;align-self:flex-end;font-size:12px;padding:6px 14px">שמירת שינויים</button>'
+            '</div></form></div>'
+            # Trial extend
+            + trial_extend_html
+            # Permissions
+            + '<div class="admin-user-section"><div class="admin-user-section-title">כלים והרשאות</div>'
             '<form method="POST" action="/admin/permissions/' + str(uid) + '"><div class="admin-user-perms">'
             + checks
             + '</div><button type="submit" class="btn btn-gray" style="margin-top:10px;font-size:12px;padding:6px 14px">שמירת הרשאות</button></form></div>'
@@ -8272,6 +8614,7 @@ def admin():
     opened_tools = sum(1 for entry in filtered_activity_logs if entry["event_type"] == "open_script")
     help_opens = sum(1 for entry in filtered_activity_logs if entry["event_type"] == "open_help_popup")
     terms_opens = sum(1 for entry in filtered_activity_logs if entry["event_type"] == "open_service_terms")
+    unique_users_count = len({entry["user_id"] for entry in filtered_activity_logs if entry["user_id"]})
 
     displayed_activity_logs = filtered_activity_logs[:activity_limit]
 
@@ -8304,6 +8647,9 @@ def admin():
     activity_summary = (
         '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;margin-bottom:1rem">'
         + build_summary_card("סה\"כ אירועים", total_activity, "all")
+        + '<div id="uniqueUsersCard" style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;padding:12px;text-align:right">'
+          '<div style="font-size:12px;color:#64748b;margin-bottom:6px">משתמשים שונים</div>'
+          '<div id="uniqueUsersValue" style="font-size:20px;font-weight:800;color:#0f172a">' + str(unique_users_count) + '</div></div>'
         + build_summary_card("כלים שנפתחו", opened_tools, "open_script")
         + build_summary_card("דוחות שהופקו", generated_reports, "generate_report")
         + build_summary_card("חלונות מידע שנפתחו", help_opens, "open_help_popup")
@@ -8413,7 +8759,8 @@ def admin():
         '<div class="form-group"><label class="field-label">אימייל</label><input type="text" name="email" placeholder="אימייל" style="margin-bottom:0"></div>'
         '<div class="form-group"><label class="field-label">טלפון</label><input type="text" name="phone" placeholder="טלפון" style="margin-bottom:0"></div>'
         '<div class="form-group"><label class="field-label">מסלול חיוב</label><select name="billing_mode" style="margin-bottom:0"><option value="monthly">חודשי</option><option value="yearly_prepaid">שנתי מראש</option></select></div>'
-        '<div class="form-group"><label class="field-label">סוג חשבון</label><select name="account_type" style="margin-bottom:0"><option value="trial">תקופת ניסיון 30 יום</option><option value="active">שירות פעיל</option></select></div>'
+        '<div class="form-group"><label class="field-label">סוג חשבון</label><select name="account_type" style="margin-bottom:0"><option value="trial">תקופת ניסיון</option><option value="active">שירות פעיל</option></select></div>'
+            '<div class="form-group"><label class="field-label">ימי ניסיון</label><select name="trial_days" style="margin-bottom:0"><option value="30">30 יום</option><option value="60">60 יום</option><option value="90">90 יום</option></select></div>'
         '<div class="form-group"><label class="field-label">בתוקף עד</label><input type="text" name="service_valid_until" placeholder="YYYY-MM-DD" style="margin-bottom:0"></div>'
         '<button type="submit" class="btn btn-blue" style="height:40px;align-self:flex-end">הוספה</button></div></form></div>'
         '<details class="card" id="adminUsers" style="padding:0;overflow:hidden" dir="rtl">'
@@ -8463,7 +8810,8 @@ def admin():
         'function parseCreatedAt(text){if(!text){return null;}var m=String(text).match(/^(\\d{4})-(\\d{2})-(\\d{2}) (\\d{2}):(\\d{2}):(\\d{2})$/);if(!m){return null;}return new Date(Number(m[1]),Number(m[2])-1,Number(m[3]),Number(m[4]),Number(m[5]),Number(m[6]),0);}'
         'function getFilteredLogs(){var userId=userSelect?userSelect.value:"";var range=rangeSelect?rangeSelect.value:"all";var fromDate=parseDateOnly(fromInput?fromInput.value:"");var toDate=parseDateOnly(toInput?toInput.value:"");var eventType=eventInput?eventInput.value:"all";var today=new Date();today.setHours(0,0,0,0);var last30Start=new Date(today.getTime());last30Start.setDate(today.getDate()-29);var last30End=new Date(today.getTime());last30End.setHours(23,59,59,999);return allLogs.filter(function(entry){if(userId&&entry.user_id!==userId){return false;}if(eventType&&eventType!=="all"&&entry.event_type!==eventType){return false;}var created=parseCreatedAt(entry.created_at);if(range==="last_30"){if(!created||created<last30Start||created>last30End){return false;}}else if(range==="custom"){if(fromDate&&(!created||created<fromDate)){return false;}if(toDate){var end=new Date(toDate.getTime());end.setHours(23,59,59,999);if(!created||created>end){return false;}}}return true;});}'
         'function countBy(logs,eventType){if(eventType==="all"){return logs.length;}var total=0;logs.forEach(function(entry){if(entry.event_type===eventType){total+=1;}});return total;}'
-        'function renderActivity(){if(!panel){return;}var filtered=getFilteredLogs();var limit=Math.max(50,Math.min(500,parseInt(limitSelect&&limitSelect.value||"50",10)||50));var displayed=filtered.slice(0,limit);var currentEvent=eventInput?eventInput.value:"all";summaryButtons.forEach(function(btn){var active=(btn.getAttribute("data-activity-event")||"all")===currentEvent;btn.style.borderColor=active?"#93c5fd":"#e2e8f0";var valueNode=btn.querySelectorAll("div")[1];if(valueNode){var eventKey=btn.getAttribute("data-activity-event")||"all";valueNode.textContent=String(countBy(filtered,eventKey));}});var rowsHtml="";if(displayed.length){displayed.forEach(function(entry){var userLabel=entry.full_name||entry.username||("משתמש #"+entry.user_id);rowsHtml+="<tr><td>"+escHtml(entry.display_when)+"</td><td><div style=\\"font-weight:700;color:#0f172a\\">"+escHtml(userLabel)+"</div><div style=\\"font-size:12px;color:#64748b\\">@"+escHtml(entry.username||"")+"</div></td><td>"+escHtml(entry.action_label||"")+"</td><td>"+escHtml(entry.script_name||"ללא כלי")+"</td><td>"+escHtml(entry.details||"—")+"</td></tr>";});rowsHtml="<table><thead><tr><th>מתי</th><th>משתמש</th><th>פעולה</th><th>כלי</th><th>פרטים</th></tr></thead><tbody>"+rowsHtml+"</tbody></table>";}else{rowsHtml=\'<p style="color:#94a3b8;text-align:center;padding:2rem">אין לוגים שתואמים את הסינון הנוכחי</p>\';}var showingNode=document.getElementById("activityShowing");if(showingNode){showingNode.textContent=filtered.length>limit?("מוצגות "+displayed.length+" מתוך "+filtered.length+" רשומות תואמות."): ""; }var existingTable=document.getElementById("activityTableWrap");if(existingTable){existingTable.innerHTML=rowsHtml;}else{var wrap=document.createElement("div");wrap.id="activityTableWrap";wrap.innerHTML=rowsHtml;panel.appendChild(wrap);} }'
+        'function countUniqueUsers(logs){var seen={};logs.forEach(function(entry){if(entry.user_id){seen[entry.user_id]=true;}});return Object.keys(seen).length;}'
+        'function renderActivity(){if(!panel){return;}var filtered=getFilteredLogs();var limit=Math.max(50,Math.min(500,parseInt(limitSelect&&limitSelect.value||"50",10)||50));var displayed=filtered.slice(0,limit);var currentEvent=eventInput?eventInput.value:"all";summaryButtons.forEach(function(btn){var active=(btn.getAttribute("data-activity-event")||"all")===currentEvent;btn.style.borderColor=active?"#93c5fd":"#e2e8f0";var valueNode=btn.querySelectorAll("div")[1];if(valueNode){var eventKey=btn.getAttribute("data-activity-event")||"all";valueNode.textContent=String(countBy(filtered,eventKey));}});var rowsHtml="";if(displayed.length){displayed.forEach(function(entry){var userLabel=entry.full_name||entry.username||("משתמש #"+entry.user_id);rowsHtml+="<tr><td>"+escHtml(entry.display_when)+"</td><td><div style=\\"font-weight:700;color:#0f172a\\">"+escHtml(userLabel)+"</div><div style=\\"font-size:12px;color:#64748b\\">@"+escHtml(entry.username||"")+"</div></td><td>"+escHtml(entry.action_label||"")+"</td><td>"+escHtml(entry.script_name||"ללא כלי")+"</td><td>"+escHtml(entry.details||"—")+"</td></tr>";});rowsHtml="<table><thead><tr><th>מתי</th><th>משתמש</th><th>פעולה</th><th>כלי</th><th>פרטים</th></tr></thead><tbody>"+rowsHtml+"</tbody></table>";}else{rowsHtml=\'<p style="color:#94a3b8;text-align:center;padding:2rem">אין לוגים שתואמים את הסינון הנוכחי</p>\';}var showingNode=document.getElementById("activityShowing");if(showingNode){showingNode.textContent=filtered.length>limit?("מוצגות "+displayed.length+" מתוך "+filtered.length+" רשומות תואמות."): ""; }var existingTable=document.getElementById("activityTableWrap");if(existingTable){existingTable.innerHTML=rowsHtml;}else{var wrap=document.createElement("div");wrap.id="activityTableWrap";wrap.innerHTML=rowsHtml;panel.appendChild(wrap);}var uuNode=document.getElementById("uniqueUsersValue");if(uuNode){uuNode.textContent=String(countUniqueUsers(filtered));} }'
         'if(form){form.addEventListener("submit",function(ev){ev.preventDefault();renderActivity();});}'
         'summaryButtons.forEach(function(btn){btn.addEventListener("click",function(){if(eventInput){eventInput.value=this.getAttribute("data-activity-event")||"all";}renderActivity();});});'
         'var resetBtn=document.getElementById("activityReset");if(resetBtn){resetBtn.addEventListener("click",function(){if(userSelect){userSelect.value="";}if(rangeSelect){rangeSelect.value="all";}if(fromInput){fromInput.value="";}if(toInput){toInput.value="";}if(limitSelect){limitSelect.value="50";}if(eventInput){eventInput.value="all";}renderActivity();});}'
@@ -8487,6 +8835,8 @@ def add_user():
     billing_mode = request.form.get("billing_mode", "monthly").strip() or "monthly"
     account_type = request.form.get("account_type", "trial").strip() or "trial"
     service_valid_until = request.form.get("service_valid_until", "").strip()
+    trial_days_raw = request.form.get("trial_days", "30").strip()
+    trial_days = int(trial_days_raw) if trial_days_raw in ("30", "60", "90") else 30
     join_date = date.today().isoformat()
     trial_start_date = join_date if account_type == "trial" else ""
     service_until_value = service_valid_until if account_type == "active" else ""
@@ -8494,8 +8844,8 @@ def add_user():
         with get_db() as db:
             db.execute(
                 """INSERT INTO users(
-                username,password,full_name,company_name,company_id,email,phone,join_date,trial_start_date,service_valid_until,billing_mode
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                username,password,full_name,company_name,company_id,email,phone,join_date,trial_start_date,service_valid_until,billing_mode,trial_days
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     username,
                     generate_password_hash(password),
@@ -8508,6 +8858,7 @@ def add_user():
                     trial_start_date,
                     service_until_value,
                     billing_mode,
+                    trial_days,
                 ),
             )
             db.commit()
@@ -8516,6 +8867,79 @@ def add_user():
         if not is_integrity_error(exc):
             raise
         add_flash("שם המשתמש כבר קיים במערכת")
+    return redirect("/admin")
+
+
+@app.route("/admin/edit_user/<int:uid>", methods=["POST"])
+@login_required
+@admin_required
+def edit_user(uid):
+    full_name = request.form.get("full_name", "").strip()
+    company_name = request.form.get("company_name", "").strip()
+    company_id = request.form.get("company_id", "").strip()
+    email = request.form.get("email", "").strip()
+    phone = request.form.get("phone", "").strip()
+    billing_mode = request.form.get("billing_mode", "monthly").strip() or "monthly"
+    account_type = request.form.get("account_type", "").strip()
+    service_valid_until = request.form.get("service_valid_until", "").strip()
+    trial_start_date = request.form.get("trial_start_date", "").strip()
+    with get_db() as db:
+        user = db.execute("SELECT * FROM users WHERE id=? AND is_admin=0", (uid,)).fetchone()
+        if not user:
+            add_flash("לקוח לא נמצא")
+            return redirect("/admin")
+        trial_start_value = user["trial_start_date"] or ""
+        service_until_value = user["service_valid_until"] or ""
+        if account_type == "trial":
+            trial_start_value = trial_start_date or user["trial_start_date"] or date.today().isoformat()
+            service_until_value = ""
+        elif account_type == "active":
+            service_until_value = service_valid_until or user["service_valid_until"] or ""
+            trial_start_value = ""
+        db.execute(
+            """UPDATE users SET full_name=?, company_name=?, company_id=?, email=?, phone=?,
+            billing_mode=?, trial_start_date=?, service_valid_until=? WHERE id=?""",
+            (full_name, company_name, company_id, email, phone, billing_mode,
+             trial_start_value, service_until_value, uid),
+        )
+        db.commit()
+    add_flash("פרטי הלקוח עודכנו בהצלחה")
+    return redirect("/admin")
+
+
+@app.route("/admin/toggle_active/<int:uid>", methods=["POST"])
+@login_required
+@admin_required
+def toggle_active(uid):
+    with get_db() as db:
+        user = db.execute("SELECT id, active FROM users WHERE id=? AND is_admin=0", (uid,)).fetchone()
+        if not user:
+            add_flash("לקוח לא נמצא")
+            return redirect("/admin")
+        new_active = 0 if user["active"] else 1
+        db.execute("UPDATE users SET active=? WHERE id=?", (new_active, uid))
+        db.commit()
+    add_flash("סטטוס הלקוח עודכן בהצלחה")
+    return redirect("/admin")
+
+
+@app.route("/admin/extend_trial/<int:uid>", methods=["POST"])
+@login_required
+@admin_required
+def extend_trial(uid):
+    extend_days = request.form.get("extend_days", "30").strip()
+    if extend_days not in ("30", "60", "90"):
+        extend_days = "30"
+    extend_days = int(extend_days)
+    with get_db() as db:
+        user = db.execute("SELECT id, trial_days FROM users WHERE id=? AND is_admin=0", (uid,)).fetchone()
+        if not user:
+            add_flash("לקוח לא נמצא")
+            return redirect("/admin")
+        current_trial_days = user["trial_days"] or 30
+        db.execute("UPDATE users SET trial_days=? WHERE id=?", (current_trial_days + extend_days, uid))
+        db.commit()
+    add_flash("תקופת הניסיון הוארכה ב-" + str(extend_days) + " ימים")
     return redirect("/admin")
 
 
