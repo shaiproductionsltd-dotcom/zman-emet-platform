@@ -6989,7 +6989,7 @@ def render(title, body, nav=True, lang="en", topbar_greeting="Hello, ", logout_l
         lang_switch = build_lang_switch(lang) if show_lang_switch else ""
         topbar = (
             '<div class="topbar">'
-            "<h1>&#9201; Scriptly</h1>"
+            '<a href="/dashboard" style="text-decoration:none;color:inherit"><h1>&#9201; Scriptly</h1></a>'
             '<div style="display:flex;gap:16px;align-items:center">'
             + lang_switch
             + '<span style="font-size:13px;color:#93c5fd">' + topbar_greeting + name + "</span>"
