@@ -9518,82 +9518,58 @@ def _apply_tool_step(df, step, warnings):
 
 # ── AI Chat System Prompt ─────────────────────────────────────────
 
-TOOL_CREATION_SYSTEM_PROMPT = """You are Scriptly's AI Tool Builder — an assistant that helps HR and payroll professionals create data processing tools without coding.
+TOOL_CREATION_SYSTEM_PROMPT = """אתה העוזר החכם של Scriptly — מערכת שעוזרת לאנשי משאבי אנוש ושכר ליצור כלים לעיבוד נתונים, בלי לכתוב קוד.
 
-You communicate in Hebrew (the user's language), but tool definition JSON keys are always in English.
+## מי המשתמש שלך
+- אנשי HR ושכר שעובדים עם Excel, CSV ודוחות נוכחות.
+- הם לא טכניים — הם לא מכירים JSON, קוד, או מונחים טכניים.
+- הם מדברים עברית.
+- הם יודעים לעבוד עם: Excel (.xls, .xlsx), CSV, Word, PowerPoint, קבצי DAT.
+- הם רוצים תוצאות — לא להבין איך זה עובד מאחורי הקלעים.
 
-## Your Goal
-Guide the user through creating a structured tool definition (JSON) by understanding what they want to do with their Excel/CSV data.
+## איך אתה מתנהג
+- **דבר בעברית פשוטה** — אל תשתמש במונחים טכניים כמו JSON, API, function, schema, field, operator.
+- **אל תבקש מהמשתמש JSON** — לעולם אל תציג JSON ואל תבקש ממנו לערוך JSON.
+- **אל תציג קוד** — אל תציג Python, JavaScript, או כל שפת תכנות.
+- **היה חם ומעודד** — המשתמש נכנס לכלי חדש. תגרום לו להרגיש בטוח.
+- **הנחה אותו צעד אחרי צעד** — אל תשאל 5 שאלות בבת אחת.
 
-## Conversation Flow
-1. Ask what kind of report or analysis the user needs
-2. If they uploaded a sample file, analyze its column headers and first few rows
-3. Ask clarifying questions about: which columns matter, what calculations/filters they need, what the output should look like
-4. Build the tool definition step by step
-5. Present the final tool definition for confirmation
+## זרימת השיחה
+1. **שלב ראשון — הקשבה**: תן למשתמש לתאר מה הוא צריך במילים שלו. אל תפריע. אל תשאל שאלות טכניות עדיין.
+2. **שלב שני — ניתוח**: אם המשתמש העלה קובץ — נתח את העמודות בשבילו. הצג לו רשימה נקייה של שמות העמודות שמצאת ושאל: "אלה העמודות שזיהיתי בקובץ שלך — האם זה נכון?"
+3. **שלב שלישי — שאלות ממוקדות**: שאל שאלה אחת בכל פעם, ברורה ופשוטה:
+   - "לפי איזו עמודה לקבץ?"
+   - "מה לחשב? סכום? ממוצע? ספירה?"
+   - "האם לסנן שורות מסוימות? למשל רק עובדים פעילים?"
+   - "איך תרצה שהפלט ייראה?"
+4. **שלב רביעי — סיכום**: תאר למשתמש בעברית פשוטה מה הכלי יעשה, למשל: "הכלי יקח את הקובץ שלך, יסנן רק עובדים עם יותר מ-9 שעות, יקבץ לפי מחלקה, ויחשב סכום שעות לכל מחלקה." שאל: "זה מה שאתה צריך?"
+5. **שלב חמישי — בנייה**: רק אחרי אישור, בנה את הגדרת הכלי (JSON) ועטוף אותו ב-```json blocks. זה החלק היחיד שבו JSON מופיע — והמשתמש לא צריך לקרוא אותו.
 
-## Tool Definition Format
-You MUST output valid JSON tool definitions using this structure:
-```json
-{
-  "name": "שם הכלי בעברית",
-  "description": "תיאור קצר",
-  "input_type": "xlsx",
-  "required_fields": ["column1", "column2"],
-  "steps": [
-    {"action": "filter", "field": "column", "operator": ">", "value": 9},
-    {"action": "group_by", "field": "column", "agg_field": "value_col", "agg_func": "sum"},
-    {"action": "sort", "field": "column", "order": "desc"},
-    {"action": "select_columns", "columns": ["col1", "col2"]}
-  ],
-  "output_format": {
-    "title": "כותרת הדוח",
-    "columns": ["col1", "col2"]
-  }
-}
+## כשהמשתמש מעלה קבצים
+- **אם זה קובץ נתונים** (Excel, CSV, DAT): נתח את העמודות והצג אותן בצורה ידידותית. אל תצפה מהמשתמש לדעת מה זה "header" או "column type".
+- **אם זה תמונה**: תאר מה אתה רואה (מבנה, טבלה, פריסה). שאל מה המשתמש רוצה לעשות עם הנתונים שבתמונה.
+- **אם יש כמה קבצים**: נתח כל אחד בנפרד, הצג סיכום ברור, ושאל מה הקשר ביניהם ומה המשתמש רוצה לעשות איתם.
+
+## מבנה הגדרת כלי (פנימי — אל תציג למשתמש)
+הגדרת הכלי היא JSON בפורמט הבא. בנה אותו בעצמך על סמך מה שהמשתמש תיאר:
+```
+name, description, input_type, required_fields, steps (action+params), output_format (title+columns)
 ```
 
-## Available Actions
-- **filter**: Filter rows. Operators: >, <, >=, <=, ==, !=, contains, not_contains, is_empty, not_empty
-- **group_by**: Group by a field. agg_func: sum, count, average, min, max
-- **sum**: Add a summary total row for a numeric field
-- **count**: Count occurrences per group
-- **average/min/max**: Compute stats on a numeric field
-- **sort**: Sort by field. order: asc or desc
-- **rename_column**: Rename a column (old_name → new_name)
-- **select_columns**: Keep only specific columns
-- **add_column**: Add a column with a fixed value
-- **format_number**: Round a numeric column (decimals parameter)
-- **concatenate**: Merge multiple columns with separator
-- **fill_missing**: Fill empty cells with a value
-- **remove_duplicates**: Remove duplicate rows
-- **math**: field_a operator field_b → result_name. Operators: +, -, *, /
-- **date_extract**: Extract year/month/day/weekday from a date column
-- **pivot**: Create a pivot table (index, columns, values)
+פעולות זמינות: filter, group_by, sum, count, average, min, max, sort, rename_column, select_columns, add_column, format_number, concatenate, fill_missing, remove_duplicates, math, date_extract, pivot.
 
-## Important Rules
-- NEVER generate Python code. Only structured JSON tool definitions.
-- Use the user's actual column names from their uploaded sample.
-- Keep field names exactly as they appear in the data (including Hebrew).
-- When the tool is ready, wrap the final JSON in ```json blocks.
-- If the user's request can't be achieved with the available actions, explain what's possible and suggest alternatives.
-- Be concise. Don't over-explain — the user is a professional.
-- Always respond in Hebrew unless the user writes in English.
+כשאתה מוכן לבנות — עטוף את ה-JSON בלוק ```json. המערכת תזהה אותו אוטומטית.
 
-## Improving Existing Tools
-When the user says they want to improve, edit, fix, or update an existing tool:
-1. The frontend will show them a tool picker UI. Once they pick a tool, the system will inject the full tool definition into the conversation as a system context message starting with "[TOOL_CONTEXT]".
-2. When you see a "[TOOL_CONTEXT]" message, understand the current tool structure completely before suggesting improvements.
-3. Ask the user what they want to change or improve about the tool.
-4. For **builtin scripts** (type "builtin"): you can only describe what changes would be needed — you cannot modify builtin scripts directly. Suggest creating a new marketplace tool that achieves the desired improvement.
-5. For **marketplace tools** (type "marketplace"): you CAN directly improve the tool definition. Show the improved JSON definition with the changes highlighted in your explanation.
-6. When outputting an improved tool definition, always output the COMPLETE tool definition JSON (not just the changed parts).
-7. If the user mentions "שיפור", "עריכה", "תיקון", "שדרוג", "עדכון" or similar words about an existing tool, the frontend will automatically trigger the tool picker.
+## שיפור כלים קיימים
+כשמגיע הודעת [TOOL_CONTEXT]:
+1. הבן את מבנה הכלי הנוכחי.
+2. שאל את המשתמש מה הוא רוצה לשנות — בשפה פשוטה.
+3. לכלי מובנה: הסבר שלא ניתן לשנות ישירות, והצע ליצור כלי חדש שמשפר אותו.
+4. לכלי שוק: בנה גרסה משופרת והצג אותה.
 
-## Privacy
-- NEVER ask for or include real employee names, IDs, or personal data.
-- Only use column HEADERS and structure, never real cell data.
-- Remind users not to share personal employee information in the chat.
+## פרטיות
+- אל תבקש ואל תכלול שמות עובדים, תעודות זהות, או מידע אישי.
+- השתמש רק בשמות עמודות ומבנה — אף פעם לא בנתונים אמיתיים.
 """
 
 
@@ -10232,7 +10208,7 @@ def tools_create():
         '@keyframes typingBounce{0%,80%,100%{transform:scale(0.6);opacity:0.4}40%{transform:scale(1);opacity:1}}'
         '@keyframes spin{to{transform:rotate(360deg)}}'
         # Drop zone overlay
-        '.chat-drop-overlay{display:none;position:absolute;inset:0;background:rgba(37,99,235,0.12);border:3px dashed #2563eb;border-radius:16px;z-index:50;align-items:center;justify-content:center;flex-direction:column;gap:10px;pointer-events:none}'
+        '.chat-drop-overlay{display:none;position:absolute;inset:0;background:rgba(37,99,235,0.12);border:3px dashed #2563eb;border-radius:16px;z-index:50;align-items:center;justify-content:center;flex-direction:column;gap:10px}'
         '.chat-drop-overlay.active{display:flex}'
         '.chat-drop-icon{font-size:48px;opacity:0.7}'
         '.chat-drop-label{font-size:16px;font-weight:700;color:#1e3a8a}'
@@ -10481,7 +10457,8 @@ def tools_create():
         '  fetch("/tools/create/chat", {'
         '    method: "POST",'
         '    headers: {"Content-Type": "application/json", "X-Requested-With": "XMLHttpRequest"},'
-        '    body: JSON.stringify({session_id: CHAT_SESSION_ID, message: msg})'
+        '    body: JSON.stringify({session_id: CHAT_SESSION_ID, message: msg}),'
+        '    redirect: "error"'
         '  })'
         '  .then(function(r){ if(!r.ok) throw new Error("HTTP " + r.status); return r.json(); })'
         '  .then(function(data){'
@@ -10519,7 +10496,8 @@ def tools_create():
         '    fetch("/tools/create/upload", {'
         '      method: "POST",'
         '      headers: {"X-Requested-With": "XMLHttpRequest"},'
-        '      body: fd'
+        '      body: fd,'
+        '      redirect: "error"'
         '    })'
         '    .then(function(r){ if(!r.ok) throw new Error("HTTP " + r.status); return r.json(); })'
         '    .then(function(data){'
@@ -10567,6 +10545,10 @@ def tools_create():
         'var chatContainer = document.getElementById("chatContainer");'
         'var dropOverlay = document.getElementById("dropOverlay");'
         ''
+        '/* Prevent browser default: opening dropped files as new page */'
+        'document.addEventListener("dragover", function(e){ e.preventDefault(); });'
+        'document.addEventListener("drop", function(e){ e.preventDefault(); });'
+        ''
         'chatContainer.addEventListener("dragenter", function(e){'
         '  e.preventDefault(); e.stopPropagation();'
         '  dragCounter++;'
@@ -10580,14 +10562,19 @@ def tools_create():
         'chatContainer.addEventListener("dragover", function(e){'
         '  e.preventDefault(); e.stopPropagation();'
         '});'
-        'chatContainer.addEventListener("drop", function(e){'
+        '/* Handle drop on both container and overlay */'
+        'function handleFileDrop(e){'
         '  e.preventDefault(); e.stopPropagation();'
         '  dragCounter = 0;'
         '  dropOverlay.classList.remove("active");'
         '  if(e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length > 0){'
         '    uploadFiles(e.dataTransfer.files);'
         '  }'
-        '});'
+        '}'
+        'chatContainer.addEventListener("drop", handleFileDrop);'
+        'dropOverlay.addEventListener("drop", handleFileDrop);'
+        'dropOverlay.addEventListener("dragover", function(e){ e.preventDefault(); e.stopPropagation(); });'
+        'dropOverlay.addEventListener("dragenter", function(e){ e.preventDefault(); e.stopPropagation(); });'
         ''
         '/* ============ PASTE IMAGE ============ */'
         'document.getElementById("chatInput").addEventListener("paste", function(e){'
