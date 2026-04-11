@@ -7071,180 +7071,324 @@ def homepage():
         '<head>'
         '<meta charset="UTF-8">'
         '<meta name="viewport" content="width=device-width,initial-scale=1">'
-        '<title>Scriptly — אוטומציה חכמה לניהול נוכחות ושכר</title>'
-        '<meta name="description" content="פלטפורמת Scriptly מפשטת עבודה עם דוחות נוכחות ושכר. התחילו בחינם, ללא כרטיס אשראי, ללא התחייבות.">'
-        '<meta name="keywords" content="אוטומציה, דוחות נוכחות, שכר, HR, חינם, ללא כרטיס אשראי, דוח חוסר, סיכום שכר, מבנה ארגוני">'
-        '<meta property="og:title" content="Scriptly — אוטומציה חכמה לניהול נוכחות ושכר">'
-        '<meta property="og:description" content="פלטפורמת Scriptly מפשטת עבודה עם דוחות נוכחות ושכר. התחילו בחינם, ללא כרטיס אשראי.">'
+        '<title>Scriptly — כלי AI חכמים לניהול נוכחות ושכר</title>'
+        '<meta name="description" content="פלטפורמת AI שמייצרת כלים חכמים לניהול נוכחות ושכר. תארו מה אתם צריכים בעברית — והכלי מוכן. התחילו בחינם.">'
+        '<meta name="keywords" content="AI, אוטומציה, דוחות נוכחות, שכר, HR, בינה מלאכותית, כלים חכמים, חינם, ללא כרטיס אשראי">'
+        '<meta property="og:title" content="Scriptly — כלי AI חכמים לניהול נוכחות ושכר">'
+        '<meta property="og:description" content="תארו מה אתם צריכים בעברית — ה-AI בונה את הכלי. התחילו בחינם.">'
         '<meta property="og:type" content="website">'
         '<meta property="og:url" content="https://script-ly.com">'
         '<style>'
         '*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }'
         'html { scroll-behavior: smooth; }'
-        "body { font-family: 'Segoe UI', Arial, sans-serif; background: #f0f4ff; color: #1e293b; direction: rtl; }"
-        '.hp-nav { position: fixed; top: 0; right: 0; left: 0; z-index: 100; background: rgba(30,58,138,.95); backdrop-filter: blur(8px); height: 58px; display: flex; align-items: center; justify-content: space-between; padding: 0 2rem; }'
-        '.hp-nav-brand { color: white; font-size: 17px; font-weight: 700; text-decoration: none; display: flex; align-items: center; gap: 8px; }'
-        '.hp-nav-links { display: flex; gap: 12px; align-items: center; }'
-        '.hp-nav-links a { color: #93c5fd; font-size: 13px; text-decoration: none; padding: 6px 14px; border-radius: 8px; transition: background .2s; }'
-        '.hp-nav-links a:hover { background: rgba(255,255,255,.1); }'
-        '.hp-nav-links .btn-cta { background: #2563eb; color: white; font-weight: 600; }'
-        '.hp-nav-links .btn-cta:hover { background: #1d4ed8; }'
-        '.hp-hero { min-height: 100vh; display: flex; align-items: center; justify-content: center; text-align: center; padding: 80px 2rem 3rem; background: linear-gradient(135deg, #1e3a8a 0%, #2563eb 50%, #3b82f6 100%); position: relative; overflow: hidden; }'
-        '.hp-hero::before { content: ""; position: absolute; width: 500px; height: 500px; background: rgba(255,255,255,.04); border-radius: 50%; top: -120px; left: -80px; animation: heroFloat 8s ease-in-out infinite; }'
-        '.hp-hero::after { content: ""; position: absolute; width: 350px; height: 350px; background: rgba(255,255,255,.03); border-radius: 50%; bottom: -60px; right: -60px; animation: heroFloat 6s ease-in-out 2s infinite reverse; }'
-        '.hp-hero-content { position: relative; z-index: 1; max-width: 700px; animation: fadeInUp .8s ease-out both; }'
-        '.hp-hero-icon { font-size: 64px; margin-bottom: 1rem; animation: pulse 3s ease-in-out infinite; }'
-        '.hp-hero h1 { font-size: clamp(28px, 5vw, 48px); font-weight: 800; color: white; margin-bottom: .75rem; line-height: 1.3; }'
-        '.hp-hero p { font-size: clamp(15px, 2.5vw, 19px); color: #bfdbfe; margin-bottom: 2rem; line-height: 1.7; }'
-        '.hp-hero-btns { display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; }'
-        '.hp-hero-btns a { padding: 14px 32px; border-radius: 12px; font-size: 16px; font-weight: 700; text-decoration: none; transition: transform .2s, box-shadow .2s; }'
-        '.hp-hero-btns a:first-child { background: white; color: #1e3a8a; box-shadow: 0 4px 20px rgba(0,0,0,.15); }'
-        '.hp-hero-btns a:first-child:hover { transform: translateY(-2px); box-shadow: 0 8px 30px rgba(0,0,0,.2); }'
-        '.hp-hero-btns a:last-child { background: transparent; color: white; border: 2px solid rgba(255,255,255,.4); }'
-        '.hp-hero-btns a:last-child:hover { border-color: white; background: rgba(255,255,255,.1); }'
-        '.hp-section { padding: 5rem 2rem; max-width: 1000px; margin: 0 auto; }'
-        '.hp-section-title { text-align: center; font-size: clamp(22px, 4vw, 32px); font-weight: 800; color: #1e3a8a; margin-bottom: .5rem; }'
-        '.hp-section-sub { text-align: center; font-size: 15px; color: #64748b; margin-bottom: 3rem; }'
-        '.hp-features { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1.5rem; }'
-        '.hp-feature { background: white; border-radius: 16px; padding: 2rem; box-shadow: 0 2px 16px rgba(37,99,235,.08); text-align: center; opacity: 0; transform: translateY(30px); transition: opacity .6s ease-out, transform .6s ease-out; }'
+        "body { font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, Arial, sans-serif; background: #ffffff; color: #1e293b; direction: rtl; overflow-x: hidden; }"
+        '.hp-nav { position: fixed; top: 0; right: 0; left: 0; z-index: 100; height: 64px; display: flex; align-items: center; justify-content: space-between; padding: 0 2.5rem; transition: background .4s, box-shadow .4s; }'
+        '.hp-nav.scrolled { background: rgba(255,255,255,.92); backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px); box-shadow: 0 1px 20px rgba(0,0,0,.06); }'
+        '.hp-nav-brand { color: white; font-size: 20px; font-weight: 800; text-decoration: none; display: flex; align-items: center; gap: 10px; letter-spacing: -0.3px; transition: color .4s; }'
+        '.hp-nav.scrolled .hp-nav-brand { color: #1e3a8a; }'
+        '.hp-nav-links { display: flex; gap: 8px; align-items: center; }'
+        '.hp-nav-links a { font-size: 14px; text-decoration: none; padding: 8px 18px; border-radius: 10px; transition: all .25s; font-weight: 500; }'
+        '.hp-nav-links .nav-login { color: rgba(255,255,255,.85); }'
+        '.hp-nav-links .nav-login:hover { color: white; background: rgba(255,255,255,.12); }'
+        '.hp-nav.scrolled .nav-login { color: #475569; }'
+        '.hp-nav.scrolled .nav-login:hover { color: #1e3a8a; background: #f1f5f9; }'
+        '.hp-nav-links .btn-cta { background: rgba(255,255,255,.18); color: white; font-weight: 600; border: 1.5px solid rgba(255,255,255,.3); }'
+        '.hp-nav-links .btn-cta:hover { background: rgba(255,255,255,.28); border-color: rgba(255,255,255,.5); transform: translateY(-1px); }'
+        '.hp-nav.scrolled .btn-cta { background: #2563eb; color: white; border-color: #2563eb; }'
+        '.hp-nav.scrolled .btn-cta:hover { background: #1d4ed8; border-color: #1d4ed8; transform: translateY(-1px); box-shadow: 0 4px 16px rgba(37,99,235,.3); }'
+        '.hp-hero { min-height: 100vh; display: flex; align-items: center; justify-content: center; text-align: center; padding: 100px 2rem 4rem; position: relative; overflow: hidden; background: linear-gradient(160deg, #0f1b3d 0%, #1e3a8a 35%, #2563eb 70%, #3b82f6 100%); }'
+        '.hp-hero-bg { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }'
+        '.hp-hero-orb { position: absolute; border-radius: 50%; filter: blur(80px); opacity: 0.12; }'
+        '.hp-hero-orb.orb1 { width: 600px; height: 600px; background: #60a5fa; top: -200px; left: -100px; animation: orbMove1 14s ease-in-out infinite; }'
+        '.hp-hero-orb.orb2 { width: 450px; height: 450px; background: #818cf8; bottom: -150px; right: -100px; animation: orbMove2 12s ease-in-out 3s infinite; }'
+        '.hp-hero-orb.orb3 { width: 300px; height: 300px; background: #34d399; top: 50%; left: 60%; animation: orbMove3 10s ease-in-out 1s infinite; }'
+        '.hp-hero-grid { position: absolute; inset: 0; background-image: radial-gradient(rgba(255,255,255,.04) 1px, transparent 1px); background-size: 40px 40px; }'
+        '.hp-hero-content { position: relative; z-index: 2; max-width: 800px; }'
+        '.hp-hero-badge { display: inline-flex; align-items: center; gap: 8px; background: rgba(255,255,255,.1); border: 1px solid rgba(255,255,255,.15); border-radius: 100px; padding: 8px 20px 8px 16px; font-size: 13px; color: #bfdbfe; margin-bottom: 2rem; animation: fadeInUp .7s ease-out both; backdrop-filter: blur(4px); }'
+        '.hp-hero-badge-dot { width: 8px; height: 8px; background: #34d399; border-radius: 50%; animation: dotPulse 2s ease-in-out infinite; }'
+        '.hp-hero h1 { font-size: clamp(32px, 5.5vw, 56px); font-weight: 800; color: white; margin-bottom: 1.25rem; line-height: 1.25; letter-spacing: -0.5px; animation: fadeInUp .7s ease-out .15s both; }'
+        '.hp-hero h1 span { background: linear-gradient(135deg, #93c5fd, #67e8f9); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }'
+        '.hp-hero-sub { font-size: clamp(16px, 2.5vw, 20px); color: #94a3b8; margin-bottom: 2.5rem; line-height: 1.75; animation: fadeInUp .7s ease-out .3s both; max-width: 600px; margin-left: auto; margin-right: auto; }'
+        '.hp-hero-btns { display: flex; gap: 16px; justify-content: center; flex-wrap: wrap; animation: fadeInUp .7s ease-out .45s both; }'
+        '.hp-btn-primary { display: inline-flex; align-items: center; gap: 10px; padding: 16px 36px; border-radius: 14px; font-size: 17px; font-weight: 700; text-decoration: none; background: white; color: #1e3a8a; box-shadow: 0 4px 24px rgba(0,0,0,.15), 0 0 0 0 rgba(255,255,255,.3); transition: all .3s cubic-bezier(.4,0,.2,1); }'
+        '.hp-btn-primary:hover { transform: translateY(-3px); box-shadow: 0 12px 40px rgba(0,0,0,.2), 0 0 0 3px rgba(255,255,255,.1); }'
+        '.hp-btn-primary svg { width: 20px; height: 20px; transition: transform .3s; }'
+        '.hp-btn-primary:hover svg { transform: translateX(-4px); }'
+        '.hp-btn-secondary { display: inline-flex; align-items: center; gap: 8px; padding: 16px 32px; border-radius: 14px; font-size: 16px; font-weight: 600; text-decoration: none; color: rgba(255,255,255,.9); border: 1.5px solid rgba(255,255,255,.2); background: rgba(255,255,255,.05); transition: all .3s; backdrop-filter: blur(4px); }'
+        '.hp-btn-secondary:hover { border-color: rgba(255,255,255,.4); background: rgba(255,255,255,.1); transform: translateY(-2px); }'
+        '.hp-hero-stats { display: flex; gap: 3rem; justify-content: center; margin-top: 3.5rem; animation: fadeInUp .7s ease-out .6s both; }'
+        '.hp-hero-stat { text-align: center; }'
+        '.hp-hero-stat-num { font-size: 28px; font-weight: 800; color: white; display: block; }'
+        '.hp-hero-stat-label { font-size: 13px; color: #94a3b8; margin-top: 2px; }'
+        '.hp-section { padding: 6rem 2rem; }'
+        '.hp-section-inner { max-width: 1100px; margin: 0 auto; }'
+        '.hp-section-label { display: inline-block; font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 2px; color: #2563eb; background: #eff6ff; border-radius: 100px; padding: 6px 16px; margin-bottom: 1rem; }'
+        '.hp-section-title { font-size: clamp(24px, 4vw, 38px); font-weight: 800; color: #0f172a; margin-bottom: .75rem; line-height: 1.3; letter-spacing: -0.3px; }'
+        '.hp-section-sub { font-size: 16px; color: #64748b; margin-bottom: 3.5rem; line-height: 1.7; max-width: 550px; }'
+        '.hp-section-center .hp-section-sub { margin-left: auto; margin-right: auto; text-align: center; }'
+        '.hp-section-center .hp-section-title { text-align: center; }'
+        '.hp-section-center .hp-section-label { text-align: center; }'
+        '.hp-features { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1.5rem; }'
+        '.hp-feature { background: #ffffff; border: 1px solid #e2e8f0; border-radius: 20px; padding: 2.25rem; position: relative; overflow: hidden; opacity: 0; transform: translateY(30px); transition: opacity .6s ease-out, transform .6s ease-out, border-color .3s, box-shadow .3s; }'
         '.hp-feature.visible { opacity: 1; transform: translateY(0); }'
-        '.hp-feature-icon { font-size: 40px; margin-bottom: 1rem; }'
-        '.hp-feature h3 { font-size: 16px; font-weight: 700; color: #1e3a8a; margin-bottom: .5rem; }'
-        '.hp-feature p { font-size: 13px; color: #64748b; line-height: 1.6; }'
-        '.hp-steps { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 2rem; counter-reset: step; }'
-        '.hp-step { text-align: center; opacity: 0; transform: translateY(30px); transition: opacity .6s ease-out, transform .6s ease-out; }'
+        '.hp-feature:hover { border-color: #bfdbfe; box-shadow: 0 8px 32px rgba(37,99,235,.08); }'
+        '.hp-feature-icon-wrap { width: 52px; height: 52px; border-radius: 14px; display: flex; align-items: center; justify-content: center; font-size: 26px; margin-bottom: 1.25rem; }'
+        '.hp-feature h3 { font-size: 17px; font-weight: 700; color: #0f172a; margin-bottom: .5rem; line-height: 1.4; }'
+        '.hp-feature p { font-size: 14px; color: #64748b; line-height: 1.7; }'
+        '.feat-ai .hp-feature-icon-wrap { background: linear-gradient(135deg, #ede9fe, #ddd6fe); }'
+        '.feat-tools .hp-feature-icon-wrap { background: linear-gradient(135deg, #dbeafe, #bfdbfe); }'
+        '.feat-market .hp-feature-icon-wrap { background: linear-gradient(135deg, #d1fae5, #a7f3d0); }'
+        '.feat-file .hp-feature-icon-wrap { background: linear-gradient(135deg, #fef3c7, #fde68a); }'
+        '.feat-il .hp-feature-icon-wrap { background: linear-gradient(135deg, #fce7f3, #fbcfe8); }'
+        '.feat-free .hp-feature-icon-wrap { background: linear-gradient(135deg, #ccfbf1, #99f6e4); }'
+        '.hp-showcase { background: linear-gradient(135deg, #f8fafc 0%, #eff6ff 100%); }'
+        '.hp-showcase-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 4rem; align-items: center; }'
+        '.hp-showcase-visual { background: #0f172a; border-radius: 20px; padding: 2rem; box-shadow: 0 24px 64px rgba(0,0,0,.12); position: relative; overflow: hidden; }'
+        '.hp-showcase-visual::before { content: ""; position: absolute; top: 0; right: 0; left: 0; height: 40px; background: #1e293b; border-radius: 20px 20px 0 0; }'
+        '.hp-chat-dots { position: absolute; top: 12px; right: 16px; display: flex; gap: 6px; z-index: 1; }'
+        '.hp-chat-dots span { width: 10px; height: 10px; border-radius: 50%; }'
+        '.hp-chat-dots span:nth-child(1) { background: #ef4444; }'
+        '.hp-chat-dots span:nth-child(2) { background: #eab308; }'
+        '.hp-chat-dots span:nth-child(3) { background: #22c55e; }'
+        '.hp-chat-msgs { padding-top: 1.5rem; display: flex; flex-direction: column; gap: 1rem; }'
+        '.hp-chat-msg { padding: 12px 16px; border-radius: 14px; font-size: 14px; line-height: 1.6; max-width: 85%; opacity: 0; animation: chatMsgIn .5s ease-out forwards; }'
+        '.hp-chat-msg.user { background: #2563eb; color: white; align-self: flex-start; border-bottom-right-radius: 4px; }'
+        '.hp-chat-msg.ai { background: #1e293b; color: #e2e8f0; align-self: flex-end; border-bottom-left-radius: 4px; border: 1px solid #334155; }'
+        '.hp-chat-msg.ai .tag { display: inline-block; background: #334155; color: #67e8f9; font-size: 11px; padding: 2px 8px; border-radius: 6px; margin-top: 6px; font-weight: 600; }'
+        '.hp-chat-msg:nth-child(1) { animation-delay: .3s; }'
+        '.hp-chat-msg:nth-child(2) { animation-delay: 1s; }'
+        '.hp-chat-msg:nth-child(3) { animation-delay: 1.8s; }'
+        '.hp-showcase-text h3 { font-size: clamp(20px, 3vw, 28px); font-weight: 800; color: #0f172a; margin-bottom: 1rem; line-height: 1.35; }'
+        '.hp-showcase-text p { font-size: 15px; color: #64748b; line-height: 1.8; margin-bottom: 1.5rem; }'
+        '.hp-showcase-checks { list-style: none; display: flex; flex-direction: column; gap: 12px; }'
+        '.hp-showcase-checks li { display: flex; align-items: flex-start; gap: 10px; font-size: 14px; color: #334155; line-height: 1.6; }'
+        '.hp-showcase-checks .check { width: 22px; height: 22px; background: #d1fae5; border-radius: 50%; display: flex; align-items: center; justify-content: center; flex-shrink: 0; color: #047857; font-size: 12px; font-weight: 700; margin-top: 2px; }'
+        '.hp-how { background: #ffffff; }'
+        '.hp-steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 2.5rem; position: relative; }'
+        '.hp-steps::before { content: ""; position: absolute; top: 36px; right: 80px; left: 80px; height: 2px; background: linear-gradient(90deg, #e2e8f0, #bfdbfe, #e2e8f0); z-index: 0; }'
+        '.hp-step { text-align: center; position: relative; z-index: 1; opacity: 0; transform: translateY(30px); transition: opacity .6s ease-out, transform .6s ease-out; }'
         '.hp-step.visible { opacity: 1; transform: translateY(0); }'
-        '.hp-step-num { width: 48px; height: 48px; background: linear-gradient(135deg, #2563eb, #3b82f6); color: white; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 20px; font-weight: 800; margin-bottom: 1rem; }'
-        '.hp-step h3 { font-size: 16px; font-weight: 700; color: #1e3a8a; margin-bottom: .5rem; }'
-        '.hp-step p { font-size: 13px; color: #64748b; line-height: 1.6; }'
-        '.hp-trust { background: linear-gradient(135deg, #eff6ff, #dbeafe); border-radius: 20px; padding: 3rem 2rem; text-align: center; margin-top: 2rem; }'
-        '.hp-trust-badges { display: flex; gap: 2rem; justify-content: center; flex-wrap: wrap; margin-top: 1.5rem; }'
-        '.hp-trust-badge { font-size: 14px; font-weight: 600; color: #1e3a8a; display: flex; align-items: center; gap: 6px; }'
-        '.hp-footer { background: #1e3a8a; color: #93c5fd; padding: 2rem; text-align: center; font-size: 13px; }'
-        '.hp-footer a { color: #bfdbfe; text-decoration: none; margin: 0 10px; }'
-        '.hp-footer a:hover { color: white; }'
+        '.hp-step-num { width: 56px; height: 56px; background: linear-gradient(135deg, #2563eb, #1d4ed8); color: white; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 22px; font-weight: 800; margin-bottom: 1.25rem; box-shadow: 0 4px 16px rgba(37,99,235,.25), 0 0 0 6px #eff6ff; position: relative; }'
+        '.hp-step h3 { font-size: 17px; font-weight: 700; color: #0f172a; margin-bottom: .5rem; }'
+        '.hp-step p { font-size: 14px; color: #64748b; line-height: 1.7; max-width: 260px; margin: 0 auto; }'
+        '.hp-scripts { background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%); }'
+        '.hp-script-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1.25rem; }'
+        '.hp-script-card { background: white; border: 1px solid #e2e8f0; border-radius: 16px; padding: 1.75rem; display: flex; align-items: flex-start; gap: 1rem; opacity: 0; transform: translateY(20px); transition: all .5s ease-out; }'
+        '.hp-script-card.visible { opacity: 1; transform: translateY(0); }'
+        '.hp-script-card:hover { border-color: #bfdbfe; box-shadow: 0 4px 20px rgba(37,99,235,.06); }'
+        '.hp-script-icon { width: 44px; height: 44px; border-radius: 12px; background: linear-gradient(135deg, #eff6ff, #dbeafe); display: flex; align-items: center; justify-content: center; font-size: 22px; flex-shrink: 0; }'
+        '.hp-script-info h4 { font-size: 15px; font-weight: 700; color: #0f172a; margin-bottom: 4px; }'
+        '.hp-script-info p { font-size: 13px; color: #64748b; line-height: 1.6; }'
+        '.hp-trust-section { background: #ffffff; }'
+        '.hp-trust-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 2rem; }'
+        '.hp-trust-item { text-align: center; padding: 2rem 1.5rem; border-radius: 16px; border: 1px solid #f1f5f9; opacity: 0; transform: translateY(20px); transition: all .5s ease-out; }'
+        '.hp-trust-item.visible { opacity: 1; transform: translateY(0); }'
+        '.hp-trust-item:hover { border-color: #e2e8f0; background: #f8fafc; }'
+        '.hp-trust-icon { font-size: 32px; margin-bottom: .75rem; }'
+        '.hp-trust-item h4 { font-size: 15px; font-weight: 700; color: #0f172a; margin-bottom: .25rem; }'
+        '.hp-trust-item p { font-size: 13px; color: #64748b; line-height: 1.6; }'
+        '.hp-cta-section { background: linear-gradient(160deg, #0f1b3d 0%, #1e3a8a 50%, #2563eb 100%); padding: 6rem 2rem; position: relative; overflow: hidden; }'
+        '.hp-cta-inner { max-width: 700px; margin: 0 auto; text-align: center; position: relative; z-index: 2; }'
+        '.hp-cta-inner h2 { font-size: clamp(24px, 4vw, 38px); font-weight: 800; color: white; margin-bottom: 1rem; line-height: 1.3; }'
+        '.hp-cta-inner p { font-size: 17px; color: #94a3b8; margin-bottom: 2.5rem; line-height: 1.7; }'
+        '.hp-cta-btn { display: inline-flex; align-items: center; gap: 10px; padding: 18px 44px; border-radius: 14px; font-size: 18px; font-weight: 700; text-decoration: none; background: white; color: #1e3a8a; box-shadow: 0 4px 24px rgba(0,0,0,.15); transition: all .3s cubic-bezier(.4,0,.2,1); }'
+        '.hp-cta-btn:hover { transform: translateY(-3px); box-shadow: 0 12px 40px rgba(0,0,0,.2); }'
+        '.hp-cta-badges { display: flex; gap: 2rem; justify-content: center; flex-wrap: wrap; margin-top: 2rem; }'
+        '.hp-cta-badge { font-size: 14px; font-weight: 500; color: #94a3b8; display: flex; align-items: center; gap: 6px; }'
+        '.hp-cta-badge svg { color: #34d399; width: 18px; height: 18px; }'
+        '.hp-footer { background: #0f172a; color: #94a3b8; padding: 3rem 2rem; }'
+        '.hp-footer-inner { max-width: 1100px; margin: 0 auto; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 1rem; }'
+        '.hp-footer-brand { font-size: 16px; font-weight: 700; color: #e2e8f0; display: flex; align-items: center; gap: 8px; }'
+        '.hp-footer-links { display: flex; gap: 1.5rem; }'
+        '.hp-footer-links a { color: #94a3b8; text-decoration: none; font-size: 14px; transition: color .2s; }'
+        '.hp-footer-links a:hover { color: #e2e8f0; }'
+        '.hp-footer-copy { font-size: 13px; color: #475569; width: 100%; text-align: center; margin-top: 1.5rem; padding-top: 1.5rem; border-top: 1px solid #1e293b; }'
         '@keyframes fadeInUp { from { opacity: 0; transform: translateY(30px); } to { opacity: 1; transform: translateY(0); } }'
-        '@keyframes heroFloat { 0%, 100% { transform: translate(0, 0); } 50% { transform: translate(20px, -20px); } }'
-        '@keyframes pulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.05); } }'
+        '@keyframes orbMove1 { 0%, 100% { transform: translate(0, 0) scale(1); } 50% { transform: translate(40px, -30px) scale(1.05); } }'
+        '@keyframes orbMove2 { 0%, 100% { transform: translate(0, 0) scale(1); } 50% { transform: translate(-30px, 20px) scale(1.08); } }'
+        '@keyframes orbMove3 { 0%, 100% { transform: translate(0, 0) scale(1); } 50% { transform: translate(20px, 30px) scale(.95); } }'
+        '@keyframes dotPulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: .5; transform: scale(.8); } }'
+        '@keyframes chatMsgIn { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }'
+        '@media (max-width: 900px) {'
+        '  .hp-features { grid-template-columns: repeat(2, 1fr); }'
+        '  .hp-showcase-grid { grid-template-columns: 1fr; gap: 2.5rem; }'
+        '  .hp-trust-grid { grid-template-columns: repeat(2, 1fr); }'
+        '  .hp-steps::before { display: none; }'
+        '}'
         '@media (max-width: 600px) {'
-        '  .hp-nav { padding: 0 1rem; }'
-        '  .hp-hero { padding: 70px 1rem 2rem; min-height: auto; }'
-        '  .hp-section { padding: 3rem 1rem; }'
-        '  .hp-hero-btns a { padding: 12px 24px; font-size: 14px; }'
+        '  .hp-nav { padding: 0 1rem; height: 56px; }'
+        '  .hp-hero { padding: 80px 1.25rem 3rem; min-height: auto; }'
+        '  .hp-hero-stats { gap: 1.5rem; }'
+        '  .hp-section { padding: 4rem 1.25rem; }'
+        '  .hp-features { grid-template-columns: 1fr; }'
+        '  .hp-steps { grid-template-columns: 1fr; gap: 2rem; }'
+        '  .hp-trust-grid { grid-template-columns: 1fr; }'
+        '  .hp-hero-btns { flex-direction: column; align-items: center; }'
+        '  .hp-btn-primary, .hp-btn-secondary { width: 100%; justify-content: center; }'
+        '  .hp-footer-inner { flex-direction: column; text-align: center; }'
+        '  .hp-footer-links { justify-content: center; }'
+        '  .hp-script-cards { grid-template-columns: 1fr; }'
         '}'
         '</style>'
         '</head>'
         '<body>'
-        '<nav class="hp-nav">'
-        '<a href="/" class="hp-nav-brand">&#9201; Scriptly</a>'
+        '<nav class="hp-nav" id="hpNav">'
+        '<a href="/" class="hp-nav-brand">'
+        '<svg viewBox="0 0 28 28" fill="none" width="28" height="28"><circle cx="14" cy="14" r="13" stroke="currentColor" stroke-width="2"/><path d="M9 14h10M14 9v10" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>'
+        'Scriptly</a>'
         '<div class="hp-nav-links">'
-        '<a href="/login">כניסה</a>'
-        '<a href="/register" class="btn-cta">הרשמה בחינם</a>'
+        '<a href="/login" class="nav-login">← כניסה</a>'
+        '<a href="/register" class="btn-cta">התחל בחינם</a>'
         '</div>'
         '</nav>'
         '<section class="hp-hero">'
+        '<div class="hp-hero-bg">'
+        '<div class="hp-hero-grid"></div>'
+        '<div class="hp-hero-orb orb1"></div>'
+        '<div class="hp-hero-orb orb2"></div>'
+        '<div class="hp-hero-orb orb3"></div>'
+        '</div>'
         '<div class="hp-hero-content">'
-        '<div class="hp-hero-icon">&#9201;</div>'
-        '<h1>אוטומציה חכמה לניהול<br>נוכחות ושכר</h1>'
-        '<p>Scriptly מפשטת את העבודה עם דוחות נוכחות ושכר.<br>'
-        'העלו קובץ, אשרו את השדות, קבלו דוח מוכן &mdash; בלחיצה אחת.</p>'
+        '<div class="hp-hero-badge">'
+        '<span class="hp-hero-badge-dot"></span>'
+        'פלטפורמת AI חדשה לשוק ה-HR הישראלי'
+        '</div>'
+        '<h1>בנו כלים חכמים<br>עם <span>בינה מלאכותית</span></h1>'
+        '<p class="hp-hero-sub">תארו מה אתם צריכים בעברית פשוטה &mdash; וה-AI של Scriptly בונה את הכלי בשבילכם.<br>ניהול נוכחות, שכר ודוחות מעולם לא היה כל כך פשוט.</p>'
         '<div class="hp-hero-btns">'
-        '<a href="/register">התחל בחינם &larr;</a>'
-        '<a href="/login">כניסה למערכת</a>'
+        '<a href="/register" class="hp-btn-primary">'
+        '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M15 10H5M9 6l-4 4 4 4"/></svg>'
+        'התחילו בחינם'
+        '</a>'
+        '<a href="#features" class="hp-btn-secondary">גלו את היכולות</a>'
+        '</div>'
+        '<div class="hp-hero-stats">'
+        '<div class="hp-hero-stat"><span class="hp-hero-stat-num">30</span><span class="hp-hero-stat-label">ימי ניסיון חינם</span></div>'
+        '<div class="hp-hero-stat"><span class="hp-hero-stat-num">7+</span><span class="hp-hero-stat-label">כלים מובנים</span></div>'
+        '<div class="hp-hero-stat"><span class="hp-hero-stat-num">AI</span><span class="hp-hero-stat-label">בונה כלים בשבילכם</span></div>'
         '</div>'
         '</div>'
         '</section>'
-        '<section class="hp-section">'
-        '<h2 class="hp-section-title">מה Scriptly עושה בשבילכם?</h2>'
-        '<p class="hp-section-sub">כלים חכמים שחוסכים שעות עבודה בכל חודש</p>'
+        '<section class="hp-section" id="features">'
+        '<div class="hp-section-inner hp-section-center">'
+        '<span class="hp-section-label">&#10024; יכולות הפלטפורמה</span>'
+        '<h2 class="hp-section-title">הכל במקום אחד &mdash; חכם ומהיר</h2>'
+        '<p class="hp-section-sub">Scriptly משלבת בינה מלאכותית עם כלים מוכנים לשימוש, כדי שתוכלו להתמקד במה שבאמת חשוב.</p>'
         '<div class="hp-features">'
-
-        '<div class="hp-feature">'
-        '<div class="hp-feature-icon">&#128270;</div>'
-        '<h3>זיהוי שדות אוטומטי</h3>'
-        '<p>המערכת מזהה את מבנה הקובץ ומתאימה את השדות &mdash; בלי הגדרה ידנית.</p>'
-        '</div>'
-
-        '<div class="hp-feature">'
-        '<div class="hp-feature-icon">&#128202;</div>'
-        '<h3>דוחות חכמים</h3>'
-        '<p>סיכומי שכר, דוחות חוסר, ניקוי נוכחות ועוד &mdash; הכל אוטומטי ומדויק.</p>'
-        '</div>'
-
-        '<div class="hp-feature">'
-        '<div class="hp-feature-icon">&#128196;</div>'
-        '<h3>Excel ו-PowerPoint</h3>'
-        '<p>קבלו את הפלט בפורמטים מוכנים לשימוש &mdash; Excel, PowerPoint או ZIP.</p>'
-        '</div>'
-
-        '<div class="hp-feature">'
-        '<div class="hp-feature-icon">&#9889;</div>'
-        '<h3>מהיר ופשוט</h3>'
-        '<p>ממשק נקי, בעברית, ללא צורך בהתקנה. העלו קובץ וקבלו תוצאה תוך שניות.</p>'
-        '</div>'
-
-        '</div>'
-        '</section>'
-        '<section class="hp-section" style="background:#f8fafc;border-radius:0;max-width:100%;padding-bottom:4rem">'
-        '<div style="max-width:1000px;margin:0 auto">'
-        '<h2 class="hp-section-title">איך זה עובד?</h2>'
-        '<p class="hp-section-sub">שלושה צעדים פשוטים &mdash; מקובץ גולמי לדוח מוכן</p>'
+        '<div class="hp-feature feat-ai"><div class="hp-feature-icon-wrap">&#129302;</div><h3>בונה כלים עם AI</h3><p>תארו בעברית את הכלי שאתם צריכים &mdash; ה-AI מייצר אותו עבורכם. ללא קוד, ללא מתכנת.</p></div>'
+        '<div class="hp-feature feat-tools"><div class="hp-feature-icon-wrap">&#128736;</div><h3>כלים מוכנים לשימוש</h3><p>ניקוי נוכחות, סיכום שכר, דוח חוסר, עובדים לא פעילים, מבנה ארגוני &mdash; מוכן להפעלה.</p></div>'
+        '<div class="hp-feature feat-market"><div class="hp-feature-icon-wrap">&#127968;</div><h3>שוק כלים קהילתי</h3><p>גלו כלים שנוצרו על ידי משתמשים אחרים. התקינו, דרגו, והשתמשו בכלים מוכחים.</p></div>'
+        '<div class="hp-feature feat-file"><div class="hp-feature-icon-wrap">&#128196;</div><h3>עיבוד קבצים מיידי</h3><p>העלו קובץ Excel או CSV, קבלו דוח מעובד בחזרה. תוצאות מדויקות תוך שניות.</p></div>'
+        '<div class="hp-feature feat-il"><div class="hp-feature-icon-wrap">&#127470;&#127473;</div><h3>בנוי ל-HR ישראלי</h3><p>עברית מלאה, הבנה של מערכות נוכחות ושכר ישראליות, מושגים מדיני עבודה מקומיים.</p></div>'
+        '<div class="hp-feature feat-free"><div class="hp-feature-icon-wrap">&#127873;</div><h3>30 יום חינם</h3><p>התנסו בכל היכולות &mdash; ללא כרטיס אשראי, ללא התחייבות, ללא הגבלה.</p></div>'
+        '</div></div></section>'
+        '<section class="hp-section hp-showcase"><div class="hp-section-inner"><div class="hp-showcase-grid">'
+        '<div class="hp-showcase-text">'
+        '<span class="hp-section-label">&#129302; בונה הכלים</span>'
+        '<h3>ספרו ל-AI מה אתם צריכים &mdash;<br>והכלי מוכן</h3>'
+        '<p>לא צריך לדעת לתכנת. לא צריך לחכות לפיתוח. פשוט כתבו בעברית מה הכלי צריך לעשות, וה-AI של Scriptly בונה אותו בזמן אמת.</p>'
+        '<ul class="hp-showcase-checks">'
+        '<li><span class="check">&#10003;</span>תיאור בעברית פשוטה &mdash; בלי קוד</li>'
+        '<li><span class="check">&#10003;</span>תוצאה מיידית &mdash; כלי מוכן לשימוש</li>'
+        '<li><span class="check">&#10003;</span>אפשר לפרסם בשוק הכלים הקהילתי</li>'
+        '<li><span class="check">&#10003;</span>עיבוד חכם: סינון, קיבוץ, חישובים, פיבוט ועוד</li>'
+        '</ul></div>'
+        '<div class="hp-showcase-visual"><div class="hp-chat-dots"><span></span><span></span><span></span></div><div class="hp-chat-msgs">'
+        '<div class="hp-chat-msg user">אני צריך כלי שמסנן עובדים שעבדו פחות מ-100 שעות בחודש ומסכם לפי מחלקה</div>'
+        '<div class="hp-chat-msg ai">הבנתי! בניתי כלי שמבצע:<br>1. סינון לפי סף שעות<br>2. קיבוץ לפי מחלקה<br>3. סיכום שעות ועובדים<br><span class="tag">&#10003; הכלי מוכן להרצה</span></div>'
+        '<div class="hp-chat-msg user">מעולה, אפשר להוסיף גם ממוצע שעות?</div>'
+        '</div></div></div></div></section>'
+        '<section class="hp-section hp-how"><div class="hp-section-inner hp-section-center">'
+        '<span class="hp-section-label">&#128640; איך זה עובד</span>'
+        '<h2 class="hp-section-title">שלושה צעדים &mdash; מקובץ גולמי לדוח מוכן</h2>'
+        '<p class="hp-section-sub">תהליך פשוט ומהיר &mdash; בלי הגדרות מסובכות</p>'
         '<div class="hp-steps">'
-
-        '<div class="hp-step">'
-        '<div class="hp-step-num">1</div>'
-        '<h3>העלאת קובץ</h3>'
-        '<p>בחרו את הסקריפט המתאים והעלו קובץ Excel או דוח נוכחות.</p>'
-        '</div>'
-
-        '<div class="hp-step">'
-        '<div class="hp-step-num">2</div>'
-        '<h3>אישור שדות</h3>'
-        '<p>המערכת מזהה את השדות &mdash; אשרו או התאימו בלחיצה.</p>'
-        '</div>'
-
-        '<div class="hp-step">'
-        '<div class="hp-step-num">3</div>'
-        '<h3>הורדת הדוח</h3>'
-        '<p>קבלו דוח מעוצב ומוכן להדפסה או העברה להנהלה.</p>'
-        '</div>'
-
-        '</div>'
-        '</div>'
-        '</section>'
-        '<section class="hp-section">'
-        '<div class="hp-trust">'
-        '<h2 class="hp-section-title" style="margin-bottom:1rem">התחילו בחינם &mdash; ללא התחייבות</h2>'
-        '<p style="font-size:15px;color:#475569;margin-bottom:1.5rem">'
-        '30 ימי ניסיון חינם. ללא כרטיס אשראי. ללא התחייבות.<br>'
-        'גלו איך Scriptly חוסכת לכם זמן כבר מהיום הראשון.</p>'
-        '<a href="/register" style="display:inline-block;padding:14px 40px;background:#2563eb;color:white;border-radius:12px;font-size:16px;font-weight:700;text-decoration:none;box-shadow:0 4px 20px rgba(37,99,235,.3);transition:transform .2s">'
-        'הרשמה חינם &larr;</a>'
-        '<div class="hp-trust-badges">'
-        '<span class="hp-trust-badge">&#10003; חינם</span>'
-        '<span class="hp-trust-badge">&#10003; ללא כרטיס אשראי</span>'
-        '<span class="hp-trust-badge">&#10003; ללא התחייבות</span>'
-        '<span class="hp-trust-badge">&#10003; התנסות חינם 30 יום</span>'
-        '</div>'
-        '</div>'
-        '</section>'
-        '<footer class="hp-footer">'
-        '<p>&#169; 2026 Scriptly &mdash; אוטומציה חכמה לדוחות נוכחות ושכר</p>'
-        '<p style="margin-top:8px">'
+        '<div class="hp-step"><div class="hp-step-num">1</div><h3>בחרו כלי או בנו חדש</h3><p>בחרו כלי מוכן מהספרייה, התקינו מהשוק הקהילתי, או תארו ל-AI מה אתם צריכים.</p></div>'
+        '<div class="hp-step"><div class="hp-step-num">2</div><h3>העלו קובץ ואשרו</h3><p>העלו את קובץ ה-Excel, המערכת מזהה את השדות &mdash; אשרו בלחיצה ותנו לה לעבוד.</p></div>'
+        '<div class="hp-step"><div class="hp-step-num">3</div><h3>הורידו את התוצאה</h3><p>קבלו דוח מעוצב ומוכן &mdash; Excel, PowerPoint או ZIP &mdash; מוכן להדפסה או להנהלה.</p></div>'
+        '</div></div></section>'
+        '<section class="hp-section hp-scripts"><div class="hp-section-inner hp-section-center">'
+        '<span class="hp-section-label">&#128736; כלים מובנים</span>'
+        '<h2 class="hp-section-title">כלים מוכנים שחוסכים שעות עבודה</h2>'
+        '<p class="hp-section-sub">הפעילו כלים מוכנים לשימוש מיידי &mdash; בלי הגדרות, בלי המתנה</p>'
+        '<div class="hp-script-cards">'
+        '<div class="hp-script-card"><div class="hp-script-icon">&#128203;</div><div class="hp-script-info"><h4>ניקוי דוח נוכחות</h4><p>ניקוי ועיבוד אוטומטי של דוחות נוכחות גולמיים</p></div></div>'
+        '<div class="hp-script-card"><div class="hp-script-icon">&#128176;</div><div class="hp-script-info"><h4>סיכום שכר לפי תעריף</h4><p>חישוב שכר אוטומטי לפי שעות ותעריפים</p></div></div>'
+        '<div class="hp-script-card"><div class="hp-script-icon">&#128200;</div><div class="hp-script-info"><h4>דוח חוסר מול תקן</h4><p>השוואת שעות בפועל מול תקן עם סינון חכם</p></div></div>'
+        '<div class="hp-script-card"><div class="hp-script-icon">&#128101;</div><div class="hp-script-info"><h4>עובדים לא פעילים</h4><p>איתור עובדים ללא נוכחות בתקופה נבחרת</p></div></div>'
+        '<div class="hp-script-card"><div class="hp-script-icon">&#128221;</div><div class="hp-script-info"><h4>תיקונים ידניים</h4><p>דוח תיקונים ידניים עם סיכום מפורט</p></div></div>'
+        '<div class="hp-script-card"><div class="hp-script-icon">&#127970;</div><div class="hp-script-info"><h4>מבנה ארגוני</h4><p>יצירת מבנה ארגוני ב-Excel, PowerPoint ו-ZIP</p></div></div>'
+        '</div></div></section>'
+        '<section class="hp-section hp-trust-section"><div class="hp-section-inner hp-section-center">'
+        '<span class="hp-section-label">&#128170; למה Scriptly</span>'
+        '<h2 class="hp-section-title">פלטפורמה שנבנתה עבורכם</h2>'
+        '<p class="hp-section-sub">כל מה שאנשי HR ושכר בישראל צריכים &mdash; במקום אחד</p>'
+        '<div class="hp-trust-grid">'
+        '<div class="hp-trust-item"><div class="hp-trust-icon">&#127470;&#127473;</div><h4>עברית מלאה</h4><p>ממשק, דוחות וחוויה מלאה בעברית &mdash; כולל ה-AI</p></div>'
+        '<div class="hp-trust-item"><div class="hp-trust-icon">&#128274;</div><h4>אבטחה ופרטיות</h4><p>הקבצים שלכם מאובטחים ולא נשמרים לאחר העיבוד</p></div>'
+        '<div class="hp-trust-item"><div class="hp-trust-icon">&#9889;</div><h4>מהיר ומיידי</h4><p>ללא התקנה, ללא הגדרות &mdash; פשוט נכנסים ומתחילים</p></div>'
+        '<div class="hp-trust-item"><div class="hp-trust-icon">&#128640;</div><h4>מתעדכן כל הזמן</h4><p>כלים חדשים ושיפורים מתווספים באופן שוטף</p></div>'
+        '</div></div></section>'
+        '<section class="hp-cta-section">'
+        '<div class="hp-hero-orb orb1" style="width:400px;height:400px;top:-100px;right:-80px;position:absolute"></div>'
+        '<div class="hp-hero-orb orb2" style="width:300px;height:300px;bottom:-80px;left:-60px;position:absolute"></div>'
+        '<div class="hp-cta-inner">'
+        '<h2>מוכנים להתחיל?<br>ניסיון חינם למשך 30 יום</h2>'
+        '<p>הצטרפו ל-Scriptly וגלו איך AI חוסך לכם שעות עבודה כל חודש.<br>ללא כרטיס אשראי. ללא התחייבות.</p>'
+        '<a href="/register" class="hp-cta-btn">התחילו בחינם &larr;</a>'
+        '<div class="hp-cta-badges">'
+        '<span class="hp-cta-badge"><svg viewBox="0 0 20 20" fill="currentColor"><path d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 111.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z"/></svg>ללא כרטיס אשראי</span>'
+        '<span class="hp-cta-badge"><svg viewBox="0 0 20 20" fill="currentColor"><path d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 111.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z"/></svg>30 יום חינם</span>'
+        '<span class="hp-cta-badge"><svg viewBox="0 0 20 20" fill="currentColor"><path d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 111.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z"/></svg>ללא התחייבות</span>'
+        '</div></div></section>'
+        '<footer class="hp-footer"><div class="hp-footer-inner">'
+        '<div class="hp-footer-brand">'
+        '<svg viewBox="0 0 28 28" fill="none" width="22" height="22"><circle cx="14" cy="14" r="13" stroke="currentColor" stroke-width="2"/><path d="M9 14h10M14 9v10" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>'
+        'Scriptly</div>'
+        '<div class="hp-footer-links">'
         '<a href="/login">כניסה</a>'
         '<a href="/register">הרשמה</a>'
-        '</p>'
-        '</footer>'
+        '<a href="/support">תמיכה</a>'
+        '</div>'
+        '<div class="hp-footer-copy">&#169; 2026 Scriptly &mdash; כלי AI חכמים לניהול נוכחות ושכר</div>'
+        '</div></footer>'
         '<script>'
         '(function(){'
-        'var els=document.querySelectorAll(".hp-feature,.hp-step");'
+        'var nav=document.getElementById("hpNav");'
+        'function checkScroll(){if(window.scrollY>60){nav.classList.add("scrolled")}else{nav.classList.remove("scrolled")}}'
+        'window.addEventListener("scroll",checkScroll,{passive:true});'
+        'checkScroll();'
+        'var els=document.querySelectorAll(".hp-feature,.hp-step,.hp-script-card,.hp-trust-item");'
         'if(!("IntersectionObserver" in window)){els.forEach(function(e){e.classList.add("visible")});return;}'
         'var obs=new IntersectionObserver(function(entries){'
         'entries.forEach(function(entry){'
         'if(entry.isIntersecting){entry.target.classList.add("visible");obs.unobserve(entry.target);}'
         '});'
-        '},{threshold:0.15});'
-        'els.forEach(function(el,i){el.style.transitionDelay=(i%4)*0.12+"s";obs.observe(el);});'
+        '},{threshold:0.1,rootMargin:"0px 0px -40px 0px"});'
+        'els.forEach(function(el,i){'
+        'var siblings=el.parentElement.querySelectorAll("."+el.className.split(" ")[0]);'
+        'var idx=Array.prototype.indexOf.call(siblings,el);'
+        'el.style.transitionDelay=(idx*0.1)+"s";'
+        'obs.observe(el);'
+        '});'
+        'document.querySelectorAll(' + "'" + 'a[href^="#"]' + "'" + ').forEach(function(a){'
+        'a.addEventListener("click",function(e){'
+        'var target=document.querySelector(this.getAttribute("href"));'
+        'if(target){e.preventDefault();target.scrollIntoView({behavior:"smooth",block:"start"});}'
+        '});'
+        '});'
+        'var chatMsgs=document.querySelectorAll(".hp-chat-msg");'
+        'if(chatMsgs.length&&"IntersectionObserver" in window){'
+        'var chatObs=new IntersectionObserver(function(entries){'
+        'entries.forEach(function(entry){'
+        'if(entry.isIntersecting){'
+        'chatMsgs.forEach(function(msg){msg.style.animation="none";msg.offsetHeight;msg.style.animation="";});'
+        'chatObs.unobserve(entry.target);'
+        '}'
+        '});'
+        '},{threshold:0.3});'
+        'chatObs.observe(document.querySelector(".hp-showcase-visual"));'
+        '}'
         '})();'
         '</script>'
         '</body></html>'
@@ -9715,59 +9859,66 @@ name, description, input_type, required_fields, steps (action+params), output_fo
 
 
 def analyze_sample_file_for_chat(file_path, extension):
-    """Read column headers and first 3 rows from a file for AI context.
-    Returns anonymized summary string."""
+    """Read raw rows from a spreadsheet for AI context.
+    Shows first 10 rows as-is so the AI can detect headers, titles, merged cells."""
     try:
+        rows = []
+        total_rows = 0
         if extension == "xls":
-            # Use xlrd directly — pandas 2.0+ rejects xlrd 1.x
             wb = xlrd.open_workbook(file_path)
             sh = wb.sheet_by_index(0)
-            if sh.nrows == 0:
-                return "File is empty"
-            cols = [str(sh.cell_value(0, c)) for c in range(sh.ncols)]
-            summary = f"Column headers ({len(cols)} columns): {', '.join(cols)}\n"
-            data_rows = min(sh.nrows - 1, 5)
-            summary += f"Total rows in sample: {data_rows}\n"
-            summary += "Column types:\n"
-            for ci, col in enumerate(cols):
-                # Find first non-empty value in column
-                sample_val = None
-                for ri in range(1, min(sh.nrows, 6)):
+            total_rows = sh.nrows
+            for ri in range(min(sh.nrows, 12)):
+                row = []
+                for ci in range(sh.ncols):
                     v = sh.cell_value(ri, ci)
-                    if v not in (None, ""):
-                        sample_val = v
-                        break
-                if isinstance(sample_val, float):
-                    summary += f"  - {col}: numeric\n"
-                elif isinstance(sample_val, str):
-                    summary += f"  - {col}: text ({len(sample_val)} chars)\n"
-                else:
-                    summary += f"  - {col}: {type(sample_val).__name__ if sample_val is not None else 'empty'}\n"
-            return summary
-        if pd is None:
-            return "Cannot analyze file: pandas not installed"
-        if extension == "xlsx":
-            df = pd.read_excel(file_path, nrows=5)
+                    if v is None or v == "":
+                        row.append("")
+                    else:
+                        row.append(str(v))
+                rows.append(row)
+        elif extension == "xlsx":
+            import openpyxl
+            wb = openpyxl.load_workbook(file_path, read_only=True, data_only=True)
+            ws = wb.active
+            for ri, row_data in enumerate(ws.iter_rows(max_row=12, values_only=True)):
+                row = [str(v) if v is not None else "" for v in row_data]
+                rows.append(row)
+            # Get total row count
+            total_rows = ws.max_row or 0
+            wb.close()
         elif extension == "csv":
-            df = pd.read_csv(file_path, nrows=5)
+            for enc in ("utf-8", "utf-8-sig", "cp1255", "latin-1"):
+                try:
+                    with open(file_path, "r", encoding=enc) as f:
+                        import csv as _csv
+                        reader = _csv.reader(f)
+                        for i, row_data in enumerate(reader):
+                            if i >= 12:
+                                break
+                            rows.append([str(v) for v in row_data])
+                            total_rows += 1
+                    # Count remaining rows
+                    with open(file_path, "r", encoding=enc) as f:
+                        total_rows = sum(1 for _ in f)
+                    break
+                except (UnicodeDecodeError, UnicodeError):
+                    continue
         else:
             return "Unsupported file type"
 
-        cols = list(df.columns)
-        summary = f"Column headers ({len(cols)} columns): {', '.join(str(c) for c in cols)}\n"
-        summary += f"Total rows in sample: {len(df)}\n"
-        summary += "Column types:\n"
-        for col in cols:
-            dtype = str(df[col].dtype)
-            non_null = df[col].notna().sum()
-            sample_val = df[col].dropna().iloc[0] if non_null > 0 else "N/A"
-            # Anonymize: show type and format only, not real values
-            if dtype.startswith("float") or dtype.startswith("int"):
-                summary += f"  - {col}: numeric (e.g. {type(sample_val).__name__})\n"
-            elif dtype == "object":
-                summary += f"  - {col}: text ({len(str(sample_val))} chars)\n"
+        if not rows:
+            return "File is empty or could not be read."
+
+        num_cols = max(len(r) for r in rows) if rows else 0
+        summary = f"File structure: {num_cols} columns, ~{total_rows} total rows\n"
+        summary += f"First {len(rows)} rows (raw data as-is):\n"
+        for ri, row in enumerate(rows):
+            non_empty = [c for c in row if c.strip()]
+            if not non_empty:
+                summary += f"  Row {ri}: (empty row)\n"
             else:
-                summary += f"  - {col}: {dtype}\n"
+                summary += f"  Row {ri}: {' | '.join(row)}\n"
         return summary
     except Exception as exc:
         return f"Could not analyze file: {exc}"
@@ -10436,6 +10587,10 @@ def tools_create():
         '<button type="button" id="uploadBtn" onclick="document.getElementById(\'sampleFile\').click()" class="chat-upload-btn">&#128206; העלה קבצים</button>'
         '<button type="button" id="improveToolBtn" onclick="showToolPicker()" class="chat-upload-btn" style="border-color:#047857;color:#047857">&#9998; שיפור כלי קיים</button>'
         '</div>'
+        '<div id="pendingFilesBar" style="display:none;padding:6px 0;margin-bottom:4px">'
+        '<div style="font-size:11px;color:#64748b;margin-bottom:4px">קבצים מצורפים (כתוב הוראות ושלח):</div>'
+        '<div id="pendingFilesList" class="chat-file-chips"></div>'
+        '</div>'
         '<div class="chat-input-row">'
         '<textarea id="chatInput" class="chat-textarea" placeholder="כתוב הודעה... (Enter לשליחה, Shift+Enter לשורה חדשה)" rows="1"></textarea>'
         '<button type="button" id="chatSendBtn" class="chat-send-btn" onclick="sendChatMessage()">'
@@ -10451,6 +10606,8 @@ def tools_create():
         'var CHAT_SESSION_ID = "' + str(chat_session_id) + '";'
         'var chatSending = false;'
         'var IMAGE_EXTS = ["png","jpg","jpeg","gif","bmp","webp"];'
+        'var pendingFiles = [];'  # {name, type, analysis, dataUrl}
+        'var pendingAnalysis = "";'
         ''
         'function scrollToBottom(){'
         '  var el = document.getElementById("chatMessages");'
@@ -10592,13 +10749,26 @@ def tools_create():
         '  if(!msg) return;'
         '  inp.value = "";'
         '  inp.style.height = "42px";'
-        '  addUserBubble(msg);'
+        '  /* Build bubble with file chips if any */'
+        '  var filesHtml = "";'
+        '  if(pendingFiles.length > 0){'
+        '    filesHtml = buildFileChips(pendingFiles, pendingFiles.map(function(f){return f.dataUrl;}));'
+        '  }'
+        '  addUserBubble(msg, filesHtml);'
+        '  /* Build request body */'
+        '  var body = {session_id: CHAT_SESSION_ID, message: msg};'
+        '  if(pendingAnalysis) body.file_context = pendingAnalysis;'
+        '  /* Clear pending files */'
+        '  pendingFiles = [];'
+        '  pendingAnalysis = "";'
+        '  updatePendingFilesUI();'
+        '  inp.placeholder = "כתוב הודעה... (Enter לשליחה, Shift+Enter לשורה חדשה)";'
         '  setLoading(true);'
         '  showTypingIndicator();'
         '  fetch("/tools/create/chat", {'
         '    method: "POST",'
         '    headers: {"Content-Type": "application/json", "X-Requested-With": "XMLHttpRequest"},'
-        '    body: JSON.stringify({session_id: CHAT_SESSION_ID, message: msg}),'
+        '    body: JSON.stringify(body),'
         '    redirect: "error"'
         '  })'
         '  .then(function(r){ if(!r.ok) throw new Error("HTTP " + r.status); return r.json(); })'
@@ -10619,18 +10789,37 @@ def tools_create():
         '}'
         ''
         '/* ============ FILE UPLOAD VIA AJAX ============ */'
+        'function updatePendingFilesUI(){'
+        '  var bar = document.getElementById("pendingFilesBar");'
+        '  var list = document.getElementById("pendingFilesList");'
+        '  if(pendingFiles.length === 0){ bar.style.display="none"; list.innerHTML=""; return; }'
+        '  bar.style.display="block";'
+        '  var html = "";'
+        '  for(var i=0;i<pendingFiles.length;i++){'
+        '    var pf = pendingFiles[i];'
+        '    if(pf.dataUrl){'
+        '      html += \'<span class="chat-file-chip"><img src="\'+pf.dataUrl+\'" alt="">\'+escapeHtml(pf.name)+\'<span onclick="removePendingFile(\'+i+\')" style="cursor:pointer;margin-right:4px;color:#ef4444">&times;</span></span>\';'
+        '    } else {'
+        '      html += \'<span class="chat-file-chip"><span class="chip-icon">&#128196;</span>\'+escapeHtml(pf.name)+\'<span onclick="removePendingFile(\'+i+\')" style="cursor:pointer;margin-right:4px;color:#ef4444">&times;</span></span>\';'
+        '    }'
+        '  }'
+        '  list.innerHTML = html;'
+        '}'
+        ''
+        'function removePendingFile(idx){'
+        '  pendingFiles.splice(idx, 1);'
+        '  if(pendingFiles.length === 0) pendingAnalysis = "";'
+        '  updatePendingFilesUI();'
+        '}'
+        ''
         'function uploadFiles(fileList){'
         '  if(chatSending || !fileList || fileList.length === 0) return;'
         '  var names = [];'
         '  var dataUrls = [];'
-        '  var pending = fileList.length;'
+        '  var readCount = fileList.length;'
+        ''
         '  function afterPreviews(){'
-        '    var chipsHtml = buildFileChips(fileList, dataUrls);'
-        '    var label = names.length === 1 ? "העליתי קובץ: " + names[0] : "העליתי " + names.length + " קבצים";'
-        '    addUserBubble(label, chipsHtml);'
-        '    setLoading(true);'
         '    showUploadProgress(names);'
-        '    showTypingIndicator();'
         '    var fd = new FormData();'
         '    fd.append("session_id", CHAT_SESSION_ID);'
         '    for(var i=0;i<fileList.length;i++) fd.append("sample_file", fileList[i]);'
@@ -10643,33 +10832,35 @@ def tools_create():
         '    .then(function(r){ if(!r.ok) throw new Error("HTTP " + r.status); return r.json(); })'
         '    .then(function(data){'
         '      removeUploadProgress();'
-        '      removeTypingIndicator();'
-        '      if(data.error){ addAiBubble("שגיאה: " + data.error); }'
-        '      else {'
-        '        addAiBubble(data.assistant_message);'
-        '        if(data.has_tool && data.tool_definition) addToolReady(data.tool_definition);'
+        '      if(data.error){ addAiBubble("שגיאה: " + data.error); return; }'
+        '      /* Store analysis for next send */'
+        '      if(pendingAnalysis) pendingAnalysis += "\\n\\n" + data.analysis;'
+        '      else pendingAnalysis = data.analysis;'
+        '      for(var i=0;i<data.file_names.length;i++){'
+        '        pendingFiles.push({name: data.file_names[i], type: data.file_types[i], dataUrl: dataUrls[i] || null});'
         '      }'
-        '      setLoading(false);'
+        '      updatePendingFilesUI();'
+        '      document.getElementById("chatInput").focus();'
+        '      document.getElementById("chatInput").placeholder = "תאר מה אתה רוצה לעשות עם הקבצים...";'
         '    })'
         '    .catch(function(err){'
         '      removeUploadProgress();'
-        '      removeTypingIndicator();'
         '      addAiBubble("שגיאה בהעלאת הקובץ. נסה שוב.");'
-        '      setLoading(false);'
         '    });'
         '  }'
+        ''
         '  for(var i=0;i<fileList.length;i++){'
         '    names.push(fileList[i].name);'
         '    (function(idx){'
         '      if(isImageFile(fileList[idx].name)){'
         '        var reader = new FileReader();'
-        '        reader.onload = function(e){ dataUrls[idx] = e.target.result; pending--; if(pending===0) afterPreviews(); };'
-        '        reader.onerror = function(){ dataUrls[idx] = null; pending--; if(pending===0) afterPreviews(); };'
+        '        reader.onload = function(e){ dataUrls[idx] = e.target.result; readCount--; if(readCount===0) afterPreviews(); };'
+        '        reader.onerror = function(){ dataUrls[idx] = null; readCount--; if(readCount===0) afterPreviews(); };'
         '        reader.readAsDataURL(fileList[idx]);'
         '      } else {'
         '        dataUrls[idx] = null;'
-        '        pending--;'
-        '        if(pending === 0) afterPreviews();'
+        '        readCount--;'
+        '        if(readCount === 0) afterPreviews();'
         '      }'
         '    })(i);'
         '  }'
@@ -11033,8 +11224,10 @@ def tools_create_chat():
 
     # Optional tool context for improvement flow
     tool_context = None
+    file_context = None
     if is_ajax:
         tool_context = (data or {}).get("tool_context")
+        file_context = (data or {}).get("file_context")  # analysis from uploaded files
 
     if not user_message:
         if is_ajax:
@@ -11078,6 +11271,10 @@ def tools_create_chat():
         messages.append({"role": "user", "content": context_text})
         messages.append({"role": "assistant", "content": "קיבלתי את פרטי הכלי. אני מבין את המבנה הנוכחי שלו. מה תרצה לשפר או לשנות?"})
 
+    # If file analysis is attached, prepend it to the user message
+    if file_context and isinstance(file_context, str) and file_context.strip():
+        user_message = f"[קבצים שהעליתי]\n{file_context}\n\n[ההוראות שלי]\n{user_message}"
+
     # Add user message
     messages.append({"role": "user", "content": user_message})
 
@@ -11113,6 +11310,8 @@ def tools_create_chat():
 @app.route("/tools/create/upload", methods=["POST"])
 @login_required
 def tools_create_upload():
+    """Upload and analyze files. Returns analysis only — does NOT call Claude.
+    The frontend stores the analysis and sends it with the user's next message."""
     is_ajax = request.headers.get("X-Requested-With") == "XMLHttpRequest"
     chat_session_id = request.form.get("session_id", "")
 
@@ -11127,7 +11326,7 @@ def tools_create_upload():
     temp_paths = []
     analyses = []
     file_names = []
-    file_types = []  # 'image' or 'data'
+    file_types = []
     errors = []
 
     for file_obj in file_list:
@@ -11157,6 +11356,13 @@ def tools_create_upload():
             analysis = analyze_sample_file_for_chat(temp_path, ext)
         analyses.append(f"--- {file_obj.filename} ---\n{analysis}")
 
+    # Cleanup temp files
+    for tp in temp_paths:
+        try:
+            os.remove(tp)
+        except OSError:
+            pass
+
     if not analyses and errors:
         err_msg = "שגיאה בקבצים: " + "; ".join(errors)
         if is_ajax:
@@ -11164,75 +11370,23 @@ def tools_create_upload():
         add_flash(err_msg)
         return redirect("/tools/create")
 
-    try:
-        # Build combined analysis message
-        if len(analyses) == 1:
-            combined = analyses[0].split("---\n", 1)[-1]  # strip file header for single
-            if file_types[0] == "image":
-                user_content = f"העליתי תמונה ({file_names[0]}).\n\n{combined}"
-            else:
-                user_content = f"העליתי קובץ דוגמה ({file_names[0]}).\n\nניתוח הקובץ:\n{combined}\n\nבבקשה נתח את העמודות ושאל אותי מה אני רוצה לעשות עם הנתונים."
-        else:
-            combined = "\n\n".join(analyses)
-            names_str = ", ".join(file_names)
-            user_content = f"העליתי {len(file_names)} קבצים ({names_str}).\n\nניתוח הקבצים:\n{combined}\n\nבבקשה נתח את הקבצים ושאל אותי מה אני רוצה לעשות עם הנתונים."
-        if errors:
-            user_content += "\n\n(שגיאות: " + "; ".join(errors) + ")"
-
-        # Get chat session
-        with get_db() as db:
-            chat_data = db.execute(
-                "SELECT * FROM tool_chat_sessions WHERE id=? AND user_id=?",
-                (chat_session_id, session["user_id"]),
-            ).fetchone()
-            if not chat_data:
-                if is_ajax:
-                    return jsonify({"error": "שיחה לא נמצאה"}), 404
-                add_flash("שיחה לא נמצאה")
-                return redirect("/tools/create")
-
-            try:
-                messages = json.loads(chat_data["messages_json"])
-            except (json.JSONDecodeError, TypeError):
-                messages = []
-
-        # Add file analysis as user message
-        messages.append({"role": "user", "content": user_content})
-
-        # Call Claude
-        api_messages = [{"role": m["role"], "content": m["content"]} for m in messages]
-        assistant_response = call_claude_chat(api_messages)
-        messages.append({"role": "assistant", "content": assistant_response})
-
-        # Check for tool definition
-        tool_def = extract_tool_json_from_message(assistant_response)
-
-        # Save
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        with get_db() as db:
-            db.execute(
-                "UPDATE tool_chat_sessions SET messages_json=?, updated_at=? WHERE id=?",
-                (json.dumps(messages, ensure_ascii=False), now, chat_session_id),
-            )
-            db.commit()
-    finally:
-        for tp in temp_paths:
-            try:
-                os.remove(tp)
-            except OSError:
-                pass
+    # Build combined analysis text
+    if len(analyses) == 1:
+        combined = analyses[0].split("---\n", 1)[-1]
+    else:
+        combined = "\n\n".join(analyses)
+    if errors:
+        combined += "\n\n(שגיאות: " + "; ".join(errors) + ")"
 
     log_user_activity("ai_chat_upload", "העלאת קובץ לשיחת AI", "", "", f"session={chat_session_id}, files={','.join(file_names)}")
 
     if is_ajax:
         return jsonify({
             "ok": True,
-            "user_content": user_content,
-            "assistant_message": assistant_response,
-            "has_tool": tool_def is not None,
-            "tool_definition": json.dumps(tool_def, ensure_ascii=False) if tool_def else None,
+            "analysis": combined,
             "file_names": file_names,
             "file_types": file_types,
+            "errors": errors,
         })
     return redirect("/tools/create")
 
