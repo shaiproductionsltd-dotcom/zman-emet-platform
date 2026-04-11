@@ -56,8 +56,9 @@ NO_BORDER = Border(
     bottom=Side(border_style=None),
 )
 ALLOWED_EXTENSIONS = {"xls", "xlsx", "csv"}
-IMAGE_EXTENSIONS = {"png", "jpg", "jpeg", "gif"}
-ALLOWED_EXTENSIONS_WITH_IMAGES = ALLOWED_EXTENSIONS | IMAGE_EXTENSIONS
+IMAGE_EXTENSIONS = {"png", "jpg", "jpeg", "gif", "bmp", "webp"}
+DOC_EXTENSIONS = {"doc", "docx", "pdf", "txt", "rtf", "dat", "xml", "json", "ppt", "pptx"}
+CHAT_ALLOWED_EXTENSIONS = ALLOWED_EXTENSIONS | IMAGE_EXTENSIONS | DOC_EXTENSIONS
 MAX_UPLOAD_SIZE = 10 * 1024 * 1024
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
@@ -124,13 +125,13 @@ def validate_upload(file_storage):
     return None, ext
 
 
-def validate_upload_with_images(file_storage):
-    """Like validate_upload but also allows image files (png, jpg, jpeg, gif)."""
+def validate_upload_for_chat(file_storage):
+    """Validate file upload for AI chat — accepts all common business file formats."""
     if not file_storage or file_storage.filename == "":
         return "missing", None
 
     ext = get_extension(file_storage.filename)
-    if ext not in ALLOWED_EXTENSIONS_WITH_IMAGES:
+    if ext not in CHAT_ALLOWED_EXTENSIONS:
         return "unsupported", None
 
     file_storage.stream.seek(0, os.SEEK_END)
@@ -141,13 +142,11 @@ def validate_upload_with_images(file_storage):
     if size > MAX_UPLOAD_SIZE:
         return "too_large", None
 
-    # Images: skip excel signature check
-    if ext in IMAGE_EXTENSIONS:
+    # Images, docs, text: skip excel signature check
+    if ext in IMAGE_EXTENSIONS or ext in DOC_EXTENSIONS or ext == "csv":
         return None, ext
 
-    if ext == "csv":
-        return None, ext
-
+    # Excel files: verify signature
     detected = detect_excel_signature(file_storage)
     if detected != ext:
         return "invalid_excel", None
@@ -199,6 +198,148 @@ def analyze_image_for_chat(file_path, filename):
         return f"Image file: {filename}\nSize: {size_str}\nDimensions: {dims_str}\nThis is a screenshot/image. The user likely wants you to see the structure or layout shown in the image."
     except Exception as exc:
         return f"Image file: {filename} (could not analyze: {exc})"
+
+
+def analyze_document_for_chat(file_path, filename, extension):
+    """Analyze document files (txt, dat, csv-like, pdf, docx, etc.) for AI chat context."""
+    try:
+        size_bytes = os.path.getsize(file_path)
+        size_str = f"{size_bytes / 1024:.1f} KB" if size_bytes < 1024 * 1024 else f"{size_bytes / (1024 * 1024):.1f} MB"
+
+        # Plain text / DAT / CSV-like files
+        if extension in ("txt", "dat", "rtf"):
+            lines = []
+            for enc in ("utf-8", "utf-8-sig", "cp1255", "latin-1"):
+                try:
+                    with open(file_path, "r", encoding=enc) as f:
+                        lines = [f.readline() for _ in range(20)]
+                    lines = [l.rstrip("\n\r") for l in lines if l.strip()]
+                    break
+                except (UnicodeDecodeError, UnicodeError):
+                    continue
+            if not lines:
+                return f"Document: {filename} ({size_str}). Could not read text content."
+            # Detect if it's tabular (tab/comma/pipe separated)
+            sample = "\n".join(lines[:10])
+            sep = None
+            if "\t" in lines[0]:
+                sep = "tab"
+            elif "|" in lines[0]:
+                sep = "pipe (|)"
+            elif lines[0].count(",") > 2:
+                sep = "comma"
+            summary = f"Text file: {filename} ({size_str})\n"
+            summary += f"Lines in preview: {len(lines)}\n"
+            if sep:
+                summary += f"Appears to be tabular data separated by {sep}\n"
+                summary += f"First line (likely headers): {lines[0]}\n"
+            summary += f"Preview (first {min(len(lines), 10)} lines):\n"
+            for line in lines[:10]:
+                summary += f"  {line}\n"
+            return summary
+
+        # XML files
+        if extension == "xml":
+            try:
+                with open(file_path, "r", encoding="utf-8") as f:
+                    content = f.read(4000)
+            except UnicodeDecodeError:
+                with open(file_path, "r", encoding="latin-1") as f:
+                    content = f.read(4000)
+            summary = f"XML file: {filename} ({size_str})\n"
+            summary += f"Preview (first 4000 chars):\n{content}\n"
+            return summary
+
+        # JSON files
+        if extension == "json":
+            try:
+                with open(file_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if isinstance(data, list) and len(data) > 0:
+                    summary = f"JSON file: {filename} ({size_str})\n"
+                    summary += f"Array with {len(data)} items\n"
+                    if isinstance(data[0], dict):
+                        keys = list(data[0].keys())
+                        summary += f"Item keys: {', '.join(str(k) for k in keys)}\n"
+                        summary += f"Sample item: {json.dumps(data[0], ensure_ascii=False)[:500]}\n"
+                    return summary
+                elif isinstance(data, dict):
+                    summary = f"JSON file: {filename} ({size_str})\n"
+                    summary += f"Object with keys: {', '.join(str(k) for k in list(data.keys())[:20])}\n"
+                    return summary
+            except Exception:
+                pass
+            return f"JSON file: {filename} ({size_str}). Could not parse structure."
+
+        # PDF files
+        if extension == "pdf":
+            # Read first bytes to confirm it's a PDF
+            try:
+                with open(file_path, "rb") as f:
+                    header = f.read(5)
+                is_pdf = header == b"%PDF-"
+            except Exception:
+                is_pdf = False
+            summary = f"PDF file: {filename} ({size_str})\n"
+            if is_pdf:
+                summary += "This is a valid PDF document. The user may want you to understand its structure or content.\n"
+                summary += "Note: PDF text extraction is limited. Ask the user to describe the content or copy-paste relevant text."
+            else:
+                summary += "File header does not match PDF format."
+            return summary
+
+        # Word documents (.docx)
+        if extension == "docx":
+            # docx is a ZIP — try to extract text from word/document.xml
+            try:
+                from zipfile import ZipFile
+                with ZipFile(file_path) as zf:
+                    if "word/document.xml" in zf.namelist():
+                        import re as _re
+                        xml_content = zf.read("word/document.xml").decode("utf-8", errors="replace")
+                        # Strip XML tags to get text
+                        text = _re.sub(r"<[^>]+>", " ", xml_content)
+                        text = " ".join(text.split())[:3000]
+                        summary = f"Word document: {filename} ({size_str})\n"
+                        summary += f"Text preview (first 3000 chars):\n{text}\n"
+                        return summary
+            except Exception:
+                pass
+            return f"Word document: {filename} ({size_str}). Could not extract text."
+
+        # Old Word (.doc)
+        if extension == "doc":
+            return f"Word document (legacy .doc): {filename} ({size_str}). Cannot read .doc content directly. Ask the user to save as .docx or copy-paste the relevant text."
+
+        # PowerPoint (.pptx)
+        if extension == "pptx":
+            try:
+                from zipfile import ZipFile
+                import re as _re
+                with ZipFile(file_path) as zf:
+                    texts = []
+                    for name in sorted(zf.namelist()):
+                        if name.startswith("ppt/slides/slide") and name.endswith(".xml"):
+                            xml_content = zf.read(name).decode("utf-8", errors="replace")
+                            slide_text = _re.sub(r"<[^>]+>", " ", xml_content)
+                            slide_text = " ".join(slide_text.split())
+                            if slide_text.strip():
+                                texts.append(slide_text[:500])
+                    summary = f"PowerPoint: {filename} ({size_str}), {len(texts)} slides\n"
+                    for i, t in enumerate(texts[:5]):
+                        summary += f"  Slide {i+1}: {t[:200]}\n"
+                    return summary
+            except Exception:
+                pass
+            return f"PowerPoint: {filename} ({size_str}). Could not extract slide text."
+
+        # Old PowerPoint (.ppt)
+        if extension == "ppt":
+            return f"PowerPoint (legacy .ppt): {filename} ({size_str}). Cannot read .ppt content directly. Ask the user to save as .pptx or describe the content."
+
+        return f"Document: {filename} ({size_str}, type: {extension})"
+    except Exception as exc:
+        return f"Document: {filename} (could not analyze: {exc})"
 
 
 def idx_to_hex(cmap, idx):
@@ -10255,7 +10396,7 @@ def tools_create():
         '<div class="chat-drop-overlay" id="dropOverlay">'
         '<div class="chat-drop-icon">&#128206;</div>'
         '<div class="chat-drop-label">שחרר קבצים כאן</div>'
-        '<div class="chat-drop-sub">Excel, CSV או תמונות</div>'
+        '<div class="chat-drop-sub">Excel, CSV, Word, PDF, תמונות ועוד</div>'
         '</div>'
         # Tool picker overlay
         '<div class="tool-picker-overlay" id="toolPickerOverlay">'
@@ -10290,7 +10431,7 @@ def tools_create():
         # Input area
         '<div class="chat-input-area">'
         '<div class="chat-upload-row">'
-        '<input type="file" name="sample_file" id="sampleFile" accept=".xls,.xlsx,.csv,.png,.jpg,.jpeg,.gif" style="display:none" multiple '
+        '<input type="file" name="sample_file" id="sampleFile" accept=".xls,.xlsx,.csv,.png,.jpg,.jpeg,.gif,.bmp,.webp,.doc,.docx,.pdf,.txt,.rtf,.dat,.xml,.json,.ppt,.pptx" style="display:none" multiple '
         'onchange="handleFileSelect(this.files)">'
         '<button type="button" id="uploadBtn" onclick="document.getElementById(\'sampleFile\').click()" class="chat-upload-btn">&#128206; העלה קבצים</button>'
         '<button type="button" id="improveToolBtn" onclick="showToolPicker()" class="chat-upload-btn" style="border-color:#047857;color:#047857">&#9998; שיפור כלי קיים</button>'
@@ -10302,14 +10443,14 @@ def tools_create():
         '<span id="sendBtnSpinner" class="chat-send-spinner" style="display:none"></span>'
         '</button>'
         '</div>'
-        '<div class="chat-hint">Enter לשליחה &middot; Shift+Enter לשורה חדשה &middot; גרור קבצים או הדבק תמונה (Ctrl+V) &middot; אין לשתף מידע אישי של עובדים</div>'
+        '<div class="chat-hint">Enter לשליחה &middot; Shift+Enter לשורה חדשה &middot; גרור קבצים או הדבק תמונה &middot; Excel, CSV, Word, PDF, תמונות ועוד</div>'
         '</div>'
         '</div>'
         # JavaScript
         '<script>'
         'var CHAT_SESSION_ID = "' + str(chat_session_id) + '";'
         'var chatSending = false;'
-        'var IMAGE_EXTS = ["png","jpg","jpeg","gif"];'
+        'var IMAGE_EXTS = ["png","jpg","jpeg","gif","bmp","webp"];'
         ''
         'function scrollToBottom(){'
         '  var el = document.getElementById("chatMessages");'
@@ -10992,7 +11133,7 @@ def tools_create_upload():
     for file_obj in file_list:
         if not file_obj or not file_obj.filename:
             continue
-        validation_error, ext = validate_upload_with_images(file_obj)
+        validation_error, ext = validate_upload_for_chat(file_obj)
         if validation_error:
             errors.append(f"{file_obj.filename}: {validation_error}")
             continue
@@ -11008,6 +11149,9 @@ def tools_create_upload():
         if ext in IMAGE_EXTENSIONS:
             file_types.append("image")
             analysis = analyze_image_for_chat(temp_path, file_obj.filename)
+        elif ext in DOC_EXTENSIONS:
+            file_types.append("document")
+            analysis = analyze_document_for_chat(temp_path, file_obj.filename, ext)
         else:
             file_types.append("data")
             analysis = analyze_sample_file_for_chat(temp_path, ext)
