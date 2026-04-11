@@ -11711,16 +11711,23 @@ def tools_create_chat():
     messages.append({"role": "user", "content": user_message})
 
     # Build API messages with sliding window to control cost/latency.
-    # Keep first 4 messages (tool context + initial exchange) and last 12 messages.
-    # This prevents token count from growing unboundedly in long conversations.
+    # Always preserve: first 4 msgs (tool context), file uploads, and last 12 msgs.
     MAX_RECENT = 12
     KEEP_FIRST = 4
+    CONTEXT_MARKERS = ("[קבצים שהעליתי]", "[TOOL_CONTEXT]", "File structure:")
     all_msgs = [{"role": m["role"], "content": m["content"]} for m in messages]
     if len(all_msgs) > KEEP_FIRST + MAX_RECENT:
         head = all_msgs[:KEEP_FIRST]
         tail = all_msgs[-MAX_RECENT:]
-        # Insert a brief summary marker so the AI knows context was trimmed
-        head.append({"role": "user", "content": "[הערת מערכת: חלק מההודעות הישנות קוצרו. המשך את השיחה על בסיס ההודעות האחרונות.]"})
+        tail_set = set(id(m) for m in tail)
+        # Scan trimmed middle for file/context messages — always keep them
+        middle = all_msgs[KEEP_FIRST:-MAX_RECENT]
+        pinned = []
+        for m in middle:
+            if id(m) not in tail_set and any(marker in m.get("content", "") for marker in CONTEXT_MARKERS):
+                pinned.append(m)
+        head.extend(pinned)
+        head.append({"role": "user", "content": "[הערת מערכת: חלק מההודעות הישנות קוצרו. הקבצים והנתונים שהועלו נשמרו. המשך על בסיס ההודעות האחרונות.]"})
         head.append({"role": "assistant", "content": "הבנתי, ממשיך."})
         api_messages = head + tail
     else:
