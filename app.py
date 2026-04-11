@@ -11710,8 +11710,21 @@ def tools_create_chat():
     # Add user message
     messages.append({"role": "user", "content": user_message})
 
-    # Call Claude API
-    api_messages = [{"role": m["role"], "content": m["content"]} for m in messages]
+    # Build API messages with sliding window to control cost/latency.
+    # Keep first 4 messages (tool context + initial exchange) and last 12 messages.
+    # This prevents token count from growing unboundedly in long conversations.
+    MAX_RECENT = 12
+    KEEP_FIRST = 4
+    all_msgs = [{"role": m["role"], "content": m["content"]} for m in messages]
+    if len(all_msgs) > KEEP_FIRST + MAX_RECENT:
+        head = all_msgs[:KEEP_FIRST]
+        tail = all_msgs[-MAX_RECENT:]
+        # Insert a brief summary marker so the AI knows context was trimmed
+        head.append({"role": "user", "content": "[הערת מערכת: חלק מההודעות הישנות קוצרו. המשך את השיחה על בסיס ההודעות האחרונות.]"})
+        head.append({"role": "assistant", "content": "הבנתי, ממשיך."})
+        api_messages = head + tail
+    else:
+        api_messages = all_msgs
     assistant_response = call_claude_chat(api_messages)
     messages.append({"role": "assistant", "content": assistant_response})
 
