@@ -56,6 +56,8 @@ NO_BORDER = Border(
     bottom=Side(border_style=None),
 )
 ALLOWED_EXTENSIONS = {"xls", "xlsx", "csv"}
+IMAGE_EXTENSIONS = {"png", "jpg", "jpeg", "gif"}
+ALLOWED_EXTENSIONS_WITH_IMAGES = ALLOWED_EXTENSIONS | IMAGE_EXTENSIONS
 MAX_UPLOAD_SIZE = 10 * 1024 * 1024
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
@@ -120,6 +122,83 @@ def validate_upload(file_storage):
         return "invalid_excel", None
 
     return None, ext
+
+
+def validate_upload_with_images(file_storage):
+    """Like validate_upload but also allows image files (png, jpg, jpeg, gif)."""
+    if not file_storage or file_storage.filename == "":
+        return "missing", None
+
+    ext = get_extension(file_storage.filename)
+    if ext not in ALLOWED_EXTENSIONS_WITH_IMAGES:
+        return "unsupported", None
+
+    file_storage.stream.seek(0, os.SEEK_END)
+    size = file_storage.stream.tell()
+    file_storage.stream.seek(0)
+    if size <= 0:
+        return "empty", None
+    if size > MAX_UPLOAD_SIZE:
+        return "too_large", None
+
+    # Images: skip excel signature check
+    if ext in IMAGE_EXTENSIONS:
+        return None, ext
+
+    if ext == "csv":
+        return None, ext
+
+    detected = detect_excel_signature(file_storage)
+    if detected != ext:
+        return "invalid_excel", None
+
+    return None, ext
+
+
+def analyze_image_for_chat(file_path, filename):
+    """Analyze an image file: return basic metadata string."""
+    try:
+        size_bytes = os.path.getsize(file_path)
+        size_str = f"{size_bytes / 1024:.1f} KB" if size_bytes < 1024 * 1024 else f"{size_bytes / (1024 * 1024):.1f} MB"
+        # Try to get dimensions without PIL (read basic headers)
+        width, height = None, None
+        try:
+            with open(file_path, "rb") as f:
+                header = f.read(32)
+                # PNG
+                if header[:8] == b'\x89PNG\r\n\x1a\n':
+                    width = int.from_bytes(header[16:20], 'big')
+                    height = int.from_bytes(header[20:24], 'big')
+                # JPEG
+                elif header[:2] == b'\xff\xd8':
+                    f.seek(0)
+                    data = f.read()
+                    i = 2
+                    while i < len(data) - 9:
+                        if data[i] == 0xFF:
+                            marker = data[i + 1]
+                            if marker in (0xC0, 0xC1, 0xC2):
+                                height = int.from_bytes(data[i + 5:i + 7], 'big')
+                                width = int.from_bytes(data[i + 7:i + 9], 'big')
+                                break
+                            elif marker == 0xD9:
+                                break
+                            else:
+                                seg_len = int.from_bytes(data[i + 2:i + 4], 'big')
+                                i += 2 + seg_len
+                        else:
+                            i += 1
+                # GIF
+                elif header[:6] in (b'GIF87a', b'GIF89a'):
+                    width = int.from_bytes(header[6:8], 'little')
+                    height = int.from_bytes(header[8:10], 'little')
+        except Exception:
+            pass
+
+        dims_str = f"{width}x{height}" if width and height else "unknown dimensions"
+        return f"Image file: {filename}\nSize: {size_str}\nDimensions: {dims_str}\nThis is a screenshot/image. The user likely wants you to see the structure or layout shown in the image."
+    except Exception as exc:
+        return f"Image file: {filename} (could not analyze: {exc})"
 
 
 def idx_to_hex(cmap, idx):
@@ -9501,6 +9580,16 @@ You MUST output valid JSON tool definitions using this structure:
 - Be concise. Don't over-explain — the user is a professional.
 - Always respond in Hebrew unless the user writes in English.
 
+## Improving Existing Tools
+When the user says they want to improve, edit, fix, or update an existing tool:
+1. The frontend will show them a tool picker UI. Once they pick a tool, the system will inject the full tool definition into the conversation as a system context message starting with "[TOOL_CONTEXT]".
+2. When you see a "[TOOL_CONTEXT]" message, understand the current tool structure completely before suggesting improvements.
+3. Ask the user what they want to change or improve about the tool.
+4. For **builtin scripts** (type "builtin"): you can only describe what changes would be needed — you cannot modify builtin scripts directly. Suggest creating a new marketplace tool that achieves the desired improvement.
+5. For **marketplace tools** (type "marketplace"): you CAN directly improve the tool definition. Show the improved JSON definition with the changes highlighted in your explanation.
+6. When outputting an improved tool definition, always output the COMPLETE tool definition JSON (not just the changed parts).
+7. If the user mentions "שיפור", "עריכה", "תיקון", "שדרוג", "עדכון" or similar words about an existing tool, the frontend will automatically trigger the tool picker.
+
 ## Privacy
 - NEVER ask for or include real employee names, IDs, or personal data.
 - Only use column HEADERS and structure, never real cell data.
@@ -10142,6 +10231,42 @@ def tools_create():
         '@keyframes chatFadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}'
         '@keyframes typingBounce{0%,80%,100%{transform:scale(0.6);opacity:0.4}40%{transform:scale(1);opacity:1}}'
         '@keyframes spin{to{transform:rotate(360deg)}}'
+        # Drop zone overlay
+        '.chat-drop-overlay{display:none;position:absolute;inset:0;background:rgba(37,99,235,0.12);border:3px dashed #2563eb;border-radius:16px;z-index:50;align-items:center;justify-content:center;flex-direction:column;gap:10px;pointer-events:none}'
+        '.chat-drop-overlay.active{display:flex}'
+        '.chat-drop-icon{font-size:48px;opacity:0.7}'
+        '.chat-drop-label{font-size:16px;font-weight:700;color:#1e3a8a}'
+        '.chat-drop-sub{font-size:13px;color:#64748b}'
+        # File preview chips in bubbles
+        '.chat-file-chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}'
+        '.chat-file-chip{display:inline-flex;align-items:center;gap:6px;background:rgba(37,99,235,0.08);border:1px solid #dbeafe;border-radius:8px;padding:4px 10px;font-size:12px;color:#1e3a5c}'
+        '.chat-file-chip img{width:40px;height:40px;object-fit:cover;border-radius:6px;border:1px solid #e2e8f0}'
+        '.chat-file-chip .chip-icon{font-size:16px}'
+        # Upload progress
+        '.chat-upload-progress{display:flex;align-items:center;gap:8px;padding:8px 12px;margin-bottom:8px;background:#f0f7ff;border-radius:10px;font-size:13px;color:#2563eb;animation:chatFadeIn .3s ease-out}'
+        '.chat-upload-progress .upload-spinner{display:inline-block;width:14px;height:14px;border:2px solid rgba(37,99,235,0.3);border-top-color:#2563eb;border-radius:50%;animation:spin .7s linear infinite}'
+        # Container must be relative for overlay
+        '.chat-container{position:relative}'
+        # Tool picker styles
+        '.tool-picker-overlay{display:none;position:absolute;inset:0;background:rgba(0,0,0,0.4);z-index:60;align-items:center;justify-content:center;border-radius:16px;overflow:hidden}'
+        '.tool-picker-overlay.active{display:flex}'
+        '.tool-picker-panel{background:white;border-radius:16px;width:92%;max-width:480px;max-height:80%;display:flex;flex-direction:column;box-shadow:0 12px 40px rgba(0,0,0,0.2);animation:chatFadeIn .3s ease-out}'
+        '.tool-picker-header{padding:16px 20px;border-bottom:1px solid #e2e8f0;display:flex;justify-content:space-between;align-items:center}'
+        '.tool-picker-header h3{margin:0;font-size:16px;font-weight:800;color:#1e3a8a}'
+        '.tool-picker-close{background:none;border:none;font-size:20px;cursor:pointer;color:#64748b;padding:4px 8px;border-radius:8px}'
+        '.tool-picker-close:hover{background:#f1f5f9;color:#1e3a8a}'
+        '.tool-picker-body{overflow-y:auto;padding:12px 16px;flex:1}'
+        '.tool-picker-section{margin-bottom:12px}'
+        '.tool-picker-section-title{font-size:12px;font-weight:700;color:#64748b;margin-bottom:8px;text-transform:uppercase;letter-spacing:0.5px}'
+        '.tool-picker-card{display:flex;align-items:center;gap:12px;padding:12px 14px;border:1.5px solid #e2e8f0;border-radius:12px;cursor:pointer;transition:all .2s;margin-bottom:8px;background:white}'
+        '.tool-picker-card:hover{border-color:#2563eb;background:#f0f7ff;transform:translateY(-1px);box-shadow:0 4px 12px rgba(37,99,235,0.1)}'
+        '.tool-picker-card-icon{font-size:28px;flex-shrink:0;width:40px;text-align:center}'
+        '.tool-picker-card-info{flex:1;min-width:0}'
+        '.tool-picker-card-name{font-size:14px;font-weight:700;color:#1e3a8a;margin-bottom:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}'
+        '.tool-picker-card-desc{font-size:12px;color:#64748b;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}'
+        '.tool-picker-card-badge{font-size:10px;padding:2px 8px;border-radius:99px;font-weight:700;flex-shrink:0}'
+        '.tool-picker-empty{text-align:center;padding:2rem;color:#94a3b8;font-size:14px}'
+        '.tool-picker-loading{text-align:center;padding:2rem;color:#2563eb;font-size:14px}'
         '</style>'
         # Top bar
         '<div style="margin-bottom:1rem;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">'
@@ -10149,7 +10274,25 @@ def tools_create():
         '<form method="post" action="/tools/create/reset"><button type="submit" class="btn btn-gray" style="font-size:12px;border-radius:8px">&#128260; שיחה חדשה</button></form>'
         '</div>'
         # Chat container
-        '<div class="chat-container">'
+        '<div class="chat-container" id="chatContainer">'
+        # Drop zone overlay
+        '<div class="chat-drop-overlay" id="dropOverlay">'
+        '<div class="chat-drop-icon">&#128206;</div>'
+        '<div class="chat-drop-label">שחרר קבצים כאן</div>'
+        '<div class="chat-drop-sub">Excel, CSV או תמונות</div>'
+        '</div>'
+        # Tool picker overlay
+        '<div class="tool-picker-overlay" id="toolPickerOverlay">'
+        '<div class="tool-picker-panel">'
+        '<div class="tool-picker-header">'
+        '<h3>בחירת כלי לשיפור</h3>'
+        '<button class="tool-picker-close" onclick="hideToolPicker()">&#10005;</button>'
+        '</div>'
+        '<div class="tool-picker-body" id="toolPickerBody">'
+        '<div class="tool-picker-loading">&#8987; טוען כלים...</div>'
+        '</div>'
+        '</div>'
+        '</div>'
         '<div class="chat-header">'
         '<div class="chat-header-title">&#129302; בניית כלי עם AI</div>'
         '<div class="chat-header-sub">תאר מה אתה רוצה לעשות עם הנתונים ו-AI יבנה את הכלי עבורך</div>'
@@ -10163,19 +10306,18 @@ def tools_create():
         '&#8226; "אני רוצה דוח שמסנן עובדים עם יותר מ-9 שעות עבודה"<br>'
         '&#8226; "אני צריך סיכום שכר לפי מחלקה"<br>'
         '&#8226; "אני רוצה למצוא כפילויות ברשימת עובדים"<br><br>'
-        'אפשר גם להעלות קובץ דוגמה ואני אזהה את העמודות בשבילך.'
+        'אפשר גם להעלות קובץ דוגמה ואני אזהה את העמודות בשבילך.<br><br>'
+        '<b>רוצה לשפר כלי קיים?</b> לחץ על הכפתור למטה &#11015;'
         '</div></div>'
         + msgs_html
         + '</div>'
         # Input area
         '<div class="chat-input-area">'
         '<div class="chat-upload-row">'
-        '<form method="post" action="/tools/create/upload" enctype="multipart/form-data" id="uploadForm">'
-        '<input type="hidden" name="session_id" value="' + str(chat_session_id) + '">'
-        '<input type="file" name="sample_file" id="sampleFile" accept=".xls,.xlsx,.csv" style="display:none" '
-        'onchange="if(this.files[0]){document.getElementById(\'uploadBtn\').textContent=\'&#128206; \'+this.files[0].name;document.getElementById(\'uploadForm\').submit()}">'
-        '<button type="button" id="uploadBtn" onclick="document.getElementById(\'sampleFile\').click()" class="chat-upload-btn">&#128206; העלה קובץ דוגמה</button>'
-        '</form>'
+        '<input type="file" name="sample_file" id="sampleFile" accept=".xls,.xlsx,.csv,.png,.jpg,.jpeg,.gif" style="display:none" multiple '
+        'onchange="handleFileSelect(this.files)">'
+        '<button type="button" id="uploadBtn" onclick="document.getElementById(\'sampleFile\').click()" class="chat-upload-btn">&#128206; העלה קבצים</button>'
+        '<button type="button" id="improveToolBtn" onclick="showToolPicker()" class="chat-upload-btn" style="border-color:#047857;color:#047857">&#9998; שיפור כלי קיים</button>'
         '</div>'
         '<div class="chat-input-row">'
         '<textarea id="chatInput" class="chat-textarea" placeholder="כתוב הודעה... (Enter לשליחה, Shift+Enter לשורה חדשה)" rows="1"></textarea>'
@@ -10184,13 +10326,14 @@ def tools_create():
         '<span id="sendBtnSpinner" class="chat-send-spinner" style="display:none"></span>'
         '</button>'
         '</div>'
-        '<div class="chat-hint">Enter לשליחה &middot; Shift+Enter לשורה חדשה &middot; אין לשתף מידע אישי של עובדים</div>'
+        '<div class="chat-hint">Enter לשליחה &middot; Shift+Enter לשורה חדשה &middot; גרור קבצים או הדבק תמונה (Ctrl+V) &middot; אין לשתף מידע אישי של עובדים</div>'
         '</div>'
         '</div>'
         # JavaScript
         '<script>'
         'var CHAT_SESSION_ID = "' + str(chat_session_id) + '";'
         'var chatSending = false;'
+        'var IMAGE_EXTS = ["png","jpg","jpeg","gif"];'
         ''
         'function scrollToBottom(){'
         '  var el = document.getElementById("chatMessages");'
@@ -10211,11 +10354,38 @@ def tools_create():
         '  return h;'
         '}'
         ''
-        'function addUserBubble(text){'
+        'function getFileExt(name){'
+        '  if(!name || name.indexOf(".")===-1) return "";'
+        '  return name.split(".").pop().toLowerCase();'
+        '}'
+        ''
+        'function isImageFile(name){'
+        '  return IMAGE_EXTS.indexOf(getFileExt(name)) !== -1;'
+        '}'
+        ''
+        'function buildFileChips(files, dataUrls){'
+        '  if(!files || !files.length) return "";'
+        '  var html = \'<div class="chat-file-chips">\';'
+        '  for(var i=0;i<files.length;i++){'
+        '    var f = files[i];'
+        '    var name = f.name || f;'
+        '    if(isImageFile(name) && dataUrls && dataUrls[i]){'
+        '      html += \'<span class="chat-file-chip"><img src="\'+dataUrls[i]+\'" alt="">\'+escapeHtml(name)+\'</span>\';'
+        '    } else {'
+        '      html += \'<span class="chat-file-chip"><span class="chip-icon">&#128196;</span>\'+escapeHtml(name)+\'</span>\';'
+        '    }'
+        '  }'
+        '  html += "</div>";'
+        '  return html;'
+        '}'
+        ''
+        'function addUserBubble(text, extraHtml){'
         '  var el = document.getElementById("chatMessages");'
         '  var div = document.createElement("div");'
         '  div.className = "chat-bubble chat-user";'
-        '  div.innerHTML = \'<div class="chat-bubble-inner chat-user-inner">\' + escapeHtml(text).replace(/\\n/g,"<br>") + "</div>";'
+        '  var inner = escapeHtml(text).replace(/\\n/g,"<br>");'
+        '  if(extraHtml) inner += extraHtml;'
+        '  div.innerHTML = \'<div class="chat-bubble-inner chat-user-inner">\' + inner + "</div>";'
         '  el.appendChild(div);'
         '  scrollToBottom();'
         '}'
@@ -10259,6 +10429,23 @@ def tools_create():
         'function removeTypingIndicator(){'
         '  var ti = document.getElementById("typingIndicator");'
         '  if(ti) ti.remove();'
+        '}'
+        ''
+        'function showUploadProgress(fileNames){'
+        '  removeUploadProgress();'
+        '  var el = document.getElementById("chatMessages");'
+        '  var div = document.createElement("div");'
+        '  div.id = "uploadProgress";'
+        '  div.className = "chat-upload-progress";'
+        '  var label = fileNames.length === 1 ? "מעלה " + escapeHtml(fileNames[0]) + "..." : "מעלה " + fileNames.length + " קבצים...";'
+        '  div.innerHTML = \'<span class="upload-spinner"></span><span>\' + label + "</span>";'
+        '  el.appendChild(div);'
+        '  scrollToBottom();'
+        '}'
+        ''
+        'function removeUploadProgress(){'
+        '  var up = document.getElementById("uploadProgress");'
+        '  if(up) up.remove();'
         '}'
         ''
         'function setLoading(on){'
@@ -10313,6 +10500,118 @@ def tools_create():
         '  });'
         '}'
         ''
+        '/* ============ FILE UPLOAD VIA AJAX ============ */'
+        'function uploadFiles(fileList){'
+        '  if(chatSending || !fileList || fileList.length === 0) return;'
+        '  var names = [];'
+        '  var dataUrls = [];'
+        '  var pending = fileList.length;'
+        '  function afterPreviews(){'
+        '    var chipsHtml = buildFileChips(fileList, dataUrls);'
+        '    var label = names.length === 1 ? "העליתי קובץ: " + names[0] : "העליתי " + names.length + " קבצים";'
+        '    addUserBubble(label, chipsHtml);'
+        '    setLoading(true);'
+        '    showUploadProgress(names);'
+        '    showTypingIndicator();'
+        '    var fd = new FormData();'
+        '    fd.append("session_id", CHAT_SESSION_ID);'
+        '    for(var i=0;i<fileList.length;i++) fd.append("sample_file", fileList[i]);'
+        '    fetch("/tools/create/upload", {'
+        '      method: "POST",'
+        '      headers: {"X-Requested-With": "XMLHttpRequest"},'
+        '      body: fd'
+        '    })'
+        '    .then(function(r){ if(!r.ok) throw new Error("HTTP " + r.status); return r.json(); })'
+        '    .then(function(data){'
+        '      removeUploadProgress();'
+        '      removeTypingIndicator();'
+        '      if(data.error){ addAiBubble("שגיאה: " + data.error); }'
+        '      else {'
+        '        addAiBubble(data.assistant_message);'
+        '        if(data.has_tool && data.tool_definition) addToolReady(data.tool_definition);'
+        '      }'
+        '      setLoading(false);'
+        '    })'
+        '    .catch(function(err){'
+        '      removeUploadProgress();'
+        '      removeTypingIndicator();'
+        '      addAiBubble("שגיאה בהעלאת הקובץ. נסה שוב.");'
+        '      setLoading(false);'
+        '    });'
+        '  }'
+        '  for(var i=0;i<fileList.length;i++){'
+        '    names.push(fileList[i].name);'
+        '    (function(idx){'
+        '      if(isImageFile(fileList[idx].name)){'
+        '        var reader = new FileReader();'
+        '        reader.onload = function(e){ dataUrls[idx] = e.target.result; pending--; if(pending===0) afterPreviews(); };'
+        '        reader.onerror = function(){ dataUrls[idx] = null; pending--; if(pending===0) afterPreviews(); };'
+        '        reader.readAsDataURL(fileList[idx]);'
+        '      } else {'
+        '        dataUrls[idx] = null;'
+        '        pending--;'
+        '        if(pending === 0) afterPreviews();'
+        '      }'
+        '    })(i);'
+        '  }'
+        '}'
+        ''
+        'function handleFileSelect(files){'
+        '  if(!files || files.length === 0) return;'
+        '  uploadFiles(files);'
+        '  document.getElementById("sampleFile").value = "";'
+        '}'
+        ''
+        '/* ============ DRAG & DROP ============ */'
+        'var dragCounter = 0;'
+        'var chatContainer = document.getElementById("chatContainer");'
+        'var dropOverlay = document.getElementById("dropOverlay");'
+        ''
+        'chatContainer.addEventListener("dragenter", function(e){'
+        '  e.preventDefault(); e.stopPropagation();'
+        '  dragCounter++;'
+        '  dropOverlay.classList.add("active");'
+        '});'
+        'chatContainer.addEventListener("dragleave", function(e){'
+        '  e.preventDefault(); e.stopPropagation();'
+        '  dragCounter--;'
+        '  if(dragCounter <= 0){ dragCounter = 0; dropOverlay.classList.remove("active"); }'
+        '});'
+        'chatContainer.addEventListener("dragover", function(e){'
+        '  e.preventDefault(); e.stopPropagation();'
+        '});'
+        'chatContainer.addEventListener("drop", function(e){'
+        '  e.preventDefault(); e.stopPropagation();'
+        '  dragCounter = 0;'
+        '  dropOverlay.classList.remove("active");'
+        '  if(e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length > 0){'
+        '    uploadFiles(e.dataTransfer.files);'
+        '  }'
+        '});'
+        ''
+        '/* ============ PASTE IMAGE ============ */'
+        'document.getElementById("chatInput").addEventListener("paste", function(e){'
+        '  var items = (e.clipboardData || e.originalEvent.clipboardData || {}).items;'
+        '  if(!items) return;'
+        '  var imageFiles = [];'
+        '  for(var i = 0; i < items.length; i++){'
+        '    if(items[i].type.indexOf("image") !== -1){'
+        '      var blob = items[i].getAsFile();'
+        '      if(blob){'
+        '        var ext = items[i].type.split("/")[1] || "png";'
+        '        if(ext === "jpeg") ext = "jpg";'
+        '        var ts = new Date().toISOString().replace(/[:.]/g,"-").slice(0,19);'
+        '        var named = new File([blob], "screenshot_" + ts + "." + ext, {type: blob.type});'
+        '        imageFiles.push(named);'
+        '      }'
+        '    }'
+        '  }'
+        '  if(imageFiles.length > 0){'
+        '    e.preventDefault();'
+        '    uploadFiles(imageFiles);'
+        '  }'
+        '});'
+        ''
         '/* Textarea: Enter to send, Shift+Enter for newline, auto-resize */'
         'document.getElementById("chatInput").addEventListener("keydown", function(e){'
         '  if(e.key === "Enter" && !e.shiftKey){'
@@ -10325,12 +10624,271 @@ def tools_create():
         '  this.style.height = Math.min(this.scrollHeight, 120) + "px";'
         '});'
         ''
+        '/* ── Tool Improvement Picker ── */'
+        'var selectedToolContext = null;'
+        ''
+        'function showToolPicker(){'
+        '  var overlay = document.getElementById("toolPickerOverlay");'
+        '  var body = document.getElementById("toolPickerBody");'
+        '  overlay.classList.add("active");'
+        '  body.innerHTML = \'<div class="tool-picker-loading">&#8987; טוען כלים...</div>\';'
+        '  fetch("/tools/create/list-tools", {headers:{"X-Requested-With":"XMLHttpRequest"}})'
+        '  .then(function(r){return r.json();})'
+        '  .then(function(data){'
+        '    if(!data.ok || !data.tools || data.tools.length === 0){'
+        '      body.innerHTML = \'<div class="tool-picker-empty">אין כלים זמינים לשיפור</div>\';'
+        '      return;'
+        '    }'
+        '    var html = "";'
+        '    var builtins = data.tools.filter(function(t){return t.type==="builtin";});'
+        '    var created = data.tools.filter(function(t){return t.type==="marketplace" && t.subtype==="created";});'
+        '    var installed = data.tools.filter(function(t){return t.type==="marketplace" && t.subtype==="installed";});'
+        '    if(builtins.length > 0){'
+        '      html += \'<div class="tool-picker-section"><div class="tool-picker-section-title">כלים מובנים</div>\';'
+        '      builtins.forEach(function(t){'
+        '        html += renderToolCard(t, "#eff6ff", "#1e3a8a", "מובנה");'
+        '      });'
+        '      html += "</div>";'
+        '    }'
+        '    if(created.length > 0){'
+        '      html += \'<div class="tool-picker-section"><div class="tool-picker-section-title">כלים שיצרת</div>\';'
+        '      created.forEach(function(t){'
+        '        var statusLabel = {draft:"טיוטה",pending_review:"ממתין",approved:"מאושר",rejected:"נדחה"}[t.status] || t.status;'
+        '        html += renderToolCard(t, "#ecfdf5", "#047857", statusLabel);'
+        '      });'
+        '      html += "</div>";'
+        '    }'
+        '    if(installed.length > 0){'
+        '      html += \'<div class="tool-picker-section"><div class="tool-picker-section-title">כלים מותקנים</div>\';'
+        '      installed.forEach(function(t){'
+        '        html += renderToolCard(t, "#fff7ed", "#c2410c", "מותקן");'
+        '      });'
+        '      html += "</div>";'
+        '    }'
+        '    body.innerHTML = html;'
+        '  })'
+        '  .catch(function(){'
+        '    body.innerHTML = \'<div class="tool-picker-empty">שגיאה בטעינת הכלים</div>\';'
+        '  });'
+        '}'
+        ''
+        'function renderToolCard(t, badgeBg, badgeFg, badgeLabel){'
+        '  var icon = t.icon || "&#128295;";'
+        '  var desc = t.description || "";'
+        '  var safeType = escapeHtml(String(t.type));'
+        '  var safeId = escapeHtml(String(t.id));'
+        '  var safeName = escapeHtml(String(t.name));'
+        '  return \'<div class="tool-picker-card" data-tool-type="\' + safeType + \'" data-tool-id="\' + safeId + \'" data-tool-name="\' + safeName + \'">\''
+        '    + \'<div class="tool-picker-card-icon">\' + icon + \'</div>\''
+        '    + \'<div class="tool-picker-card-info"><div class="tool-picker-card-name">\' + safeName + \'</div><div class="tool-picker-card-desc">\' + escapeHtml(desc) + \'</div></div>\''
+        '    + \'<div class="tool-picker-card-badge" style="background:\' + badgeBg + \';color:\' + badgeFg + \'">\' + badgeLabel + \'</div>\''
+        '    + \'</div>\';'
+        '}'
+        ''
+        'function hideToolPicker(){'
+        '  document.getElementById("toolPickerOverlay").classList.remove("active");'
+        '}'
+        ''
+        'function selectTool(toolType, toolId, toolName){'
+        '  hideToolPicker();'
+        '  setLoading(true);'
+        '  addUserBubble("אני רוצה לשפר את הכלי: " + toolName);'
+        '  showTypingIndicator();'
+        '  fetch("/tools/create/load-tool", {'
+        '    method: "POST",'
+        '    headers: {"Content-Type":"application/json","X-Requested-With":"XMLHttpRequest"},'
+        '    body: JSON.stringify({tool_id: toolId, tool_type: toolType})'
+        '  })'
+        '  .then(function(r){return r.json();})'
+        '  .then(function(data){'
+        '    if(data.error){'
+        '      removeTypingIndicator();'
+        '      addAiBubble("שגיאה: " + data.error);'
+        '      setLoading(false);'
+        '      return;'
+        '    }'
+        '    selectedToolContext = data.tool;'
+        '    var userMsg = "אני רוצה לשפר את הכלי: " + toolName;'
+        '    fetch("/tools/create/chat", {'
+        '      method: "POST",'
+        '      headers: {"Content-Type":"application/json","X-Requested-With":"XMLHttpRequest"},'
+        '      body: JSON.stringify({session_id: CHAT_SESSION_ID, message: userMsg, tool_context: data.tool})'
+        '    })'
+        '    .then(function(r){return r.json();})'
+        '    .then(function(chatData){'
+        '      removeTypingIndicator();'
+        '      if(chatData.error){ addAiBubble("שגיאה: " + chatData.error); }'
+        '      else {'
+        '        addAiBubble(chatData.assistant_message);'
+        '        if(chatData.has_tool && chatData.tool_definition) addToolReady(chatData.tool_definition);'
+        '      }'
+        '      setLoading(false);'
+        '    })'
+        '    .catch(function(){'
+        '      removeTypingIndicator();'
+        '      addAiBubble("שגיאה בתקשורת. נסה שוב.");'
+        '      setLoading(false);'
+        '    });'
+        '  })'
+        '  .catch(function(){'
+        '    removeTypingIndicator();'
+        '    addAiBubble("שגיאה בטעינת פרטי הכלי. נסה שוב.");'
+        '    setLoading(false);'
+        '  });'
+        '}'
+        ''
+        '/* Close tool picker on overlay click */'
+        'document.getElementById("toolPickerOverlay").addEventListener("click", function(e){'
+        '  if(e.target === this) hideToolPicker();'
+        '});'
+        ''
+        '/* Delegate clicks on tool picker cards */'
+        'document.getElementById("toolPickerBody").addEventListener("click", function(e){'
+        '  var card = e.target.closest(".tool-picker-card");'
+        '  if(!card) return;'
+        '  var tType = card.getAttribute("data-tool-type");'
+        '  var tId = card.getAttribute("data-tool-id");'
+        '  var tName = card.getAttribute("data-tool-name");'
+        '  if(tType && tId) selectTool(tType, tId, tName || "");'
+        '});'
+        ''
         '/* Auto-scroll on page load */'
         'scrollToBottom();'
         '</script>'
     )
 
     return render("בניית כלי עם AI", body, lang=lang, topbar_greeting=text["topbar_greeting"], logout_label=text["logout"], show_lang_switch=True)
+
+
+@app.route("/tools/create/list-tools", methods=["GET"])
+@login_required
+def tools_create_list_tools():
+    """Return JSON list of tools available to the current user for improvement."""
+    user_id = session["user_id"]
+    tools_list = []
+
+    with get_db() as db:
+        # 1) Built-in scripts assigned to the user
+        perms = db.execute("SELECT script_id FROM permissions WHERE user_id=?", (user_id,)).fetchall()
+        for p in perms:
+            sid = p["script_id"]
+            if sid in SCRIPT_REGISTRY:
+                s = SCRIPT_REGISTRY[sid]
+                tools_list.append({
+                    "id": sid,
+                    "name": s.get("name", sid),
+                    "description": (s.get("desc") or "")[:120],
+                    "icon": s.get("icon", ""),
+                    "type": "builtin",
+                })
+
+        # 2) Marketplace tools the user created (any status)
+        created = db.execute(
+            "SELECT id, name, description, icon, status FROM marketplace_tools WHERE creator_id=? ORDER BY created_at DESC",
+            (user_id,),
+        ).fetchall()
+        for t in created:
+            tools_list.append({
+                "id": t["id"],
+                "name": t["name"],
+                "description": (t["description"] or "")[:120],
+                "icon": t["icon"] or "",
+                "type": "marketplace",
+                "subtype": "created",
+                "status": t["status"],
+            })
+
+        # 3) Marketplace tools the user installed (approved only)
+        installed = db.execute(
+            """SELECT t.id, t.name, t.description, t.icon, t.status
+            FROM marketplace_tools t JOIN tool_installs i ON i.tool_id = t.id
+            WHERE i.user_id=? AND t.status='approved' AND t.is_public=1
+              AND t.creator_id != ?
+            ORDER BY t.name""",
+            (user_id, user_id),
+        ).fetchall()
+        for t in installed:
+            tools_list.append({
+                "id": t["id"],
+                "name": t["name"],
+                "description": (t["description"] or "")[:120],
+                "icon": t["icon"] or "",
+                "type": "marketplace",
+                "subtype": "installed",
+            })
+
+    return jsonify({"ok": True, "tools": tools_list})
+
+
+@app.route("/tools/create/load-tool", methods=["POST"])
+@login_required
+def tools_create_load_tool():
+    """Load the full definition of a tool for the AI improvement context."""
+    data = request.get_json(silent=True) or {}
+    tool_id = data.get("tool_id", "")
+    tool_type = data.get("tool_type", "")
+
+    if not tool_id or not tool_type:
+        return jsonify({"error": "חסר מזהה כלי"}), 400
+
+    if tool_type == "builtin":
+        sid = str(tool_id)
+        if sid not in SCRIPT_REGISTRY:
+            return jsonify({"error": "כלי לא נמצא"}), 404
+        s = SCRIPT_REGISTRY[sid]
+        # Build a summary of the builtin script metadata (no processor function)
+        tool_info = {
+            "type": "builtin",
+            "id": sid,
+            "name": s.get("name", sid),
+            "description": s.get("desc", ""),
+            "icon": s.get("icon", ""),
+            "accept": s.get("accept", ""),
+            "requires_mapping_confirmation": s.get("requires_mapping_confirmation", False),
+            "background_queue": s.get("background_queue", False),
+            "help_intro": s.get("help_intro", ""),
+            "help_items": s.get("help_items", []),
+            "rules_intro": s.get("rules_intro", ""),
+            "rules_items": s.get("rules_items", []),
+            "filter_fields": s.get("filter_fields", []),
+        }
+        return jsonify({"ok": True, "tool": tool_info})
+
+    elif tool_type == "marketplace":
+        tool_id_int = int(tool_id)
+        with get_db() as db:
+            t = db.execute("SELECT * FROM marketplace_tools WHERE id=?", (tool_id_int,)).fetchone()
+            if not t:
+                return jsonify({"error": "כלי לא נמצא"}), 404
+            # Verify access: user is creator or has installed
+            user_id = session["user_id"]
+            is_creator = t["creator_id"] == user_id
+            is_installed = db.execute(
+                "SELECT 1 FROM tool_installs WHERE tool_id=? AND user_id=?",
+                (tool_id_int, user_id),
+            ).fetchone()
+            if not is_creator and not is_installed:
+                return jsonify({"error": "אין הרשאה לכלי זה"}), 403
+
+            try:
+                definition = json.loads(t["definition_json"])
+            except (json.JSONDecodeError, TypeError):
+                definition = {}
+
+            tool_info = {
+                "type": "marketplace",
+                "id": tool_id_int,
+                "name": t["name"],
+                "description": t["description"] or "",
+                "icon": t["icon"] or "",
+                "category": t["category"] or "general",
+                "status": t["status"],
+                "is_creator": is_creator,
+                "definition": definition,
+            }
+            return jsonify({"ok": True, "tool": tool_info})
+
+    return jsonify({"error": "סוג כלי לא חוקי"}), 400
 
 
 @app.route("/tools/create/chat", methods=["POST"])
@@ -10344,6 +10902,11 @@ def tools_create_chat():
     else:
         chat_session_id = request.form.get("session_id", "")
         user_message = request.form.get("message", "").strip()
+
+    # Optional tool context for improvement flow
+    tool_context = None
+    if is_ajax:
+        tool_context = (data or {}).get("tool_context")
 
     if not user_message:
         if is_ajax:
@@ -10366,6 +10929,26 @@ def tools_create_chat():
             messages = json.loads(chat_data["messages_json"])
         except (json.JSONDecodeError, TypeError):
             messages = []
+
+    # If tool context is provided (improvement flow), inject it before the user message
+    if tool_context and isinstance(tool_context, dict):
+        context_text = "[TOOL_CONTEXT] המשתמש בחר לשפר כלי קיים.\n"
+        context_text += "סוג: " + tool_context.get("type", "unknown") + "\n"
+        context_text += "שם: " + tool_context.get("name", "") + "\n"
+        if tool_context.get("description"):
+            context_text += "תיאור: " + tool_context["description"] + "\n"
+        if tool_context.get("type") == "builtin":
+            context_text += "הערה: זהו כלי מובנה במערכת. לא ניתן לערוך אותו ישירות. ניתן להציע יצירת כלי חדש בשוק הכלים שמשפר את הפונקציונליות.\n"
+            if tool_context.get("help_intro"):
+                context_text += "עזרה: " + tool_context["help_intro"] + "\n"
+            if tool_context.get("rules_intro"):
+                context_text += "כללים: " + tool_context["rules_intro"] + "\n"
+            if tool_context.get("rules_items"):
+                context_text += "פרטי כללים:\n" + "\n".join("- " + r for r in tool_context["rules_items"]) + "\n"
+        elif tool_context.get("type") == "marketplace" and tool_context.get("definition"):
+            context_text += "הגדרת הכלי הנוכחית:\n```json\n" + json.dumps(tool_context["definition"], ensure_ascii=False, indent=2) + "\n```\n"
+        messages.append({"role": "user", "content": context_text})
+        messages.append({"role": "assistant", "content": "קיבלתי את פרטי הכלי. אני מבין את המבנה הנוכחי שלו. מה תרצה לשפר או לשנות?"})
 
     # Add user message
     messages.append({"role": "user", "content": user_message})
@@ -10402,26 +10985,68 @@ def tools_create_chat():
 @app.route("/tools/create/upload", methods=["POST"])
 @login_required
 def tools_create_upload():
+    is_ajax = request.headers.get("X-Requested-With") == "XMLHttpRequest"
     chat_session_id = request.form.get("session_id", "")
-    file_obj = request.files.get("sample_file")
 
-    if not file_obj or not file_obj.filename:
+    # Support multiple files via getlist
+    file_list = request.files.getlist("sample_file")
+    if not file_list or all(not f.filename for f in file_list):
+        if is_ajax:
+            return jsonify({"error": "לא נבחר קובץ"}), 400
         add_flash("לא נבחר קובץ")
         return redirect("/tools/create")
 
-    validation_error, ext = validate_upload(file_obj)
-    if validation_error:
-        add_flash("שגיאה בקובץ: " + validation_error)
+    temp_paths = []
+    analyses = []
+    file_names = []
+    file_types = []  # 'image' or 'data'
+    errors = []
+
+    for file_obj in file_list:
+        if not file_obj or not file_obj.filename:
+            continue
+        validation_error, ext = validate_upload_with_images(file_obj)
+        if validation_error:
+            errors.append(f"{file_obj.filename}: {validation_error}")
+            continue
+
+        # Save temp file for analysis
+        uid = str(uuid.uuid4())[:8]
+        safe_name = file_obj.filename.replace(" ", "_")
+        temp_path = str(UPLOAD_FOLDER / f"{uid}_{safe_name}")
+        file_obj.save(temp_path)
+        temp_paths.append(temp_path)
+        file_names.append(file_obj.filename)
+
+        if ext in IMAGE_EXTENSIONS:
+            file_types.append("image")
+            analysis = analyze_image_for_chat(temp_path, file_obj.filename)
+        else:
+            file_types.append("data")
+            analysis = analyze_sample_file_for_chat(temp_path, ext)
+        analyses.append(f"--- {file_obj.filename} ---\n{analysis}")
+
+    if not analyses and errors:
+        err_msg = "שגיאה בקבצים: " + "; ".join(errors)
+        if is_ajax:
+            return jsonify({"error": err_msg}), 400
+        add_flash(err_msg)
         return redirect("/tools/create")
 
-    # Save temp file for analysis
-    uid = str(uuid.uuid4())[:8]
-    temp_path = str(UPLOAD_FOLDER / f"{uid}_sample.{ext}")
-    file_obj.save(temp_path)
-
     try:
-        # Analyze file
-        analysis = analyze_sample_file_for_chat(temp_path, ext)
+        # Build combined analysis message
+        if len(analyses) == 1:
+            combined = analyses[0].split("---\n", 1)[-1]  # strip file header for single
+            if file_types[0] == "image":
+                user_content = f"העליתי תמונה ({file_names[0]}).\n\n{combined}"
+            else:
+                user_content = f"העליתי קובץ דוגמה ({file_names[0]}).\n\nניתוח הקובץ:\n{combined}\n\nבבקשה נתח את העמודות ושאל אותי מה אני רוצה לעשות עם הנתונים."
+        else:
+            combined = "\n\n".join(analyses)
+            names_str = ", ".join(file_names)
+            user_content = f"העליתי {len(file_names)} קבצים ({names_str}).\n\nניתוח הקבצים:\n{combined}\n\nבבקשה נתח את הקבצים ושאל אותי מה אני רוצה לעשות עם הנתונים."
+        if errors:
+            user_content += "\n\n(שגיאות: " + "; ".join(errors) + ")"
 
         # Get chat session
         with get_db() as db:
@@ -10430,6 +11055,8 @@ def tools_create_upload():
                 (chat_session_id, session["user_id"]),
             ).fetchone()
             if not chat_data:
+                if is_ajax:
+                    return jsonify({"error": "שיחה לא נמצאה"}), 404
                 add_flash("שיחה לא נמצאה")
                 return redirect("/tools/create")
 
@@ -10439,15 +11066,15 @@ def tools_create_upload():
                 messages = []
 
         # Add file analysis as user message
-        messages.append({
-            "role": "user",
-            "content": f"העליתי קובץ דוגמה ({file_obj.filename}).\n\nניתוח הקובץ:\n{analysis}\n\nבבקשה נתח את העמודות ושאל אותי מה אני רוצה לעשות עם הנתונים.",
-        })
+        messages.append({"role": "user", "content": user_content})
 
         # Call Claude
         api_messages = [{"role": m["role"], "content": m["content"]} for m in messages]
         assistant_response = call_claude_chat(api_messages)
         messages.append({"role": "assistant", "content": assistant_response})
+
+        # Check for tool definition
+        tool_def = extract_tool_json_from_message(assistant_response)
 
         # Save
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -10458,11 +11085,24 @@ def tools_create_upload():
             )
             db.commit()
     finally:
-        try:
-            os.remove(temp_path)
-        except OSError:
-            pass
+        for tp in temp_paths:
+            try:
+                os.remove(tp)
+            except OSError:
+                pass
 
+    log_user_activity("ai_chat_upload", "העלאת קובץ לשיחת AI", "", "", f"session={chat_session_id}, files={','.join(file_names)}")
+
+    if is_ajax:
+        return jsonify({
+            "ok": True,
+            "user_content": user_content,
+            "assistant_message": assistant_response,
+            "has_tool": tool_def is not None,
+            "tool_definition": json.dumps(tool_def, ensure_ascii=False) if tool_def else None,
+            "file_names": file_names,
+            "file_types": file_types,
+        })
     return redirect("/tools/create")
 
 
