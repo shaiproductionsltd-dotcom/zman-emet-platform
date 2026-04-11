@@ -9836,14 +9836,51 @@ TOOL_CREATION_SYSTEM_PROMPT = """אתה העוזר החכם של Scriptly — מ
 - **אם יש כמה קבצים**: נתח כל אחד בנפרד, הצג סיכום ברור, ושאל מה הקשר ביניהם ומה המשתמש רוצה לעשות איתם.
 
 ## מבנה הגדרת כלי (פנימי — אל תציג למשתמש)
-הגדרת הכלי היא JSON בפורמט הבא. בנה אותו בעצמך על סמך מה שהמשתמש תיאר:
-```
-name, description, input_type, required_fields, steps (action+params), output_format (title+columns)
+בנה JSON בפורמט הבא. עטוף ב-```json כשמוכן. המערכת תזהה אוטומטית.
+
+```json
+{
+  "name": "שם בעברית",
+  "description": "תיאור קצר",
+  "icon": "🔧",
+  "category": "general",
+  "input_type": "xlsx",
+  "required_fields": ["שם_עמודה1", "שם_עמודה2"],
+  "steps": [
+    {"action": "ACTION_NAME", ...params}
+  ],
+  "output_format": {"title": "כותרת הדוח", "columns": ["עמודה1", "עמודה2"]}
+}
 ```
 
-פעולות זמינות: filter, group_by, sum, count, average, min, max, sort, rename_column, select_columns, add_column, format_number, concatenate, fill_missing, remove_duplicates, math, date_extract, pivot.
+## רשימת הפעולות המותרות — חובה להשתמש רק בפעולות האלה!!!
+אתה יכול להשתמש **אך ורק** בפעולות הבאות. כל פעולה אחרת תגרום לשגיאה:
 
-כשאתה מוכן לבנות — עטוף את ה-JSON בלוק ```json. המערכת תזהה אותו אוטומטית.
+| action | פרמטרים | מה עושה |
+|--------|---------|---------|
+| `filter` | field, operator (>, <, >=, <=, ==, !=, contains, not_contains, is_empty, not_empty), value | מסנן שורות |
+| `group_by` | field, agg_field, agg_func (sum/count/average/min/max) | מקבץ ומחשב |
+| `sum` | field | מוסיף שורת סיכום |
+| `count` | field | סופר ערכים |
+| `average` | field | ממוצע |
+| `min` | field | מינימום |
+| `max` | field | מקסימום |
+| `sort` | field, order (asc/desc) | ממיין |
+| `rename_column` | old_name, new_name | משנה שם עמודה |
+| `select_columns` | columns (רשימה) | משאיר רק עמודות מסוימות |
+| `add_column` | name, value | מוסיף עמודה עם ערך קבוע |
+| `format_number` | field, decimals | עיגול מספרים |
+| `concatenate` | fields (רשימה), separator, result_name | מאחד עמודות לטקסט |
+| `split_column` | field, separator, new_columns | מפצל עמודה |
+| `fill_missing` | field, value | ממלא תאים ריקים |
+| `remove_duplicates` | fields (רשימה, אופציונלי) | מסיר כפילויות |
+| `math` | field_a, operator (+,-,*,/), field_b, result_name | חישוב מתמטי |
+| `date_extract` | field, part (year/month/day/weekday) | חילוץ חלק מתאריך |
+| `pivot` | index, columns, values, agg_func | טבלת ציר |
+| `unpivot` | id_vars, value_vars | הפוך טבלת ציר |
+
+**חשוב מאוד**: אל תמציא פעולות חדשות! אם הבקשה דורשת משהו שלא קיים ברשימה, הסבר למשתמש מה אפשר לעשות עם הפעולות הקיימות והצע חלופה.
+**חשוב**: category חייב להיות אחד מ: general, payroll, attendance, hr, finance, reports.
 
 ## שיפור כלים קיימים
 כשמגיע הודעת [TOOL_CONTEXT]:
@@ -10447,7 +10484,7 @@ def tools_create():
                     '<input type="hidden" name="session_id" value="' + str(chat_session_id) + '">'
                     '<input type="hidden" name="definition" value="' + esc(json.dumps(tool_def, ensure_ascii=False)) + '">'
                     '<div style="display:flex;gap:8px;flex-wrap:wrap">'
-                    '<button type="submit" name="action" value="save_draft" class="btn btn-blue" style="border-radius:10px;font-size:13px">&#128190; שמור כטיוטה</button>'
+                    '<button type="submit" name="action" value="save_draft" class="btn btn-blue" style="border-radius:10px;font-size:13px">&#128190; שמור ובדוק</button>'
                     '<button type="submit" name="action" value="publish" class="btn btn-blue" style="border-radius:10px;font-size:13px;background:#047857">&#128228; שלח לאישור ופרסום</button>'
                     '</div></form></div>'
                 )
@@ -10682,7 +10719,7 @@ def tools_create():
         '    + \'<input type="hidden" name="session_id" value="\' + CHAT_SESSION_ID + \'">\''
         '    + \'<input type="hidden" name="definition" value="\' + toolDefJson.replace(/"/g, "&quot;") + \'">\''
         '    + \'<div style="display:flex;gap:8px;flex-wrap:wrap">\''
-        '    + \'<button type="submit" name="action" value="save_draft" class="btn btn-blue" style="border-radius:10px;font-size:13px">&#128190; שמור כטיוטה</button>\''
+        '    + \'<button type="submit" name="action" value="save_draft" class="btn btn-blue" style="border-radius:10px;font-size:13px">&#128190; שמור ובדוק</button>\''
         '    + \'<button type="submit" name="action" value="publish" class="btn btn-blue" style="border-radius:10px;font-size:13px;background:#047857">&#128228; שלח לאישור ופרסום</button>\''
         '    + \'</div></form>\';'
         '  el.appendChild(div);'
@@ -11416,10 +11453,12 @@ def tools_create_save():
         add_flash("הגדרת הכלי שגויה")
         return redirect("/tools/create")
 
-    ok, errors = validate_tool_definition(definition)
-    if not ok:
-        add_flash("שגיאות בהגדרת הכלי: " + "; ".join(errors))
-        return redirect("/tools/create")
+    # For publish: validate strictly. For draft: validate lightly (allow testing)
+    if action != "save_draft":
+        ok, errors = validate_tool_definition(definition)
+        if not ok:
+            add_flash("שגיאות בהגדרת הכלי: " + "; ".join(errors))
+            return redirect("/tools/create")
 
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     status = "draft" if action == "save_draft" else "pending_review"
@@ -11439,6 +11478,7 @@ def tools_create_save():
              json.dumps(definition, ensure_ascii=False), status, now, now),
         )
         db.commit()
+        new_tool_id = db.execute("SELECT id FROM marketplace_tools WHERE creator_id=? ORDER BY id DESC LIMIT 1", (session["user_id"],)).fetchone()["id"]
 
         # Close the chat session
         db.execute(
@@ -11449,10 +11489,176 @@ def tools_create_save():
 
     if status == "pending_review":
         add_flash("הכלי נשלח לאישור! הוא יופיע בשוק לאחר בדיקה.")
+        log_user_activity("create_tool", "יצירת כלי AI", "", name, f"status={status}")
+        return redirect("/marketplace")
     else:
-        add_flash("הכלי נשמר כטיוטה.")
-    log_user_activity("create_tool", "יצירת כלי AI", "", name, f"status={status}")
-    return redirect("/marketplace")
+        add_flash("הכלי נשמר! תוכל לבדוק אותו כאן לפני פרסום.")
+        log_user_activity("create_tool", "יצירת כלי AI", "", name, f"status={status}")
+        return redirect(f"/tools/my-tools")
+
+
+# ── My Tools: Private tool area ───────────────────────────────────
+
+@app.route("/tools/my-tools")
+@login_required
+def my_tools():
+    if session.get("is_admin"):
+        return redirect("/admin")
+
+    lang = get_flow_lang()
+    text = get_flow_text(lang)
+    user_id = session["user_id"]
+
+    with get_db() as db:
+        # User's created tools
+        created = db.execute(
+            "SELECT * FROM marketplace_tools WHERE creator_id=? ORDER BY updated_at DESC",
+            (user_id,),
+        ).fetchall()
+        # User's saved/installed tools (not created by user)
+        saved = db.execute(
+            """SELECT t.* FROM marketplace_tools t
+               JOIN tool_installs i ON i.tool_id = t.id
+               WHERE i.user_id=? AND t.creator_id != ?
+               ORDER BY i.created_at DESC""",
+            (user_id, user_id),
+        ).fetchall()
+
+    status_labels = {"draft": "טיוטה", "pending_review": "ממתין לאישור", "approved": "מאושר", "rejected": "נדחה"}
+    status_colors = {"draft": "#f59e0b", "pending_review": "#3b82f6", "approved": "#047857", "rejected": "#ef4444"}
+
+    # Build created tools cards
+    created_html = ""
+    for t in created:
+        st = t["status"]
+        st_label = status_labels.get(st, st)
+        st_color = status_colors.get(st, "#64748b")
+        icon = t["icon"] or "&#128295;"
+        name = esc(t["name"])
+        desc = esc(t["description"] or "")[:80]
+        tid = t["id"]
+
+        buttons = ""
+        # Test button — always available
+        buttons += f'<a href="/marketplace/tool/{tid}/run" class="btn btn-blue" style="font-size:12px;padding:6px 12px;border-radius:8px">&#9654; בדיקה</a> '
+        # Improve button — open chat with tool context
+        buttons += f'<a href="/tools/create" onclick="sessionStorage.setItem(\'improveToolId\',\'{tid}\')" class="btn btn-gray" style="font-size:12px;padding:6px 12px;border-radius:8px">&#9998; שיפור</a> '
+        # Publish button — only for drafts
+        if st == "draft":
+            buttons += (
+                f'<form method="post" action="/tools/my-tools/{tid}/publish" style="display:inline">'
+                f'<button type="submit" class="btn btn-blue" style="font-size:12px;padding:6px 12px;border-radius:8px;background:#047857">&#128228; שלח לפרסום</button>'
+                f'</form> '
+            )
+        # Delete button
+        buttons += (
+            f'<form method="post" action="/tools/my-tools/{tid}/delete" style="display:inline"'
+            f' onsubmit="return confirm(\'למחוק את הכלי?\')">'
+            f'<button type="submit" class="btn btn-gray" style="font-size:12px;padding:6px 12px;border-radius:8px;color:#ef4444">&#128465; מחיקה</button>'
+            f'</form>'
+        )
+
+        created_html += (
+            f'<div style="border:1.5px solid #e2e8f0;border-radius:14px;padding:16px;margin-bottom:12px;background:white;'
+            f'transition:box-shadow .2s;display:flex;align-items:flex-start;gap:14px" '
+            f'onmouseover="this.style.boxShadow=\'0 4px 16px rgba(0,0,0,0.08)\'" '
+            f'onmouseout="this.style.boxShadow=\'none\'">'
+            f'<div style="font-size:32px;flex-shrink:0">{icon}</div>'
+            f'<div style="flex:1;min-width:0">'
+            f'<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;flex-wrap:wrap">'
+            f'<span style="font-weight:700;font-size:15px;color:#1e3a8a">{name}</span>'
+            f'<span style="font-size:11px;padding:2px 8px;border-radius:99px;background:{st_color}15;color:{st_color};font-weight:700">{st_label}</span>'
+            f'</div>'
+            f'<div style="font-size:13px;color:#64748b;margin-bottom:8px">{desc}</div>'
+            f'<div style="display:flex;gap:6px;flex-wrap:wrap">{buttons}</div>'
+            f'</div>'
+            f'</div>'
+        )
+
+    if not created:
+        created_html = '<div style="text-align:center;padding:2rem;color:#94a3b8">עדיין לא יצרת כלים. <a href="/tools/create" style="color:#2563eb">צור כלי חדש</a></div>'
+
+    # Build saved tools cards
+    saved_html = ""
+    for t in saved:
+        icon = t["icon"] or "&#128295;"
+        name = esc(t["name"])
+        desc = esc(t["description"] or "")[:80]
+        tid = t["id"]
+        saved_html += (
+            f'<div style="border:1.5px solid #e2e8f0;border-radius:14px;padding:16px;margin-bottom:12px;background:white;'
+            f'display:flex;align-items:center;gap:14px">'
+            f'<div style="font-size:28px;flex-shrink:0">{icon}</div>'
+            f'<div style="flex:1;min-width:0">'
+            f'<div style="font-weight:700;font-size:14px;color:#1e3a8a;margin-bottom:2px">{name}</div>'
+            f'<div style="font-size:12px;color:#64748b">{desc}</div>'
+            f'</div>'
+            f'<a href="/marketplace/tool/{tid}/run" class="btn btn-blue" style="font-size:12px;padding:6px 12px;border-radius:8px">&#9654; הפעל</a>'
+            f'</div>'
+        )
+
+    if not saved:
+        saved_html = '<div style="text-align:center;padding:2rem;color:#94a3b8">אין כלים שמורים. <a href="/marketplace" style="color:#2563eb">גלה כלים בשוק</a></div>'
+
+    body = (
+        '<div style="max-width:800px;margin:0 auto">'
+        '<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:1.5rem">'
+        '<h2 style="margin:0;font-size:22px;font-weight:800;color:#1e3a8a">&#128188; הכלים שלי</h2>'
+        '<div style="display:flex;gap:8px">'
+        '<a href="/tools/create" class="btn btn-blue" style="font-size:13px;border-radius:10px">&#10133; כלי חדש</a>'
+        '<a href="/marketplace" class="btn btn-gray" style="font-size:13px;border-radius:10px">&#128722; שוק הכלים</a>'
+        '</div></div>'
+        # Created tools section
+        '<div style="margin-bottom:2rem">'
+        '<h3 style="font-size:16px;font-weight:700;color:#1e3a8a;margin-bottom:12px;padding-bottom:8px;border-bottom:2px solid #dbeafe">&#9997; כלים שיצרתי</h3>'
+        + created_html
+        + '</div>'
+        # Saved/favorite tools section
+        '<div>'
+        '<h3 style="font-size:16px;font-weight:700;color:#1e3a8a;margin-bottom:12px;padding-bottom:8px;border-bottom:2px solid #dbeafe">&#11088; כלים שמורים</h3>'
+        + saved_html
+        + '</div>'
+        '</div>'
+    )
+
+    return render("הכלים שלי", body, lang=lang, topbar_greeting=text["topbar_greeting"], logout_label=text["logout"], show_lang_switch=True)
+
+
+@app.route("/tools/my-tools/<int:tool_id>/publish", methods=["POST"])
+@login_required
+def my_tools_publish(tool_id):
+    with get_db() as db:
+        tool = db.execute("SELECT * FROM marketplace_tools WHERE id=? AND creator_id=?", (tool_id, session["user_id"])).fetchone()
+        if not tool:
+            add_flash("הכלי לא נמצא")
+            return redirect("/tools/my-tools")
+        # Validate before publishing
+        try:
+            definition = json.loads(tool["definition_json"])
+        except (json.JSONDecodeError, TypeError):
+            add_flash("הגדרת הכלי שגויה")
+            return redirect("/tools/my-tools")
+
+        ok, errors = validate_tool_definition(definition)
+        if not ok:
+            add_flash("שגיאות בהגדרת הכלי: " + "; ".join(errors))
+            return redirect("/tools/my-tools")
+
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        db.execute("UPDATE marketplace_tools SET status='pending_review', updated_at=? WHERE id=?", (now, tool_id))
+        db.commit()
+    add_flash("הכלי נשלח לאישור!")
+    return redirect("/tools/my-tools")
+
+
+@app.route("/tools/my-tools/<int:tool_id>/delete", methods=["POST"])
+@login_required
+def my_tools_delete(tool_id):
+    with get_db() as db:
+        db.execute("DELETE FROM marketplace_tools WHERE id=? AND creator_id=?", (tool_id, session["user_id"]))
+        db.commit()
+    add_flash("הכלי נמחק.")
+    return redirect("/tools/my-tools")
 
 
 # ── Admin: Tool Moderation ────────────────────────────────────────
