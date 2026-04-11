@@ -362,7 +362,7 @@ def process_legacy_xls(input_path, output_path):
         wb_in = xlrd.open_workbook(input_path, formatting_info=True)
         cmap = wb_in.colour_map
         preserve_formatting = True
-    except NotImplementedError:
+    except (NotImplementedError, TypeError):
         wb_in = xlrd.open_workbook(input_path)
         cmap = {}
         preserve_formatting = False
@@ -10354,7 +10354,8 @@ def run_marketplace_tool(tool_id):
 
         # Check user has installed it or is the creator
         is_installed = db.execute("SELECT 1 FROM tool_installs WHERE tool_id=? AND user_id=?", (tool_id, session["user_id"])).fetchone()
-        if not is_installed and tool["creator_id"] != session["user_id"]:
+        is_creator = tool["creator_id"] == session["user_id"]
+        if not is_installed and not is_creator:
             add_flash("יש להתקין את הכלי לפני השימוש")
             return redirect("/marketplace/tool/" + str(tool_id))
 
@@ -10402,12 +10403,68 @@ def run_marketplace_tool(tool_id):
                 except OSError:
                     pass
 
+    # ── Chat session for tool improvement (creator only) ──
+    chat_session_id = None
+    chat_msgs_html = ""
+    if is_creator:
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        with get_db() as db:
+            existing = db.execute(
+                "SELECT id FROM tool_chat_sessions WHERE user_id=? AND tool_id=? AND status='active' ORDER BY created_at DESC LIMIT 1",
+                (session["user_id"], tool_id),
+            ).fetchone()
+            if existing:
+                chat_session_id = existing["id"]
+            else:
+                db.execute(
+                    "INSERT INTO tool_chat_sessions(user_id, messages_json, tool_id, status, created_at, updated_at) VALUES (?,?,?,?,?,?)",
+                    (session["user_id"], "[]", tool_id, "active", now, now),
+                )
+                db.commit()
+                chat_session_id = db.execute(
+                    "SELECT id FROM tool_chat_sessions WHERE user_id=? AND tool_id=? ORDER BY id DESC LIMIT 1",
+                    (session["user_id"], tool_id),
+                ).fetchone()["id"]
+
+            # Build existing messages HTML
+            chat_data = db.execute("SELECT messages_json FROM tool_chat_sessions WHERE id=?", (chat_session_id,)).fetchone()
+        existing_messages = []
+        if chat_data:
+            try:
+                existing_messages = json.loads(chat_data["messages_json"])
+            except (json.JSONDecodeError, TypeError):
+                existing_messages = []
+
+        for msg in existing_messages:
+            if msg["role"] == "user":
+                user_text = esc(msg["content"]).replace("\n", "<br>")
+                # Skip internal tool context messages
+                if user_text.startswith("[TOOL_CONTEXT]"):
+                    continue
+                chat_msgs_html += '<div class="tr-chat-bubble tr-chat-user"><div class="tr-chat-bubble-inner tr-chat-user-inner">' + user_text + '</div></div>'
+            else:
+                content_html = esc(msg["content"]).replace("```json", '<pre style="background:#0f172a;color:#38bdf8;padding:12px;border-radius:10px;font-size:12px;overflow-x:auto;direction:ltr;text-align:left">').replace("```", "</pre>").replace("\n", "<br>")
+                chat_msgs_html += '<div class="tr-chat-bubble tr-chat-ai"><div class="tr-chat-bubble-inner tr-chat-ai-inner">' + content_html + '</div></div>'
+                tool_def = extract_tool_json_from_message(msg["content"])
+                if tool_def:
+                    chat_msgs_html += (
+                        '<div class="tr-chat-tool-ready">'
+                        '<div style="font-size:13px;font-weight:700;color:#047857;margin-bottom:6px">&#127881; הכלי מוכן!</div>'
+                        '<button type="button" class="btn btn-blue" style="border-radius:10px;font-size:12px;background:#047857" '
+                        'onclick=\'updateToolDef(' + esc(json.dumps(json.dumps(tool_def, ensure_ascii=False))) + ')\'>&#128190; עדכן את הכלי</button>'
+                        '</div>'
+                    )
+
+    # ── Build left panel (tool run) ──
+    back_link = '/tools/my-tools' if is_creator else '/marketplace'
+    back_label = 'חזרה לכלים שלי' if is_creator else 'חזרה לשוק הכלים'
+
     if result:
-        body = (
+        left_panel = (
             '<div class="card" style="text-align:center">'
-            '<div style="font-size:48px;margin-bottom:12px">✅</div>'
+            '<div style="font-size:48px;margin-bottom:12px">&#10004;&#65039;</div>'
             '<div style="font-size:18px;font-weight:800;color:#047857;margin-bottom:12px">הקובץ מוכן!</div>'
-            '<a href="/download/' + esc(result) + '" class="btn btn-blue" style="text-decoration:none;display:inline-flex;padding:12px 28px;border-radius:12px;font-size:15px;margin-bottom:12px">⬇ הורדת הקובץ</a><br>'
+            '<a href="/download/' + esc(result) + '" class="btn btn-blue" style="text-decoration:none;display:inline-flex;padding:12px 28px;border-radius:12px;font-size:15px;margin-bottom:12px">&#11015; הורדת הקובץ</a><br>'
             '<a href="/marketplace/tool/' + str(tool_id) + '/run" style="color:#2563eb;font-size:13px;text-decoration:none">עיבוד קובץ נוסף</a>'
             '</div>'
         )
@@ -10419,8 +10476,7 @@ def run_marketplace_tool(tool_id):
         elif input_type in ("xlsx", "xls"):
             accept_val = ".xls,.xlsx"
 
-        body = (
-            '<div style="margin-bottom:1rem"><a href="/marketplace" style="color:#2563eb;font-size:13px;text-decoration:none">← חזרה לשוק הכלים</a></div>'
+        left_panel = (
             '<div class="card">'
             '<div style="font-size:28px;margin-bottom:8px">' + esc(tool["icon"] or "🔧") + '</div>'
             '<h2 style="font-size:20px;font-weight:800;color:#1e3a8a;margin-bottom:4px;border:none;padding:0">' + esc(tool["name"]) + '</h2>'
@@ -10428,17 +10484,342 @@ def run_marketplace_tool(tool_id):
             + error
             + '<form method="post" enctype="multipart/form-data">'
             '<div class="drop-zone" id="dropZone" onclick="document.getElementById(\'fileInput\').click()">'
-            '<div style="font-size:32px;margin-bottom:8px">📁</div>'
+            '<div style="font-size:32px;margin-bottom:8px">&#128193;</div>'
             '<div style="font-size:14px;color:#475569">לחץ לבחירת קובץ או גרור לכאן</div>'
             '<div style="font-size:12px;color:#94a3b8;margin-top:4px" id="fileName">נתמכים: ' + esc(accept_val) + '</div>'
             '<input type="file" name="file" id="fileInput" accept="' + esc(accept_val) + '" style="display:none" onchange="document.getElementById(\'fileName\').textContent=this.files[0]?this.files[0].name:\'\'">'
             '</div>'
-            '<button type="submit" class="btn btn-blue" style="width:100%;padding:14px;border-radius:12px;font-size:15px">▶ הרץ</button>'
+            '<button type="submit" class="btn btn-blue" style="width:100%;padding:14px;border-radius:12px;font-size:15px">&#9654; הרץ</button>'
             '</form>'
             '</div>'
         )
 
+    # ── Build right panel (chat) — only for creator ──
+    right_panel = ""
+    chat_js = ""
+    if is_creator:
+        right_panel = (
+            '<div class="tr-chat-panel" id="trChatPanel">'
+            '<div class="tr-chat-header">'
+            '<div class="tr-chat-header-title">&#129302; שיפור עם AI</div>'
+            '<div class="tr-chat-header-sub">בקש שינויים והכלי יתעדכן</div>'
+            '</div>'
+            '<div class="tr-chat-messages" id="trChatMessages">'
+            # Welcome message
+            '<div class="tr-chat-bubble tr-chat-ai">'
+            '<div class="tr-chat-bubble-inner tr-chat-ai-inner">'
+            'היי! &#128075; אני כאן כדי לעזור לשפר את הכלי.<br>'
+            'נסה להריץ את הכלי ואם יש בעיה — ספר לי מה לא עבד ואני אתקן.'
+            '</div></div>'
+            + chat_msgs_html
+            + '</div>'
+            # Input area
+            '<div class="tr-chat-input-area">'
+            '<div class="tr-chat-input-row">'
+            '<textarea id="trChatInput" class="tr-chat-textarea" placeholder="מה לשפר בכלי?" rows="1"></textarea>'
+            '<button type="button" id="trChatSendBtn" class="tr-chat-send-btn" onclick="trSendChat()">'
+            '<span id="trSendBtnText">שלח</span>'
+            '<span id="trSendBtnSpinner" class="tr-chat-send-spinner" style="display:none"></span>'
+            '</button>'
+            '</div>'
+            '<div style="font-size:11px;color:#94a3b8;margin-top:4px;text-align:center">Enter לשליחה &middot; Shift+Enter לשורה חדשה</div>'
+            '</div>'
+            '<div id="trUpdateToast" style="display:none;position:absolute;bottom:70px;left:12px;right:12px;background:#ecfdf5;border:1px solid #86efac;border-radius:10px;padding:10px 14px;font-size:13px;color:#047857;font-weight:600;text-align:center;animation:chatFadeIn .3s ease-out;z-index:10">&#10004; הכלי עודכן בהצלחה!</div>'
+            '</div>'
+        )
+
+        chat_js = (
+            '<script>'
+            'var TR_SESSION_ID = ' + str(chat_session_id) + ';'
+            'var TR_TOOL_ID = ' + str(tool_id) + ';'
+            'var trSending = false;'
+            'var trContextLoaded = false;'
+            ''
+            'function trScrollBottom(){'
+            '  var el = document.getElementById("trChatMessages");'
+            '  if(el) el.scrollTop = el.scrollHeight;'
+            '}'
+            ''
+            'function trEsc(t){'
+            '  var d = document.createElement("div");'
+            '  d.appendChild(document.createTextNode(t));'
+            '  return d.innerHTML;'
+            '}'
+            ''
+            'function trFormatAi(text){'
+            '  var h = trEsc(text);'
+            '  h = h.replace(/```json/g, \'<pre style="background:#0f172a;color:#38bdf8;padding:12px;border-radius:10px;font-size:12px;overflow-x:auto;direction:ltr;text-align:left">\');'
+            '  h = h.replace(/```/g, "</pre>");'
+            '  h = h.replace(/\\n/g, "<br>");'
+            '  return h;'
+            '}'
+            ''
+            'function trAddUser(text){'
+            '  var el = document.getElementById("trChatMessages");'
+            '  var div = document.createElement("div");'
+            '  div.className = "tr-chat-bubble tr-chat-user";'
+            '  div.innerHTML = \'<div class="tr-chat-bubble-inner tr-chat-user-inner">\' + trEsc(text).replace(/\\n/g,"<br>") + "</div>";'
+            '  el.appendChild(div);'
+            '  trScrollBottom();'
+            '}'
+            ''
+            'function trAddAi(text){'
+            '  var el = document.getElementById("trChatMessages");'
+            '  var div = document.createElement("div");'
+            '  div.className = "tr-chat-bubble tr-chat-ai";'
+            '  div.innerHTML = \'<div class="tr-chat-bubble-inner tr-chat-ai-inner">\' + trFormatAi(text) + "</div>";'
+            '  el.appendChild(div);'
+            '  trScrollBottom();'
+            '}'
+            ''
+            'function trAddToolReady(toolDefJson){'
+            '  var el = document.getElementById("trChatMessages");'
+            '  var div = document.createElement("div");'
+            '  div.className = "tr-chat-tool-ready";'
+            '  div.innerHTML = \'<div style="font-size:13px;font-weight:700;color:#047857;margin-bottom:6px">&#127881; הכלי מוכן!</div>\''
+            '    + \'<button type="button" class="btn btn-blue" style="border-radius:10px;font-size:12px;background:#047857" \''
+            '    + \'onclick=\\\'updateToolDef(\\\"\' + toolDefJson.replace(/\\\\/g,"\\\\\\\\").replace(/"/g,\'\\\\&quot;\') + \'\\\")\\\'>\''
+            '    + \'&#128190; עדכן את הכלי</button>\';'
+            '  el.appendChild(div);'
+            '  trScrollBottom();'
+            '}'
+            ''
+            'function trShowTyping(){'
+            '  trRemoveTyping();'
+            '  var el = document.getElementById("trChatMessages");'
+            '  var div = document.createElement("div");'
+            '  div.id = "trTyping";'
+            '  div.className = "tr-typing-indicator";'
+            '  div.innerHTML = \'<div class="tr-typing-bubble"><div class="tr-typing-dots"><span></span><span></span><span></span></div><span class="tr-typing-label">AI מעבד...</span></div>\';'
+            '  el.appendChild(div);'
+            '  trScrollBottom();'
+            '}'
+            ''
+            'function trRemoveTyping(){'
+            '  var ti = document.getElementById("trTyping");'
+            '  if(ti) ti.remove();'
+            '}'
+            ''
+            'function trSetLoading(on){'
+            '  trSending = on;'
+            '  var inp = document.getElementById("trChatInput");'
+            '  var btn = document.getElementById("trChatSendBtn");'
+            '  var btnText = document.getElementById("trSendBtnText");'
+            '  var btnSpin = document.getElementById("trSendBtnSpinner");'
+            '  inp.disabled = on;'
+            '  btn.disabled = on;'
+            '  if(on){ btnText.textContent = "ממתין..."; btnSpin.style.display = "inline-block"; }'
+            '  else { btnText.textContent = "שלח"; btnSpin.style.display = "none"; inp.focus(); }'
+            '}'
+            ''
+            'function trSendChat(){'
+            '  if(trSending) return;'
+            '  var inp = document.getElementById("trChatInput");'
+            '  var msg = inp.value.trim();'
+            '  if(!msg) return;'
+            '  inp.value = "";'
+            '  inp.style.height = "42px";'
+            '  trAddUser(msg);'
+            '  var body = {session_id: TR_SESSION_ID, message: msg};'
+            '  /* On first message, auto-load tool context */'
+            '  if(!trContextLoaded){'
+            '    body.tool_context = {'
+            '      type: "marketplace",'
+            '      name: ' + json.dumps(tool["name"], ensure_ascii=False) + ','
+            '      description: ' + json.dumps(tool["description"] or "", ensure_ascii=False) + ','
+            '      definition: ' + (tool["definition_json"] or "{}") + ''
+            '    };'
+            '    trContextLoaded = true;'
+            '  }'
+            '  trSetLoading(true);'
+            '  trShowTyping();'
+            '  fetch("/tools/create/chat", {'
+            '    method: "POST",'
+            '    headers: {"Content-Type": "application/json", "X-Requested-With": "XMLHttpRequest"},'
+            '    body: JSON.stringify(body),'
+            '    redirect: "error"'
+            '  })'
+            '  .then(function(r){ if(!r.ok) throw new Error("HTTP " + r.status); return r.json(); })'
+            '  .then(function(data){'
+            '    trRemoveTyping();'
+            '    if(data.error){ trAddAi("שגיאה: " + data.error); }'
+            '    else {'
+            '      trAddAi(data.assistant_message);'
+            '      if(data.has_tool && data.tool_definition) trAddToolReady(data.tool_definition);'
+            '    }'
+            '    trSetLoading(false);'
+            '  })'
+            '  .catch(function(err){'
+            '    trRemoveTyping();'
+            '    trAddAi("שגיאה בתקשורת. נסה שוב.");'
+            '    trSetLoading(false);'
+            '  });'
+            '}'
+            ''
+            'function updateToolDef(defJson){'
+            '  var parsed;'
+            '  try { parsed = JSON.parse(defJson); } catch(e) { alert("שגיאה בפרסור הגדרת הכלי"); return; }'
+            '  fetch("/marketplace/tool/" + TR_TOOL_ID + "/update-definition", {'
+            '    method: "POST",'
+            '    headers: {"Content-Type": "application/json", "X-Requested-With": "XMLHttpRequest"},'
+            '    body: JSON.stringify({definition: parsed})'
+            '  })'
+            '  .then(function(r){ return r.json(); })'
+            '  .then(function(data){'
+            '    if(data.ok){'
+            '      var toast = document.getElementById("trUpdateToast");'
+            '      toast.style.display = "block";'
+            '      setTimeout(function(){ toast.style.display = "none"; }, 3000);'
+            '    } else {'
+            '      alert(data.error || "שגיאה בעדכון הכלי");'
+            '    }'
+            '  })'
+            '  .catch(function(){ alert("שגיאה בתקשורת"); });'
+            '}'
+            ''
+            '/* Enter to send, Shift+Enter newline, auto-resize */'
+            'document.getElementById("trChatInput").addEventListener("keydown", function(e){'
+            '  if(e.key === "Enter" && !e.shiftKey){ e.preventDefault(); trSendChat(); }'
+            '});'
+            'document.getElementById("trChatInput").addEventListener("input", function(){'
+            '  this.style.height = "42px";'
+            '  this.style.height = Math.min(this.scrollHeight, 120) + "px";'
+            '});'
+            ''
+            '/* Toggle chat panel */'
+            'function toggleChatPanel(){'
+            '  var panel = document.getElementById("trChatPanel");'
+            '  var btn = document.getElementById("trToggleBtn");'
+            '  if(panel.classList.contains("tr-chat-hidden")){'
+            '    panel.classList.remove("tr-chat-hidden");'
+            '    btn.innerHTML = "&#10005; סגור צ\\\'אט";'
+            '  } else {'
+            '    panel.classList.add("tr-chat-hidden");'
+            '    btn.innerHTML = "&#129302; שיפור עם AI";'
+            '  }'
+            '}'
+            ''
+            'trScrollBottom();'
+            '</script>'
+        )
+
+    # ── Styles ──
+    styles = (
+        '<style>'
+        # Split layout
+        '.tr-layout{display:flex;gap:16px;align-items:flex-start}'
+        '.tr-main{flex:1;min-width:0}'
+        '.tr-chat-panel{width:420px;flex-shrink:0;border:1px solid #dbeafe;border-radius:16px;overflow:hidden;background:#fff;'
+        'box-shadow:0 4px 24px rgba(37,99,235,0.08);display:flex;flex-direction:column;height:calc(100vh - 160px);max-height:680px;position:relative;transition:width .3s,opacity .3s}'
+        '.tr-chat-hidden{width:0;min-width:0;overflow:hidden;opacity:0;border:none;padding:0;margin:0}'
+        # Top bar
+        '.tr-topbar{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:1rem}'
+        '.tr-toggle-btn{border:1.5px solid #2563eb;background:white;color:#2563eb;border-radius:10px;padding:6px 14px;font-size:13px;font-weight:600;cursor:pointer;transition:all .2s;font-family:inherit;white-space:nowrap}'
+        '.tr-toggle-btn:hover{background:#eff6ff}'
+        # Chat header
+        '.tr-chat-header{background:linear-gradient(135deg,#1e3a8a,#2563eb);padding:12px 16px;color:white;flex-shrink:0}'
+        '.tr-chat-header-title{font-size:16px;font-weight:800;margin-bottom:2px}'
+        '.tr-chat-header-sub{font-size:12px;opacity:.85}'
+        # Messages
+        '.tr-chat-messages{flex:1;overflow-y:auto;padding:12px 14px;background:#fafcff;scroll-behavior:smooth}'
+        '.tr-chat-messages::-webkit-scrollbar{width:5px}'
+        '.tr-chat-messages::-webkit-scrollbar-track{background:transparent}'
+        '.tr-chat-messages::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:3px}'
+        # Bubbles
+        '.tr-chat-bubble{margin-bottom:10px;display:flex;animation:trFadeIn .3s ease-out}'
+        '.tr-chat-user{justify-content:flex-end}'
+        '.tr-chat-ai{justify-content:flex-start}'
+        '.tr-chat-bubble-inner{max-width:90%;padding:10px 14px;font-size:13px;line-height:1.7;border-radius:14px;word-wrap:break-word}'
+        '.tr-chat-user-inner{background:linear-gradient(135deg,#dbeafe,#e0e7ff);color:#1e3a5c;border-bottom-left-radius:4px}'
+        '.tr-chat-ai-inner{background:#eff6ff;color:#1e3a8a;border-bottom-right-radius:4px}'
+        '.tr-chat-tool-ready{background:#ecfdf5;border:1px solid #86efac;border-radius:12px;padding:10px 14px;margin-bottom:10px;animation:trFadeIn .3s ease-out}'
+        # Typing indicator
+        '.tr-typing-indicator{display:flex;align-items:center;gap:6px;margin-bottom:10px;animation:trFadeIn .3s ease-out}'
+        '.tr-typing-bubble{background:#eff6ff;border-radius:14px;padding:10px 14px;display:flex;align-items:center;gap:8px;border-bottom-right-radius:4px}'
+        '.tr-typing-dots{display:flex;gap:3px;align-items:center}'
+        '.tr-typing-dots span{width:6px;height:6px;border-radius:50%;background:#2563eb;animation:trBounce 1.4s infinite ease-in-out}'
+        '.tr-typing-dots span:nth-child(2){animation-delay:.2s}'
+        '.tr-typing-dots span:nth-child(3){animation-delay:.4s}'
+        '.tr-typing-label{font-size:12px;color:#2563eb;font-weight:600}'
+        # Input area
+        '.tr-chat-input-area{border-top:1px solid #e2e8f0;background:white;padding:10px 12px;flex-shrink:0}'
+        '.tr-chat-input-row{display:flex;gap:8px;align-items:flex-end}'
+        '.tr-chat-textarea{flex:1;padding:8px 12px;border:1.5px solid #e2e8f0;border-radius:10px;font-size:13px;font-family:inherit;resize:none;max-height:100px;min-height:38px;line-height:1.5;outline:none;transition:border-color .2s,box-shadow .2s}'
+        '.tr-chat-textarea:focus{border-color:#2563eb;box-shadow:0 0 0 3px rgba(37,99,235,0.1)}'
+        '.tr-chat-textarea:disabled{background:#f8fafc;color:#94a3b8}'
+        '.tr-chat-send-btn{border:none;background:linear-gradient(135deg,#1e3a8a,#2563eb);color:white;border-radius:10px;padding:8px 14px;font-size:13px;font-weight:700;cursor:pointer;transition:all .2s;display:flex;align-items:center;gap:5px;white-space:nowrap;font-family:inherit;min-height:38px}'
+        '.tr-chat-send-btn:hover:not(:disabled){background:linear-gradient(135deg,#1e3070,#1d4ed8);transform:translateY(-1px);box-shadow:0 2px 8px rgba(37,99,235,0.3)}'
+        '.tr-chat-send-btn:disabled{opacity:0.6;cursor:not-allowed}'
+        '.tr-chat-send-spinner{display:inline-block;width:14px;height:14px;border:2px solid rgba(255,255,255,0.3);border-top-color:white;border-radius:50%;animation:trSpin .7s linear infinite}'
+        # Animations
+        '@keyframes trFadeIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}'
+        '@keyframes trBounce{0%,80%,100%{transform:scale(0.6);opacity:0.4}40%{transform:scale(1);opacity:1}}'
+        '@keyframes trSpin{to{transform:rotate(360deg)}}'
+        # Responsive: stack on mobile
+        '@media(max-width:900px){'
+        '.tr-layout{flex-direction:column}'
+        '.tr-chat-panel{width:100%;max-height:500px}'
+        '.tr-chat-hidden{height:0;max-height:0}'
+        '}'
+        '</style>'
+    )
+
+    # ── Assemble body ──
+    toggle_btn = ""
+    if is_creator:
+        toggle_btn = '<button type="button" id="trToggleBtn" class="tr-toggle-btn" onclick="toggleChatPanel()">&#10005; סגור צ\'אט</button>'
+
+    body = (
+        styles
+        + '<div class="tr-topbar">'
+        '<div><a href="' + back_link + '" style="color:#2563eb;font-size:13px;text-decoration:none">&#8592; ' + back_label + '</a></div>'
+        + toggle_btn
+        + '</div>'
+        '<div class="tr-layout">'
+        '<div class="tr-main">' + left_panel + '</div>'
+        + right_panel
+        + '</div>'
+        + chat_js
+    )
+
     return render(esc(tool["name"] or "כלי"), body, lang=lang, topbar_greeting=text["topbar_greeting"], logout_label=text["logout"], show_lang_switch=True)
+
+
+@app.route("/marketplace/tool/<int:tool_id>/update-definition", methods=["POST"])
+@login_required
+def update_tool_definition(tool_id):
+    """AJAX endpoint: update a marketplace tool's definition (creator only)."""
+    with get_db() as db:
+        tool = db.execute("SELECT * FROM marketplace_tools WHERE id=?", (tool_id,)).fetchone()
+        if not tool:
+            return jsonify({"ok": False, "error": "הכלי לא נמצא"}), 404
+        if tool["creator_id"] != session["user_id"]:
+            return jsonify({"ok": False, "error": "אין הרשאה"}), 403
+
+    data = request.get_json(silent=True) or {}
+    new_def = data.get("definition")
+    if not new_def or not isinstance(new_def, dict):
+        return jsonify({"ok": False, "error": "הגדרה לא תקינה"}), 400
+
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    name = new_def.get("name", tool["name"])
+    description = new_def.get("description", tool["description"] or "")
+    icon = new_def.get("icon", tool["icon"] or "🔧")
+    category = new_def.get("category", tool["category"] or "general")
+    if category not in TOOL_CATEGORIES:
+        category = "general"
+
+    with get_db() as db:
+        db.execute(
+            """UPDATE marketplace_tools
+               SET definition_json=?, name=?, description=?, icon=?, category=?, updated_at=?
+               WHERE id=?""",
+            (json.dumps(new_def, ensure_ascii=False), name, description, icon, category, now, tool_id),
+        )
+        db.commit()
+
+    log_user_activity("update_tool", "עדכון כלי מרקטפלייס", "marketplace_" + str(tool_id), name, "")
+    return jsonify({"ok": True})
 
 
 # ── AI Tool Creation Chat ────────────────────────────────────────
@@ -10552,6 +10933,7 @@ def tools_create():
         # Drop zone overlay
         '.chat-drop-overlay{display:none;position:absolute;inset:0;background:rgba(37,99,235,0.12);border:3px dashed #2563eb;border-radius:16px;z-index:50;align-items:center;justify-content:center;flex-direction:column;gap:10px}'
         '.chat-drop-overlay.active{display:flex}'
+        '.chat-drop-overlay>*{pointer-events:none}'
         '.chat-drop-icon{font-size:48px;opacity:0.7}'
         '.chat-drop-label{font-size:16px;font-weight:700;color:#1e3a8a}'
         '.chat-drop-sub{font-size:13px;color:#64748b}'
