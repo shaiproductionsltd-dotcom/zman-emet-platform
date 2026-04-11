@@ -5395,7 +5395,7 @@ DEPT_PAYROLL_SUGGESTION_KEYWORDS = {
     "worker_name_source": ["שםלתצוגה", "שםעובד", "עובד", "name"],
     "dept_number_source": ["מספרמחלקה", "מחלקה", "department"],
     "department_source": ["מחלקה", "department"],
-    "payable_hours_source": ["שעותלתשלום", "שעותמשולמות", "רגילות", "נוכחות"],
+    "payable_hours_source": ["שלתשלום", "שעותלתשלום", "שעותמשולמות", "סהכ", "רגילות", "נוכחות"],
     "id_number_source": ["תעודתזהות", "דרכון", "זהות", "id"],
     "phone_source": ["נייד", "טלפון", "phone", "mobile"],
     "passport_source": ["פספורט", "דרכון", "passport"],
@@ -6236,6 +6236,120 @@ def collect_flamingo_summary_candidates(detail_sheet, summary_sheet, workbook_ki
 
 # ── Department Payroll Mapping ──────────────────────────────────────
 
+def collect_dept_daily_header_candidates(detail_sheet, workbook_kind):
+    """Scan the daily data header row (the one with תאריך, כניסה, etc.)
+    for columns like מספר מחלקה and סה"כ that are useful for dept_payroll."""
+    candidates = []
+    seen = set()
+    rows, cols = get_flamingo_sheet_dims(detail_sheet, workbook_kind)
+    header_row = find_sheet_label_row(detail_sheet, workbook_kind, "תאריך")
+    if header_row < 0:
+        return candidates
+    # Relevant column headers to look for in the daily header row
+    relevant_tokens = {
+        "מספרמחלקה", "סהכ", "סה\"כ", "סהכשעות",
+        "רגילות", "נוכחות", "תקן", "חוסר",
+    }
+    for col_index in range(cols):
+        label_text = str(get_flamingo_sheet_cell(detail_sheet, workbook_kind, header_row, col_index) or "").strip()
+        if not label_text:
+            continue
+        normalized = normalize_token(label_text)
+        if not any(kw in normalized for kw in relevant_tokens):
+            continue
+        # Get a sample value from the first data row below
+        sample = ""
+        for data_row in range(header_row + 1, min(rows, header_row + 6)):
+            val = get_flamingo_sheet_cell(detail_sheet, workbook_kind, data_row, col_index)
+            if val not in ("", None):
+                sample = stringify_excel_value(val)
+                break
+        source = f"meta:{label_text}"
+        if source in seen:
+            continue
+        candidates.append({
+            "value": source,
+            "label": f"עמודה יומית: {label_text}" + (f" (לדוגמה: {sample})" if sample else ""),
+            "source_kind": "meta",
+            "match_token": normalized,
+        })
+        seen.add(source)
+    return candidates
+
+
+def collect_dept_summary_candidates(detail_sheet, summary_sheet, workbook_kind):
+    """Like collect_flamingo_summary_candidates but with broader keyword matching
+    to also catch 'ש.לתשלום ואירועים' and similar variants."""
+    search_sheets = []
+    if summary_sheet is not None:
+        search_sheets.append(summary_sheet)
+    if summary_sheet is None or summary_sheet is detail_sheet:
+        search_sheets.append(detail_sheet)
+    candidates = []
+    seen = set()
+    relevant_keywords = (
+        "נוכחות", "תקן", "חוסר",
+        "שעותלתשלום", "שעותמשולמות", "שלתשלום", "לתשלום",
+        "רגילות", "100", "125", "150", "175", "200",
+    )
+    for sheet in search_sheets:
+        rows, cols = get_flamingo_sheet_dims(sheet, workbook_kind)
+        summary_start_row = find_sheet_label_row(sheet, workbook_kind, "נתונים כללים")
+        start_row = summary_start_row if summary_start_row >= 0 else 0
+        for row_index in range(start_row, rows):
+            row_values = [get_flamingo_sheet_cell(sheet, workbook_kind, row_index, c) for c in range(cols)]
+            for col_index, raw_label in enumerate(row_values):
+                label_text = str(raw_label or "").strip()
+                if not label_text:
+                    continue
+                normalized = normalize_token(label_text)
+                # Strip dots for broader matching (ש.לתשלום → שלתשלום)
+                normalized_nodot = normalized.replace(".", "")
+                if not normalized or not any(keyword in normalized or keyword in normalized_nodot for keyword in relevant_keywords):
+                    continue
+                found_value = False
+                for next_col in range(col_index + 1, len(row_values)):
+                    candidate = row_values[next_col]
+                    if candidate in ("", None):
+                        continue
+                    parsed_hours = try_parse_hours_value(candidate)
+                    if parsed_hours is None and not isinstance(candidate, (int, float)):
+                        candidate_text = str(candidate).strip()
+                        if not candidate_text:
+                            continue
+                        try:
+                            float(candidate_text.replace(",", "."))
+                        except ValueError:
+                            continue
+                    source = f"summary:{label_text}"
+                    if source in seen:
+                        found_value = True
+                        break
+                    candidates.append({
+                        "value": source,
+                        "label": f"שדה סיכום: {label_text} (לדוגמה: {stringify_excel_value(candidate)})",
+                        "source_kind": "table_exact",
+                        "match_token": normalized,
+                    })
+                    seen.add(source)
+                    found_value = True
+                    break
+                # For key payable-hours labels, add even without a sample value
+                if not found_value:
+                    payable_keywords = ("לתשלום", "שלתשלום", "שעותלתשלום", "נוכחות")
+                    if any(kw in normalized_nodot for kw in payable_keywords):
+                        source = f"summary:{label_text}"
+                        if source not in seen:
+                            candidates.append({
+                                "value": source,
+                                "label": f"שדה סיכום: {label_text}",
+                                "source_kind": "table_exact",
+                                "match_token": normalized_nodot,
+                            })
+                            seen.add(source)
+    return candidates
+
+
 def build_dept_payroll_mapping_options(input_path, extension):
     workbook_kind, workbook = open_excel_workbook(input_path, extension)
     worker_blocks = list(iter_flamingo_worker_blocks(workbook_kind, workbook))
@@ -6243,8 +6357,9 @@ def build_dept_payroll_mapping_options(input_path, extension):
         raise ValueError("לא זוהו גיליונות עובדים בדוח הנוכחות")
     detail_sheet, summary_sheet = worker_blocks[0]
     meta_options = collect_flamingo_meta_candidates(detail_sheet, workbook_kind)
-    summary_options = collect_flamingo_summary_candidates(detail_sheet, summary_sheet, workbook_kind)
-    base_options = meta_options + summary_options
+    header_options = collect_dept_daily_header_candidates(detail_sheet, workbook_kind)
+    summary_options = collect_dept_summary_candidates(detail_sheet, summary_sheet, workbook_kind)
+    base_options = meta_options + header_options + summary_options
     options_by_field = {}
     suggestions = {}
     for field in DEPT_PAYROLL_MAPPING_FIELDS:
@@ -6254,11 +6369,10 @@ def build_dept_payroll_mapping_options(input_path, extension):
             token = option.get("match_token", "")
             keywords = DEPT_PAYROLL_SUGGESTION_KEYWORDS.get(field_name, [])
             if field_name == "payable_hours_source":
-                if any(keyword in token for keyword in keywords):
+                if any(keyword in token for keyword in keywords) or option.get("source_kind") == "table_exact":
                     options.append(option)
             elif field_name == "dept_number_source":
-                if option.get("source_kind") == "meta":
-                    options.append(option)
+                options.append(option)
             elif option.get("source_kind") == "meta":
                 options.append(option)
         deduped = []
@@ -6273,7 +6387,7 @@ def build_dept_payroll_mapping_options(input_path, extension):
         suggested = ""
         keywords = DEPT_PAYROLL_SUGGESTION_KEYWORDS.get(field_name, [])
         if field_name == "payable_hours_source":
-            for preferred in ["שעותלתשלום", "שעותמשולמות", "נוכחות", "רגילות"]:
+            for preferred in ["שלתשלום", "שעותלתשלום", "שעותמשולמות", "נוכחות", "סהכ", "רגילות"]:
                 for option in deduped:
                     token = option.get("match_token", "")
                     if preferred in token:
@@ -6282,7 +6396,7 @@ def build_dept_payroll_mapping_options(input_path, extension):
                 if suggested:
                     break
         elif field_name == "dept_number_source":
-            for preferred in ["מספרמחלקה", "מחלקה"]:
+            for preferred in ["מספרמחלקה"]:
                 for option in deduped:
                     token = option.get("match_token", "")
                     if preferred in token:
@@ -6290,6 +6404,12 @@ def build_dept_payroll_mapping_options(input_path, extension):
                         break
                 if suggested:
                     break
+            if not suggested:
+                for option in deduped:
+                    token = option.get("match_token", "")
+                    if "מחלקה" in token:
+                        suggested = option["value"]
+                        break
         else:
             for option in deduped:
                 token = option.get("match_token", "")
