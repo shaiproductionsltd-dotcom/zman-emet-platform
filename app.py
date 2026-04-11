@@ -7711,8 +7711,9 @@ def dashboard():
         + '<div><div style="font-size:18px;font-weight:800;color:#047857;margin-bottom:6px">' + ("🛒 שוק הכלים" if lang == "he" else "🛒 Tool Marketplace") + '</div>'
         + '<div style="font-size:14px;color:#475569;line-height:1.7">' + ("גלה כלים שנבנו על ידי משתמשים אחרים או צור כלי משלך עם AI" if lang == "he" else "Discover tools built by other users or create your own with AI") + '</div></div>'
         + '<div style="display:flex;gap:8px;flex-wrap:wrap">'
-        + '<a href="/marketplace" class="btn btn-blue" style="text-decoration:none;display:inline-flex;align-items:center;justify-content:center;min-width:140px;background:#047857">' + ("גלה כלים" if lang == "he" else "Browse tools") + '</a>'
-        + '<a href="/tools/create" class="btn btn-blue" style="text-decoration:none;display:inline-flex;align-items:center;justify-content:center;min-width:140px">' + ("🤖 צור כלי" if lang == "he" else "🤖 Create tool") + '</a>'
+        + '<a href="/tools/my-tools" class="btn btn-gray" style="text-decoration:none;display:inline-flex;align-items:center;justify-content:center;min-width:120px">' + ("&#128188; הכלים שלי" if lang == "he" else "&#128188; My tools") + '</a>'
+        + '<a href="/marketplace" class="btn btn-blue" style="text-decoration:none;display:inline-flex;align-items:center;justify-content:center;min-width:120px;background:#047857">' + ("גלה כלים" if lang == "he" else "Browse tools") + '</a>'
+        + '<a href="/tools/create" class="btn btn-blue" style="text-decoration:none;display:inline-flex;align-items:center;justify-content:center;min-width:120px">' + ("&#129302; צור כלי" if lang == "he" else "&#129302; Create tool") + '</a>'
         + '</div></div></div>'
         + report_jobs_html
         + '<div class="card" style="margin-top:1rem;background:linear-gradient(135deg,#ffffff 0%,#f8fbff 100%);border:1px solid #dbeafe">'
@@ -10087,23 +10088,26 @@ def marketplace():
         active = category_filter == cat_id
         cat_pills += '<a href="/marketplace?category=' + cat_id + (('&q=' + esc(search_query)) if search_query else '') + '" style="padding:6px 14px;border-radius:99px;font-size:12px;font-weight:600;text-decoration:none;' + ('background:#1e3a8a;color:white' if active else 'background:#f1f5f9;color:#475569') + '">' + esc(cat_name) + '</a>'
 
-    # My tools section
+    # My tools section — link to My Tools page
     my_tools_html = ""
     if user_tools:
         my_tools_rows = ""
         status_labels = {"draft": "טיוטה", "pending_review": "ממתין לאישור", "approved": "מאושר", "rejected": "נדחה"}
-        status_colors = {"draft": ("#f8fafc", "#475569"), "pending_review": ("#fff7ed", "#c2410c"), "approved": ("#ecfdf5", "#047857"), "rejected": ("#fef2f2", "#b91c1c")}
-        for t in user_tools:
+        status_colors = {"draft": ("#fef3c7", "#92400e"), "pending_review": ("#fff7ed", "#c2410c"), "approved": ("#ecfdf5", "#047857"), "rejected": ("#fef2f2", "#b91c1c")}
+        for t in user_tools[:3]:  # Show max 3, link to full page
             s_bg, s_fg = status_colors.get(t["status"], ("#f8fafc", "#475569"))
             my_tools_rows += (
-                '<div style="display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-bottom:1px solid #f1f5f9">'
+                '<a href="/tools/my-tools" style="display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-bottom:1px solid #f1f5f9;text-decoration:none;color:inherit">'
                 '<div><span style="font-size:15px;font-weight:700;color:#0f172a">' + esc(t["icon"] or "🔧") + " " + esc(t["name"]) + '</span></div>'
                 '<span style="padding:4px 10px;border-radius:99px;font-size:11px;font-weight:700;background:' + s_bg + ';color:' + s_fg + '">' + esc(status_labels.get(t["status"], t["status"])) + '</span>'
-                '</div>'
+                '</a>'
             )
         my_tools_html = (
             '<div class="card" style="margin-bottom:1.5rem;border:1px solid #dbeafe">'
-            '<div style="font-size:18px;font-weight:800;color:#1e3a8a;margin-bottom:12px">הכלים שלי</div>'
+            '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">'
+            '<div style="font-size:18px;font-weight:800;color:#1e3a8a">הכלים שלי</div>'
+            '<a href="/tools/my-tools" style="font-size:13px;color:#2563eb;text-decoration:none;font-weight:600">הצג הכל &#8592;</a>'
+            '</div>'
             + my_tools_rows
             + '</div>'
         )
@@ -10114,7 +10118,10 @@ def marketplace():
         '<h2 style="font-size:24px;font-weight:800;color:#1e3a8a;margin-bottom:4px">🛒 שוק הכלים</h2>'
         '<p style="font-size:14px;color:#64748b">גלה כלים שנבנו על ידי משתמשים אחרים — או צור כלי משלך עם AI</p>'
         '</div>'
-        '<a href="/tools/create" class="btn btn-blue" style="text-decoration:none;display:inline-flex;align-items:center;gap:6px;padding:12px 24px;font-size:14px;border-radius:12px">🤖 צור כלי חדש עם AI</a>'
+        '<div style="display:flex;gap:8px">'
+        '<a href="/tools/my-tools" class="btn btn-gray" style="text-decoration:none;display:inline-flex;align-items:center;gap:6px;padding:12px 20px;font-size:14px;border-radius:12px">&#128188; הכלים שלי</a>'
+        '<a href="/tools/create" class="btn btn-blue" style="text-decoration:none;display:inline-flex;align-items:center;gap:6px;padding:12px 20px;font-size:14px;border-radius:12px">&#129302; צור כלי חדש</a>'
+        '</div>'
         '</div>'
         + my_tools_html
         + '<form method="get" action="/marketplace" style="margin-bottom:1rem;display:flex;gap:8px">'
