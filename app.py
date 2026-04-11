@@ -16,7 +16,7 @@ import uuid
 import re
 from urllib.parse import urlencode
 
-from flask import Flask, redirect, request, send_file, session
+from flask import Flask, redirect, request, send_file, session, jsonify
 from werkzeug.security import check_password_hash, generate_password_hash
 
 import xlrd
@@ -10063,93 +10063,272 @@ def tools_create():
             db.commit()
             chat_session_id = db.execute("SELECT id FROM tool_chat_sessions WHERE user_id=? ORDER BY id DESC LIMIT 1", (session["user_id"],)).fetchone()["id"]
 
-    body = (
-        '<div style="margin-bottom:1rem;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">'
-        '<div><a href="/marketplace" style="color:#2563eb;font-size:13px;text-decoration:none">← חזרה לשוק הכלים</a></div>'
-        '<form method="post" action="/tools/create/reset"><button type="submit" class="btn btn-gray" style="font-size:12px;border-radius:8px">🔄 שיחה חדשה</button></form>'
-        '</div>'
-        '<div class="card" style="padding:0;overflow:hidden;border:1px solid #dbeafe">'
-        '<div style="background:linear-gradient(135deg,#1e3a8a,#2563eb);padding:16px 20px;color:white">'
-        '<div style="font-size:18px;font-weight:800;margin-bottom:4px">🤖 בניית כלי עם AI</div>'
-        '<div style="font-size:13px;opacity:.85">תאר מה אתה רוצה לעשות עם הנתונים ו-AI יבנה את הכלי עבורך</div>'
-        '</div>'
-        '<div id="chatMessages" style="padding:16px 20px;min-height:300px;max-height:500px;overflow-y:auto;background:#fafcff">'
-        '<div style="background:#eff6ff;border-radius:14px;padding:12px 16px;font-size:14px;color:#1e3a8a;line-height:1.7;margin-bottom:12px;max-width:85%">'
-        'שלום! 👋 אני עוזר AI של Scriptly.<br>'
-        'תאר לי מה אתה רוצה לעשות — למשל:<br>'
-        '• "אני רוצה דוח שמסנן עובדים עם יותר מ-9 שעות עבודה"<br>'
-        '• "אני צריך סיכום שכר לפי מחלקה"<br>'
-        '• "אני רוצה למצוא כפילויות ברשימת עובדים"<br><br>'
-        'אפשר גם להעלות קובץ דוגמה ואני אזהה את העמודות בשבילך.'
-        '</div>'
-        '</div>'
-        '<div style="padding:12px 20px 16px;border-top:1px solid #e2e8f0;background:white">'
-        '<div style="display:flex;gap:8px;margin-bottom:8px">'
-        '<form method="post" action="/tools/create/upload" enctype="multipart/form-data" id="uploadForm" style="display:flex;gap:8px;flex:0">'
-        '<input type="hidden" name="session_id" value="' + str(chat_session_id) + '">'
-        '<input type="file" name="sample_file" id="sampleFile" accept=".xls,.xlsx,.csv" style="display:none" '
-        'onchange="if(this.files[0]){document.getElementById(\'uploadBtn\').textContent=\'📎 \'+this.files[0].name;document.getElementById(\'uploadForm\').submit()}">'
-        '<button type="button" id="uploadBtn" onclick="document.getElementById(\'sampleFile\').click()" class="btn btn-gray" style="border-radius:10px;font-size:12px;white-space:nowrap">📎 העלה דוגמה</button>'
-        '</form>'
-        '</div>'
-        '<form method="post" action="/tools/create/chat" style="display:flex;gap:8px">'
-        '<input type="hidden" name="session_id" value="' + str(chat_session_id) + '">'
-        '<input type="text" name="message" placeholder="כתוב הודעה..." style="flex:1;padding:12px 16px;border:1.5px solid #e2e8f0;border-radius:12px;font-size:14px;font-family:inherit" autocomplete="off" required>'
-        '<button type="submit" class="btn btn-blue" style="border-radius:12px;padding:12px 20px">שלח</button>'
-        '</form>'
-        '</div>'
-        '</div>'
-        '<div style="text-align:center;margin-top:12px;font-size:11px;color:#94a3b8">'
-        'שים לב: אין לשתף מידע אישי של עובדים בצ\'אט. השתמש רק בכותרות עמודות ומבנה הנתונים.'
-        '</div>'
-    )
-
-    # If there are existing messages, render them
+    # Build existing messages HTML
+    msgs_html = ""
     with get_db() as db:
         chat_data = db.execute("SELECT messages_json FROM tool_chat_sessions WHERE id=?", (chat_session_id,)).fetchone()
+    existing_messages = []
     if chat_data:
         try:
-            messages = json.loads(chat_data["messages_json"])
+            existing_messages = json.loads(chat_data["messages_json"])
         except (json.JSONDecodeError, TypeError):
-            messages = []
+            existing_messages = []
 
-        if messages:
-            msgs_html = ""
-            for msg in messages:
-                if msg["role"] == "user":
-                    msgs_html += '<div style="background:#e0e7ff;border-radius:14px;padding:12px 16px;font-size:14px;color:#1e3a5c;line-height:1.7;margin-bottom:12px;max-width:85%;margin-right:0;margin-left:auto">' + esc(msg["content"]) + '</div>'
-                else:
-                    content_html = esc(msg["content"]).replace("```json", '<pre style="background:#0f172a;color:#38bdf8;padding:12px;border-radius:10px;font-size:12px;overflow-x:auto;direction:ltr;text-align:left">').replace("```", "</pre>").replace("\n", "<br>")
-                    msgs_html += '<div style="background:#eff6ff;border-radius:14px;padding:12px 16px;font-size:14px;color:#1e3a8a;line-height:1.7;margin-bottom:12px;max-width:85%">' + content_html + '</div>'
+    for msg in existing_messages:
+        if msg["role"] == "user":
+            user_text = esc(msg["content"]).replace("\n", "<br>")
+            msgs_html += '<div class="chat-bubble chat-user"><div class="chat-bubble-inner chat-user-inner">' + user_text + '</div></div>'
+        else:
+            content_html = esc(msg["content"]).replace("```json", '<pre style="background:#0f172a;color:#38bdf8;padding:12px;border-radius:10px;font-size:12px;overflow-x:auto;direction:ltr;text-align:left">').replace("```", "</pre>").replace("\n", "<br>")
+            msgs_html += '<div class="chat-bubble chat-ai"><div class="chat-bubble-inner chat-ai-inner">' + content_html + '</div></div>'
+            tool_def = extract_tool_json_from_message(msg["content"])
+            if tool_def:
+                msgs_html += (
+                    '<div class="chat-tool-ready">'
+                    '<div style="font-size:14px;font-weight:700;color:#047857;margin-bottom:8px">&#127881; הכלי מוכן!</div>'
+                    '<form method="post" action="/tools/create/save">'
+                    '<input type="hidden" name="session_id" value="' + str(chat_session_id) + '">'
+                    '<input type="hidden" name="definition" value="' + esc(json.dumps(tool_def, ensure_ascii=False)) + '">'
+                    '<div style="display:flex;gap:8px;flex-wrap:wrap">'
+                    '<button type="submit" name="action" value="save_draft" class="btn btn-blue" style="border-radius:10px;font-size:13px">&#128190; שמור כטיוטה</button>'
+                    '<button type="submit" name="action" value="publish" class="btn btn-blue" style="border-radius:10px;font-size:13px;background:#047857">&#128228; שלח לאישור ופרסום</button>'
+                    '</div></form></div>'
+                )
 
-                    # Check if AI produced a tool definition
-                    tool_def = extract_tool_json_from_message(msg["content"])
-                    if tool_def:
-                        msgs_html += (
-                            '<div style="background:#ecfdf5;border:1px solid #86efac;border-radius:14px;padding:12px 16px;margin-bottom:12px">'
-                            '<div style="font-size:14px;font-weight:700;color:#047857;margin-bottom:8px">🎉 הכלי מוכן!</div>'
-                            '<form method="post" action="/tools/create/save">'
-                            '<input type="hidden" name="session_id" value="' + str(chat_session_id) + '">'
-                            '<input type="hidden" name="definition" value="' + esc(json.dumps(tool_def, ensure_ascii=False)) + '">'
-                            '<div style="display:flex;gap:8px;flex-wrap:wrap">'
-                            '<button type="submit" name="action" value="save_draft" class="btn btn-blue" style="border-radius:10px;font-size:13px">💾 שמור כטיוטה</button>'
-                            '<button type="submit" name="action" value="publish" class="btn btn-blue" style="border-radius:10px;font-size:13px;background:#047857">📤 שלח לאישור ופרסום</button>'
-                            '</div></form></div>'
-                        )
-
-            body = body.replace(
-                '<div style="background:#eff6ff;border-radius:14px;padding:12px 16px;font-size:14px;color:#1e3a8a;line-height:1.7;margin-bottom:12px;max-width:85%">'
-                'שלום! 👋 אני עוזר AI של Scriptly.<br>'
-                'תאר לי מה אתה רוצה לעשות — למשל:<br>'
-                '• "אני רוצה דוח שמסנן עובדים עם יותר מ-9 שעות עבודה"<br>'
-                '• "אני צריך סיכום שכר לפי מחלקה"<br>'
-                '• "אני רוצה למצוא כפילויות ברשימת עובדים"<br><br>'
-                'אפשר גם להעלות קובץ דוגמה ואני אזהה את העמודות בשבילך.'
-                '</div>',
-                '<div style="background:#eff6ff;border-radius:14px;padding:12px 16px;font-size:14px;color:#1e3a8a;line-height:1.7;margin-bottom:12px;max-width:85%">'
-                'שלום! 👋 אני עוזר AI של Scriptly. תאר מה אתה צריך ואני אבנה את הכלי.</div>'
-                + msgs_html,
-            )
+    body = (
+        '<style>'
+        # Chat container styles
+        '.chat-container{display:flex;flex-direction:column;height:calc(100vh - 140px);max-height:700px;border:1px solid #dbeafe;border-radius:16px;overflow:hidden;background:#fff;box-shadow:0 4px 24px rgba(37,99,235,0.08)}'
+        '.chat-header{background:linear-gradient(135deg,#1e3a8a,#2563eb);padding:16px 20px;color:white;flex-shrink:0}'
+        '.chat-header-title{font-size:18px;font-weight:800;margin-bottom:4px}'
+        '.chat-header-sub{font-size:13px;opacity:.85}'
+        # Messages area
+        '.chat-messages{flex:1;overflow-y:auto;padding:16px 20px;background:#fafcff;scroll-behavior:smooth}'
+        '.chat-messages::-webkit-scrollbar{width:6px}'
+        '.chat-messages::-webkit-scrollbar-track{background:transparent}'
+        '.chat-messages::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:3px}'
+        # Chat bubbles
+        '.chat-bubble{margin-bottom:12px;display:flex;animation:chatFadeIn .3s ease-out}'
+        '.chat-user{justify-content:flex-end}'
+        '.chat-ai{justify-content:flex-start}'
+        '.chat-bubble-inner{max-width:85%;padding:12px 16px;font-size:14px;line-height:1.7;border-radius:16px;position:relative;word-wrap:break-word}'
+        '.chat-user-inner{background:linear-gradient(135deg,#dbeafe,#e0e7ff);color:#1e3a5c;border-bottom-left-radius:4px}'
+        '.chat-ai-inner{background:#eff6ff;color:#1e3a8a;border-bottom-right-radius:4px}'
+        '.chat-tool-ready{background:#ecfdf5;border:1px solid #86efac;border-radius:14px;padding:12px 16px;margin-bottom:12px;animation:chatFadeIn .3s ease-out}'
+        # Typing indicator
+        '.typing-indicator{display:flex;align-items:center;gap:8px;margin-bottom:12px;animation:chatFadeIn .3s ease-out}'
+        '.typing-indicator-bubble{background:#eff6ff;border-radius:16px;padding:12px 18px;display:flex;align-items:center;gap:10px;border-bottom-right-radius:4px}'
+        '.typing-dots{display:flex;gap:4px;align-items:center}'
+        '.typing-dots span{width:7px;height:7px;border-radius:50%;background:#2563eb;animation:typingBounce 1.4s infinite ease-in-out}'
+        '.typing-dots span:nth-child(2){animation-delay:.2s}'
+        '.typing-dots span:nth-child(3){animation-delay:.4s}'
+        '.typing-label{font-size:13px;color:#2563eb;font-weight:600}'
+        # Input area
+        '.chat-input-area{border-top:1px solid #e2e8f0;background:white;padding:12px 16px;flex-shrink:0}'
+        '.chat-input-row{display:flex;gap:8px;align-items:flex-end}'
+        '.chat-textarea{flex:1;padding:10px 14px;border:1.5px solid #e2e8f0;border-radius:12px;font-size:14px;font-family:inherit;resize:none;max-height:120px;min-height:42px;line-height:1.5;outline:none;transition:border-color .2s,box-shadow .2s}'
+        '.chat-textarea:focus{border-color:#2563eb;box-shadow:0 0 0 3px rgba(37,99,235,0.1)}'
+        '.chat-textarea:disabled{background:#f8fafc;color:#94a3b8}'
+        '.chat-send-btn{border:none;background:linear-gradient(135deg,#1e3a8a,#2563eb);color:white;border-radius:12px;padding:10px 18px;font-size:14px;font-weight:700;cursor:pointer;transition:all .2s;display:flex;align-items:center;gap:6px;white-space:nowrap;font-family:inherit;min-height:42px}'
+        '.chat-send-btn:hover:not(:disabled){background:linear-gradient(135deg,#1e3070,#1d4ed8);transform:translateY(-1px);box-shadow:0 2px 8px rgba(37,99,235,0.3)}'
+        '.chat-send-btn:active:not(:disabled){transform:translateY(0)}'
+        '.chat-send-btn:disabled{opacity:0.6;cursor:not-allowed;transform:none}'
+        '.chat-send-spinner{display:inline-block;width:16px;height:16px;border:2px solid rgba(255,255,255,0.3);border-top-color:white;border-radius:50%;animation:spin .7s linear infinite}'
+        '.chat-upload-row{display:flex;gap:8px;margin-bottom:8px}'
+        '.chat-upload-btn{border:1.5px solid #e2e8f0;background:white;border-radius:10px;font-size:12px;padding:6px 12px;cursor:pointer;transition:all .2s;color:#64748b;font-family:inherit;white-space:nowrap;display:flex;align-items:center;gap:4px}'
+        '.chat-upload-btn:hover{border-color:#2563eb;color:#2563eb;background:#f0f7ff}'
+        '.chat-hint{font-size:11px;color:#94a3b8;margin-top:6px;text-align:center}'
+        # Animations
+        '@keyframes chatFadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}'
+        '@keyframes typingBounce{0%,80%,100%{transform:scale(0.6);opacity:0.4}40%{transform:scale(1);opacity:1}}'
+        '@keyframes spin{to{transform:rotate(360deg)}}'
+        '</style>'
+        # Top bar
+        '<div style="margin-bottom:1rem;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">'
+        '<div><a href="/marketplace" style="color:#2563eb;font-size:13px;text-decoration:none">&#8592; חזרה לשוק הכלים</a></div>'
+        '<form method="post" action="/tools/create/reset"><button type="submit" class="btn btn-gray" style="font-size:12px;border-radius:8px">&#128260; שיחה חדשה</button></form>'
+        '</div>'
+        # Chat container
+        '<div class="chat-container">'
+        '<div class="chat-header">'
+        '<div class="chat-header-title">&#129302; בניית כלי עם AI</div>'
+        '<div class="chat-header-sub">תאר מה אתה רוצה לעשות עם הנתונים ו-AI יבנה את הכלי עבורך</div>'
+        '</div>'
+        '<div class="chat-messages" id="chatMessages">'
+        # Welcome message
+        '<div class="chat-bubble chat-ai">'
+        '<div class="chat-bubble-inner chat-ai-inner">'
+        'שלום! &#128075; אני עוזר AI של Scriptly.<br>'
+        'תאר לי מה אתה רוצה לעשות — למשל:<br>'
+        '&#8226; "אני רוצה דוח שמסנן עובדים עם יותר מ-9 שעות עבודה"<br>'
+        '&#8226; "אני צריך סיכום שכר לפי מחלקה"<br>'
+        '&#8226; "אני רוצה למצוא כפילויות ברשימת עובדים"<br><br>'
+        'אפשר גם להעלות קובץ דוגמה ואני אזהה את העמודות בשבילך.'
+        '</div></div>'
+        + msgs_html
+        + '</div>'
+        # Input area
+        '<div class="chat-input-area">'
+        '<div class="chat-upload-row">'
+        '<form method="post" action="/tools/create/upload" enctype="multipart/form-data" id="uploadForm">'
+        '<input type="hidden" name="session_id" value="' + str(chat_session_id) + '">'
+        '<input type="file" name="sample_file" id="sampleFile" accept=".xls,.xlsx,.csv" style="display:none" '
+        'onchange="if(this.files[0]){document.getElementById(\'uploadBtn\').textContent=\'&#128206; \'+this.files[0].name;document.getElementById(\'uploadForm\').submit()}">'
+        '<button type="button" id="uploadBtn" onclick="document.getElementById(\'sampleFile\').click()" class="chat-upload-btn">&#128206; העלה קובץ דוגמה</button>'
+        '</form>'
+        '</div>'
+        '<div class="chat-input-row">'
+        '<textarea id="chatInput" class="chat-textarea" placeholder="כתוב הודעה... (Enter לשליחה, Shift+Enter לשורה חדשה)" rows="1"></textarea>'
+        '<button type="button" id="chatSendBtn" class="chat-send-btn" onclick="sendChatMessage()">'
+        '<span id="sendBtnText">שלח</span>'
+        '<span id="sendBtnSpinner" class="chat-send-spinner" style="display:none"></span>'
+        '</button>'
+        '</div>'
+        '<div class="chat-hint">Enter לשליחה &middot; Shift+Enter לשורה חדשה &middot; אין לשתף מידע אישי של עובדים</div>'
+        '</div>'
+        '</div>'
+        # JavaScript
+        '<script>'
+        'var CHAT_SESSION_ID = "' + str(chat_session_id) + '";'
+        'var chatSending = false;'
+        ''
+        'function scrollToBottom(){'
+        '  var el = document.getElementById("chatMessages");'
+        '  if(el) el.scrollTop = el.scrollHeight;'
+        '}'
+        ''
+        'function escapeHtml(t){'
+        '  var d = document.createElement("div");'
+        '  d.appendChild(document.createTextNode(t));'
+        '  return d.innerHTML;'
+        '}'
+        ''
+        'function formatAiMessage(text){'
+        '  var h = escapeHtml(text);'
+        '  h = h.replace(/```json/g, \'<pre style="background:#0f172a;color:#38bdf8;padding:12px;border-radius:10px;font-size:12px;overflow-x:auto;direction:ltr;text-align:left">\');'
+        '  h = h.replace(/```/g, "</pre>");'
+        '  h = h.replace(/\\n/g, "<br>");'
+        '  return h;'
+        '}'
+        ''
+        'function addUserBubble(text){'
+        '  var el = document.getElementById("chatMessages");'
+        '  var div = document.createElement("div");'
+        '  div.className = "chat-bubble chat-user";'
+        '  div.innerHTML = \'<div class="chat-bubble-inner chat-user-inner">\' + escapeHtml(text).replace(/\\n/g,"<br>") + "</div>";'
+        '  el.appendChild(div);'
+        '  scrollToBottom();'
+        '}'
+        ''
+        'function addAiBubble(text){'
+        '  var el = document.getElementById("chatMessages");'
+        '  var div = document.createElement("div");'
+        '  div.className = "chat-bubble chat-ai";'
+        '  div.innerHTML = \'<div class="chat-bubble-inner chat-ai-inner">\' + formatAiMessage(text) + "</div>";'
+        '  el.appendChild(div);'
+        '  scrollToBottom();'
+        '}'
+        ''
+        'function addToolReady(toolDefJson){'
+        '  var el = document.getElementById("chatMessages");'
+        '  var div = document.createElement("div");'
+        '  div.className = "chat-tool-ready";'
+        '  div.innerHTML = \'<div style="font-size:14px;font-weight:700;color:#047857;margin-bottom:8px">&#127881; הכלי מוכן!</div>\''
+        '    + \'<form method="post" action="/tools/create/save">\''
+        '    + \'<input type="hidden" name="session_id" value="\' + CHAT_SESSION_ID + \'">\''
+        '    + \'<input type="hidden" name="definition" value="\' + toolDefJson.replace(/"/g, "&quot;") + \'">\''
+        '    + \'<div style="display:flex;gap:8px;flex-wrap:wrap">\''
+        '    + \'<button type="submit" name="action" value="save_draft" class="btn btn-blue" style="border-radius:10px;font-size:13px">&#128190; שמור כטיוטה</button>\''
+        '    + \'<button type="submit" name="action" value="publish" class="btn btn-blue" style="border-radius:10px;font-size:13px;background:#047857">&#128228; שלח לאישור ופרסום</button>\''
+        '    + \'</div></form>\';'
+        '  el.appendChild(div);'
+        '  scrollToBottom();'
+        '}'
+        ''
+        'function showTypingIndicator(){'
+        '  removeTypingIndicator();'
+        '  var el = document.getElementById("chatMessages");'
+        '  var div = document.createElement("div");'
+        '  div.id = "typingIndicator";'
+        '  div.className = "typing-indicator";'
+        '  div.innerHTML = \'<div class="typing-indicator-bubble"><div class="typing-dots"><span></span><span></span><span></span></div><span class="typing-label">הבינה מעבדת...</span></div>\';'
+        '  el.appendChild(div);'
+        '  scrollToBottom();'
+        '}'
+        ''
+        'function removeTypingIndicator(){'
+        '  var ti = document.getElementById("typingIndicator");'
+        '  if(ti) ti.remove();'
+        '}'
+        ''
+        'function setLoading(on){'
+        '  chatSending = on;'
+        '  var inp = document.getElementById("chatInput");'
+        '  var btn = document.getElementById("chatSendBtn");'
+        '  var btnText = document.getElementById("sendBtnText");'
+        '  var btnSpin = document.getElementById("sendBtnSpinner");'
+        '  var upload = document.getElementById("uploadBtn");'
+        '  inp.disabled = on;'
+        '  btn.disabled = on;'
+        '  if(upload) upload.disabled = on;'
+        '  if(on){'
+        '    btnText.textContent = "ממתין...";'
+        '    btnSpin.style.display = "inline-block";'
+        '  } else {'
+        '    btnText.textContent = "שלח";'
+        '    btnSpin.style.display = "none";'
+        '    inp.focus();'
+        '  }'
+        '}'
+        ''
+        'function sendChatMessage(){'
+        '  if(chatSending) return;'
+        '  var inp = document.getElementById("chatInput");'
+        '  var msg = inp.value.trim();'
+        '  if(!msg) return;'
+        '  inp.value = "";'
+        '  inp.style.height = "42px";'
+        '  addUserBubble(msg);'
+        '  setLoading(true);'
+        '  showTypingIndicator();'
+        '  fetch("/tools/create/chat", {'
+        '    method: "POST",'
+        '    headers: {"Content-Type": "application/json", "X-Requested-With": "XMLHttpRequest"},'
+        '    body: JSON.stringify({session_id: CHAT_SESSION_ID, message: msg})'
+        '  })'
+        '  .then(function(r){ if(!r.ok) throw new Error("HTTP " + r.status); return r.json(); })'
+        '  .then(function(data){'
+        '    removeTypingIndicator();'
+        '    if(data.error){ addAiBubble("שגיאה: " + data.error); }'
+        '    else {'
+        '      addAiBubble(data.assistant_message);'
+        '      if(data.has_tool && data.tool_definition) addToolReady(data.tool_definition);'
+        '    }'
+        '    setLoading(false);'
+        '  })'
+        '  .catch(function(err){'
+        '    removeTypingIndicator();'
+        '    addAiBubble("שגיאה בתקשורת. נסה שוב.");'
+        '    setLoading(false);'
+        '  });'
+        '}'
+        ''
+        '/* Textarea: Enter to send, Shift+Enter for newline, auto-resize */'
+        'document.getElementById("chatInput").addEventListener("keydown", function(e){'
+        '  if(e.key === "Enter" && !e.shiftKey){'
+        '    e.preventDefault();'
+        '    sendChatMessage();'
+        '  }'
+        '});'
+        'document.getElementById("chatInput").addEventListener("input", function(){'
+        '  this.style.height = "42px";'
+        '  this.style.height = Math.min(this.scrollHeight, 120) + "px";'
+        '});'
+        ''
+        '/* Auto-scroll on page load */'
+        'scrollToBottom();'
+        '</script>'
+    )
 
     return render("בניית כלי עם AI", body, lang=lang, topbar_greeting=text["topbar_greeting"], logout_label=text["logout"], show_lang_switch=True)
 
@@ -10157,10 +10336,18 @@ def tools_create():
 @app.route("/tools/create/chat", methods=["POST"])
 @login_required
 def tools_create_chat():
-    chat_session_id = request.form.get("session_id", "")
-    user_message = request.form.get("message", "").strip()
+    is_ajax = request.headers.get("X-Requested-With") == "XMLHttpRequest" or request.is_json
+    if is_ajax:
+        data = request.get_json(silent=True) or {}
+        chat_session_id = data.get("session_id", "")
+        user_message = data.get("message", "").strip()
+    else:
+        chat_session_id = request.form.get("session_id", "")
+        user_message = request.form.get("message", "").strip()
 
     if not user_message:
+        if is_ajax:
+            return jsonify({"error": "הודעה ריקה"}), 400
         return redirect("/tools/create")
 
     # Get chat session
@@ -10170,6 +10357,8 @@ def tools_create_chat():
             (chat_session_id, session["user_id"]),
         ).fetchone()
         if not chat_data:
+            if is_ajax:
+                return jsonify({"error": "שיחה לא נמצאה"}), 404
             add_flash("שיחה לא נמצאה")
             return redirect("/tools/create")
 
@@ -10186,6 +10375,9 @@ def tools_create_chat():
     assistant_response = call_claude_chat(api_messages)
     messages.append({"role": "assistant", "content": assistant_response})
 
+    # Check if tool definition exists in response
+    tool_def = extract_tool_json_from_message(assistant_response)
+
     # Save updated messages
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     with get_db() as db:
@@ -10196,6 +10388,14 @@ def tools_create_chat():
         db.commit()
 
     log_user_activity("ai_chat", "שיחת AI ליצירת כלי", "", "", f"session={chat_session_id}")
+
+    if is_ajax:
+        return jsonify({
+            "ok": True,
+            "assistant_message": assistant_response,
+            "has_tool": tool_def is not None,
+            "tool_definition": json.dumps(tool_def, ensure_ascii=False) if tool_def else None,
+        })
     return redirect("/tools/create")
 
 
