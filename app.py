@@ -36,6 +36,16 @@ except ImportError:
     psycopg = None
     dict_row = None
 
+try:
+    import anthropic as anthropic_sdk
+except ImportError:
+    anthropic_sdk = None
+
+try:
+    import pandas as pd
+except ImportError:
+    pd = None
+
 
 H_ALIGN = {1: "left", 2: "center", 3: "right", 4: "fill", 5: "justify", 6: "centerContinuous", 7: "distributed"}
 V_ALIGN = {0: "top", 1: "center", 2: "bottom", 3: "justify", 4: "distributed"}
@@ -4279,6 +4289,67 @@ def init_db():
         )
         db.execute("CREATE INDEX IF NOT EXISTS idx_report_jobs_user_created_at ON report_jobs(user_id, created_at)")
         db.execute("CREATE INDEX IF NOT EXISTS idx_report_jobs_status ON report_jobs(status)")
+        # ── Marketplace tables ──────────────────────────────────────
+        db.execute(
+            """CREATE TABLE IF NOT EXISTS marketplace_tools (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            creator_id INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            description TEXT,
+            icon TEXT DEFAULT '🔧',
+            category TEXT DEFAULT 'general',
+            definition_json TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'draft',
+            is_public INTEGER DEFAULT 0,
+            usage_count INTEGER DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            approved_at TEXT,
+            approved_by INTEGER)"""
+        )
+        db.execute("CREATE INDEX IF NOT EXISTS idx_marketplace_tools_creator ON marketplace_tools(creator_id)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_marketplace_tools_status ON marketplace_tools(status)")
+        db.execute(
+            """CREATE TABLE IF NOT EXISTS tool_ratings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            tool_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            rating INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL)"""
+        )
+        db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_tool_ratings_unique ON tool_ratings(tool_id, user_id)")
+        db.execute(
+            """CREATE TABLE IF NOT EXISTS tool_comments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            tool_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            username TEXT,
+            full_name TEXT,
+            body TEXT NOT NULL,
+            created_at TEXT NOT NULL)"""
+        )
+        db.execute("CREATE INDEX IF NOT EXISTS idx_tool_comments_tool ON tool_comments(tool_id)")
+        db.execute(
+            """CREATE TABLE IF NOT EXISTS tool_installs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            tool_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            created_at TEXT NOT NULL)"""
+        )
+        db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_tool_installs_unique ON tool_installs(tool_id, user_id)")
+        db.execute(
+            """CREATE TABLE IF NOT EXISTS tool_chat_sessions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            messages_json TEXT NOT NULL DEFAULT '[]',
+            tool_id INTEGER,
+            status TEXT NOT NULL DEFAULT 'active',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL)"""
+        )
+        db.execute("CREATE INDEX IF NOT EXISTS idx_tool_chat_sessions_user ON tool_chat_sessions(user_id)")
+        # ── End marketplace tables ────────────────────────────────
+
         existing_columns = get_table_columns(db, "users")
         desired_columns = {
             "company_name": "TEXT",
@@ -7124,6 +7195,13 @@ def dashboard():
         user = db.execute("SELECT * FROM users WHERE id=?", (session["user_id"],)).fetchone()
         perms = db.execute("SELECT script_id FROM permissions WHERE user_id=?", (session["user_id"],)).fetchall()
         report_jobs = db.execute("SELECT * FROM report_jobs WHERE user_id=? AND status<>'downloaded' ORDER BY created_at DESC, id DESC LIMIT 8", (session["user_id"],)).fetchall()
+        installed_tools = db.execute(
+            """SELECT t.id, t.name, t.description, t.icon FROM marketplace_tools t
+            JOIN tool_installs i ON i.tool_id = t.id
+            WHERE i.user_id=? AND t.status='approved' AND t.is_public=1
+            ORDER BY t.name""",
+            (session["user_id"],),
+        ).fetchall()
     if user is None:
         session.clear()
         return redirect("/login")
@@ -7159,8 +7237,18 @@ def dashboard():
             '<div style="font-size:12px;color:#64748b">' + script["desc"] + "</div>"
             "</a>"
         )
+    # Add installed marketplace tools
+    for mt in installed_tools:
+        cards += (
+            '<a href="/marketplace/tool/' + str(mt["id"]) + '/run" style="background:linear-gradient(135deg,#ffffff 0%,#f0fdf4 100%);border:1px solid #86efac;border-radius:16px;box-shadow:0 2px 16px rgba(0,0,0,.06);padding:1.5rem;text-decoration:none;display:block">'
+            '<div style="font-size:36px;margin-bottom:.75rem">' + esc(mt["icon"] or "🔧") + "</div>"
+            '<div style="font-size:15px;font-weight:700;color:#047857;margin-bottom:4px">' + esc(mt["name"]) + '</div>'
+            '<div style="font-size:12px;color:#64748b">' + esc((mt["description"] or "")[:80]) + '</div>'
+            '<div style="font-size:10px;color:#94a3b8;margin-top:6px">🛒 מתוך שוק הכלים</div>'
+            "</a>"
+        )
 
-    if not allowed:
+    if not allowed and not installed_tools:
         cards = (
             '<div style="text-align:center;padding:3rem;color:#94a3b8">'
             '<div style="font-size:48px;margin-bottom:1rem">&#128274;</div>'
@@ -7254,6 +7342,14 @@ def dashboard():
         + '</div><div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:1rem">'
         + cards
         + '</div></div>'
+        + '<div class="card" style="margin-top:1rem;background:linear-gradient(135deg,#f0fdf4 0%,#ecfdf5 100%);border:1px solid #86efac">'
+        + '<div style="display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap">'
+        + '<div><div style="font-size:18px;font-weight:800;color:#047857;margin-bottom:6px">' + ("🛒 שוק הכלים" if lang == "he" else "🛒 Tool Marketplace") + '</div>'
+        + '<div style="font-size:14px;color:#475569;line-height:1.7">' + ("גלה כלים שנבנו על ידי משתמשים אחרים או צור כלי משלך עם AI" if lang == "he" else "Discover tools built by other users or create your own with AI") + '</div></div>'
+        + '<div style="display:flex;gap:8px;flex-wrap:wrap">'
+        + '<a href="/marketplace" class="btn btn-blue" style="text-decoration:none;display:inline-flex;align-items:center;justify-content:center;min-width:140px;background:#047857">' + ("גלה כלים" if lang == "he" else "Browse tools") + '</a>'
+        + '<a href="/tools/create" class="btn btn-blue" style="text-decoration:none;display:inline-flex;align-items:center;justify-content:center;min-width:140px">' + ("🤖 צור כלי" if lang == "he" else "🤖 Create tool") + '</a>'
+        + '</div></div></div>'
         + report_jobs_html
         + '<div class="card" style="margin-top:1rem;background:linear-gradient(135deg,#ffffff 0%,#f8fbff 100%);border:1px solid #dbeafe">'
         + '<div style="display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap">'
@@ -8769,7 +8865,14 @@ def admin():
         '<span style="font-size:18px;color:#64748b">+</span>'
         '</summary><div style="padding:0 20px 20px">'
         + table
-        + '</div></details><details class="card" id="adminSupport" style="padding:0;overflow:hidden" dir="rtl">'
+        + '</div></details>'
+        '<div class="card" style="background:linear-gradient(135deg,#f0fdf4 0%,#ecfdf5 100%);border:1px solid #86efac" dir="rtl">'
+        '<div style="display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap">'
+        '<div><div style="font-size:18px;font-weight:800;color:#047857;margin-bottom:4px">🛒 ניהול שוק הכלים</div>'
+        '<div style="font-size:13px;color:#475569">בדיקה ואישור כלים שנוצרו על ידי משתמשים</div></div>'
+        '<a href="/admin/tools" class="btn btn-blue" style="text-decoration:none;display:inline-flex;align-items:center;justify-content:center;min-width:160px;background:#047857">ניהול כלים</a>'
+        '</div></div>'
+        '<details class="card" id="adminSupport" style="padding:0;overflow:hidden" dir="rtl">'
         '<summary class="admin-collapsible-summary">'
         '<div><div style="font-size:22px;font-weight:800;color:#0f172a;margin-bottom:4px">&#128172; פניות שירות לקוחות</div><div class="admin-collapsible-sub">'
         + ('יש ' + str(pending_support) + ' פניות שממתינות להתייחסות' if pending_support else 'אין כרגע פניות שממתינות להתייחסות')
@@ -9017,6 +9120,1273 @@ def set_permissions(uid):
         db.commit()
     add_flash("ההרשאות עודכנו")
     return redirect("/admin")
+
+
+# ════════════════════════════════════════════════════════════════════
+# MARKETPLACE — Tool Execution Engine, AI Chat, Gallery & Routes
+# ════════════════════════════════════════════════════════════════════
+
+TOOL_ACTIONS = {
+    "filter", "group_by", "sum", "count", "average", "min", "max",
+    "sort", "rename_column", "select_columns", "add_column", "format_number",
+    "concatenate", "split_column", "fill_missing", "remove_duplicates",
+    "pivot", "unpivot", "date_extract", "math",
+}
+
+TOOL_CATEGORIES = {
+    "general": "כללי",
+    "payroll": "שכר",
+    "attendance": "נוכחות",
+    "hr": "משאבי אנוש",
+    "finance": "כספים",
+    "reports": "דוחות",
+}
+
+
+def validate_tool_definition(definition):
+    """Validate a structured tool definition dict. Returns (ok, errors)."""
+    errors = []
+    if not isinstance(definition, dict):
+        return False, ["Tool definition must be a JSON object"]
+    if not definition.get("name"):
+        errors.append("Tool must have a name")
+    if not definition.get("input_type"):
+        errors.append("Tool must specify input_type (xlsx, xls, csv)")
+    steps = definition.get("steps", [])
+    if not isinstance(steps, list) or len(steps) == 0:
+        errors.append("Tool must have at least one processing step")
+    for i, step in enumerate(steps):
+        if not isinstance(step, dict):
+            errors.append(f"Step {i+1} must be an object")
+            continue
+        action = step.get("action")
+        if action not in TOOL_ACTIONS:
+            errors.append(f"Step {i+1}: unknown action '{action}'. Allowed: {', '.join(sorted(TOOL_ACTIONS))}")
+    output = definition.get("output_format", {})
+    if not isinstance(output, dict):
+        errors.append("output_format must be an object")
+    return len(errors) == 0, errors
+
+
+def execute_tool_definition(definition, input_path, output_path, extension):
+    """Execute a structured JSON tool definition against an input file.
+
+    Reads the input file into a pandas DataFrame, applies each step
+    sequentially, then writes the result to output_path as xlsx.
+    Returns dict with warnings list.
+    """
+    if pd is None:
+        raise RuntimeError("pandas is required for marketplace tools. Install with: pip install pandas")
+
+    # Read input
+    if extension in ("xlsx", "xls"):
+        df = pd.read_excel(input_path)
+    elif extension == "csv":
+        df = pd.read_csv(input_path)
+    else:
+        raise ValueError(f"Unsupported file type: {extension}")
+
+    warnings = []
+    steps = definition.get("steps", [])
+
+    for i, step in enumerate(steps):
+        action = step.get("action", "")
+        try:
+            df = _apply_tool_step(df, step, warnings)
+        except Exception as exc:
+            warnings.append(f"Step {i+1} ({action}) failed: {exc}")
+
+    # Apply output formatting
+    output_format = definition.get("output_format", {})
+    title = output_format.get("title", definition.get("name", "Report"))
+    columns = output_format.get("columns")
+    if columns and isinstance(columns, list):
+        available = [c for c in columns if c in df.columns]
+        if available:
+            df = df[available]
+
+    # Write output
+    wb = Workbook()
+    ws = wb.active
+    ws.title = title[:31] if title else "Report"
+
+    # Write header
+    for col_idx, col_name in enumerate(df.columns, 1):
+        cell = ws.cell(row=1, column=col_idx, value=str(col_name))
+        cell.font = Font(bold=True, color="FFFFFF", size=11)
+        cell.fill = PatternFill(start_color="1E3A8A", end_color="1E3A8A", fill_type="solid")
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+
+    # Write data
+    for row_idx, row in enumerate(df.itertuples(index=False), 2):
+        for col_idx, value in enumerate(row, 1):
+            cell = ws.cell(row=row_idx, column=col_idx)
+            if pd.isna(value):
+                cell.value = ""
+            elif isinstance(value, float):
+                cell.value = round(value, 2)
+                cell.number_format = '#,##0.00'
+            else:
+                cell.value = value
+            if row_idx % 2 == 0:
+                cell.fill = PatternFill(start_color="F0F4FF", end_color="F0F4FF", fill_type="solid")
+
+    # Auto-width columns
+    for col_idx in range(1, len(df.columns) + 1):
+        letter = get_column_letter(col_idx)
+        max_len = max(len(str(ws.cell(row=r, column=col_idx).value or "")) for r in range(1, min(ws.max_row + 1, 50)))
+        ws.column_dimensions[letter].width = min(max(max_len + 2, 10), 50)
+
+    ws.freeze_panes = "A2"
+    wb.save(output_path)
+    return {"warnings": warnings}
+
+
+def _apply_tool_step(df, step, warnings):
+    """Apply a single processing step to a DataFrame."""
+    action = step.get("action", "")
+
+    if action == "filter":
+        field = step.get("field", "")
+        operator = step.get("operator", "==")
+        value = step.get("value")
+        if field not in df.columns:
+            warnings.append(f"Filter: column '{field}' not found, skipping")
+            return df
+        col = df[field]
+        if operator == ">":
+            df = df[pd.to_numeric(col, errors="coerce") > float(value)]
+        elif operator == "<":
+            df = df[pd.to_numeric(col, errors="coerce") < float(value)]
+        elif operator == ">=":
+            df = df[pd.to_numeric(col, errors="coerce") >= float(value)]
+        elif operator == "<=":
+            df = df[pd.to_numeric(col, errors="coerce") <= float(value)]
+        elif operator == "==":
+            df = df[col.astype(str) == str(value)]
+        elif operator == "!=":
+            df = df[col.astype(str) != str(value)]
+        elif operator == "contains":
+            df = df[col.astype(str).str.contains(str(value), na=False)]
+        elif operator == "not_contains":
+            df = df[~col.astype(str).str.contains(str(value), na=False)]
+        elif operator == "is_empty":
+            df = df[col.isna() | (col.astype(str).str.strip() == "")]
+        elif operator == "not_empty":
+            df = df[col.notna() & (col.astype(str).str.strip() != "")]
+
+    elif action == "group_by":
+        field = step.get("field", "")
+        agg_field = step.get("agg_field", "")
+        agg_func = step.get("agg_func", "sum")
+        if field not in df.columns:
+            warnings.append(f"Group by: column '{field}' not found")
+            return df
+        if agg_field and agg_field in df.columns:
+            df[agg_field] = pd.to_numeric(df[agg_field], errors="coerce")
+            agg_map = {"sum": "sum", "count": "count", "average": "mean", "min": "min", "max": "max"}
+            df = df.groupby(field, as_index=False).agg({agg_field: agg_map.get(agg_func, "sum")})
+        else:
+            df = df.groupby(field, as_index=False).size()
+            df.columns = [field, "count"]
+
+    elif action == "sum":
+        field = step.get("field", "")
+        alias = step.get("alias", f"sum_{field}")
+        if field in df.columns:
+            df[field] = pd.to_numeric(df[field], errors="coerce")
+            total = df[field].sum()
+            summary_row = {col: "" for col in df.columns}
+            summary_row[field] = total
+            first_col = df.columns[0]
+            summary_row[first_col] = alias
+            df = pd.concat([df, pd.DataFrame([summary_row])], ignore_index=True)
+
+    elif action == "count":
+        field = step.get("field", "")
+        alias = step.get("alias", f"count_{field}")
+        if field in df.columns:
+            df[alias] = df.groupby(field)[field].transform("count")
+
+    elif action == "average":
+        field = step.get("field", "")
+        alias = step.get("alias", f"avg_{field}")
+        if field in df.columns:
+            df[field] = pd.to_numeric(df[field], errors="coerce")
+            df[alias] = df[field].mean()
+
+    elif action == "min":
+        field = step.get("field", "")
+        alias = step.get("alias", f"min_{field}")
+        if field in df.columns:
+            df[field] = pd.to_numeric(df[field], errors="coerce")
+            df[alias] = df[field].min()
+
+    elif action == "max":
+        field = step.get("field", "")
+        alias = step.get("alias", f"max_{field}")
+        if field in df.columns:
+            df[field] = pd.to_numeric(df[field], errors="coerce")
+            df[alias] = df[field].max()
+
+    elif action == "sort":
+        field = step.get("field", "")
+        order = step.get("order", "asc")
+        if field in df.columns:
+            ascending = order != "desc"
+            try:
+                df = df.sort_values(field, ascending=ascending, na_position="last")
+            except TypeError:
+                df[field] = pd.to_numeric(df[field], errors="coerce")
+                df = df.sort_values(field, ascending=ascending, na_position="last")
+
+    elif action == "rename_column":
+        old_name = step.get("old_name", "")
+        new_name = step.get("new_name", "")
+        if old_name in df.columns and new_name:
+            df = df.rename(columns={old_name: new_name})
+
+    elif action == "select_columns":
+        columns = step.get("columns", [])
+        available = [c for c in columns if c in df.columns]
+        if available:
+            df = df[available]
+
+    elif action == "add_column":
+        name = step.get("name", "")
+        value = step.get("value", "")
+        if name:
+            df[name] = value
+
+    elif action == "format_number":
+        field = step.get("field", "")
+        decimals = step.get("decimals", 2)
+        if field in df.columns:
+            df[field] = pd.to_numeric(df[field], errors="coerce").round(int(decimals))
+
+    elif action == "concatenate":
+        fields = step.get("fields", [])
+        separator = step.get("separator", " ")
+        new_name = step.get("new_name", "combined")
+        available = [f for f in fields if f in df.columns]
+        if len(available) >= 2:
+            df[new_name] = df[available].astype(str).agg(separator.join, axis=1)
+
+    elif action == "fill_missing":
+        field = step.get("field", "")
+        fill_value = step.get("value", "")
+        if field in df.columns:
+            df[field] = df[field].fillna(fill_value)
+
+    elif action == "remove_duplicates":
+        fields = step.get("fields")
+        if fields and isinstance(fields, list):
+            available = [f for f in fields if f in df.columns]
+            if available:
+                df = df.drop_duplicates(subset=available)
+        else:
+            df = df.drop_duplicates()
+
+    elif action == "math":
+        field_a = step.get("field_a", "")
+        field_b = step.get("field_b", "")
+        operator = step.get("operator", "+")
+        result_name = step.get("result_name", "result")
+        if field_a in df.columns:
+            a = pd.to_numeric(df[field_a], errors="coerce")
+            if field_b in df.columns:
+                b = pd.to_numeric(df[field_b], errors="coerce")
+            else:
+                try:
+                    b = float(field_b) if field_b else 0
+                except ValueError:
+                    b = 0
+            if operator == "+":
+                df[result_name] = a + b
+            elif operator == "-":
+                df[result_name] = a - b
+            elif operator == "*":
+                df[result_name] = a * b
+            elif operator == "/":
+                df[result_name] = a / b.replace(0, float("nan")) if isinstance(b, pd.Series) else a / (b if b != 0 else float("nan"))
+
+    elif action == "date_extract":
+        field = step.get("field", "")
+        part = step.get("part", "month")
+        new_name = step.get("new_name", f"{field}_{part}")
+        if field in df.columns:
+            dt = pd.to_datetime(df[field], errors="coerce")
+            if part == "year":
+                df[new_name] = dt.dt.year
+            elif part == "month":
+                df[new_name] = dt.dt.month
+            elif part == "day":
+                df[new_name] = dt.dt.day
+            elif part == "weekday":
+                df[new_name] = dt.dt.day_name()
+
+    elif action == "pivot":
+        index = step.get("index", "")
+        columns = step.get("columns", "")
+        values = step.get("values", "")
+        if index in df.columns and columns in df.columns and values in df.columns:
+            df[values] = pd.to_numeric(df[values], errors="coerce")
+            df = df.pivot_table(index=index, columns=columns, values=values, aggfunc="sum", fill_value=0).reset_index()
+            df.columns = [str(c) if not isinstance(c, tuple) else "_".join(str(x) for x in c) for c in df.columns]
+
+    return df
+
+
+# ── AI Chat System Prompt ─────────────────────────────────────────
+
+TOOL_CREATION_SYSTEM_PROMPT = """You are Scriptly's AI Tool Builder — an assistant that helps HR and payroll professionals create data processing tools without coding.
+
+You communicate in Hebrew (the user's language), but tool definition JSON keys are always in English.
+
+## Your Goal
+Guide the user through creating a structured tool definition (JSON) by understanding what they want to do with their Excel/CSV data.
+
+## Conversation Flow
+1. Ask what kind of report or analysis the user needs
+2. If they uploaded a sample file, analyze its column headers and first few rows
+3. Ask clarifying questions about: which columns matter, what calculations/filters they need, what the output should look like
+4. Build the tool definition step by step
+5. Present the final tool definition for confirmation
+
+## Tool Definition Format
+You MUST output valid JSON tool definitions using this structure:
+```json
+{
+  "name": "שם הכלי בעברית",
+  "description": "תיאור קצר",
+  "input_type": "xlsx",
+  "required_fields": ["column1", "column2"],
+  "steps": [
+    {"action": "filter", "field": "column", "operator": ">", "value": 9},
+    {"action": "group_by", "field": "column", "agg_field": "value_col", "agg_func": "sum"},
+    {"action": "sort", "field": "column", "order": "desc"},
+    {"action": "select_columns", "columns": ["col1", "col2"]}
+  ],
+  "output_format": {
+    "title": "כותרת הדוח",
+    "columns": ["col1", "col2"]
+  }
+}
+```
+
+## Available Actions
+- **filter**: Filter rows. Operators: >, <, >=, <=, ==, !=, contains, not_contains, is_empty, not_empty
+- **group_by**: Group by a field. agg_func: sum, count, average, min, max
+- **sum**: Add a summary total row for a numeric field
+- **count**: Count occurrences per group
+- **average/min/max**: Compute stats on a numeric field
+- **sort**: Sort by field. order: asc or desc
+- **rename_column**: Rename a column (old_name → new_name)
+- **select_columns**: Keep only specific columns
+- **add_column**: Add a column with a fixed value
+- **format_number**: Round a numeric column (decimals parameter)
+- **concatenate**: Merge multiple columns with separator
+- **fill_missing**: Fill empty cells with a value
+- **remove_duplicates**: Remove duplicate rows
+- **math**: field_a operator field_b → result_name. Operators: +, -, *, /
+- **date_extract**: Extract year/month/day/weekday from a date column
+- **pivot**: Create a pivot table (index, columns, values)
+
+## Important Rules
+- NEVER generate Python code. Only structured JSON tool definitions.
+- Use the user's actual column names from their uploaded sample.
+- Keep field names exactly as they appear in the data (including Hebrew).
+- When the tool is ready, wrap the final JSON in ```json blocks.
+- If the user's request can't be achieved with the available actions, explain what's possible and suggest alternatives.
+- Be concise. Don't over-explain — the user is a professional.
+- Always respond in Hebrew unless the user writes in English.
+
+## Privacy
+- NEVER ask for or include real employee names, IDs, or personal data.
+- Only use column HEADERS and structure, never real cell data.
+- Remind users not to share personal employee information in the chat.
+"""
+
+
+def analyze_sample_file_for_chat(file_path, extension):
+    """Read column headers and first 3 rows from a file for AI context.
+    Returns anonymized summary string."""
+    try:
+        if pd is None:
+            return "Cannot analyze file: pandas not installed"
+        if extension in ("xlsx", "xls"):
+            df = pd.read_excel(file_path, nrows=5)
+        elif extension == "csv":
+            df = pd.read_csv(file_path, nrows=5)
+        else:
+            return "Unsupported file type"
+
+        cols = list(df.columns)
+        summary = f"Column headers ({len(cols)} columns): {', '.join(str(c) for c in cols)}\n"
+        summary += f"Total rows in sample: {len(df)}\n"
+        summary += "Column types:\n"
+        for col in cols:
+            dtype = str(df[col].dtype)
+            non_null = df[col].notna().sum()
+            sample_val = df[col].dropna().iloc[0] if non_null > 0 else "N/A"
+            # Anonymize: show type and format only, not real values
+            if dtype.startswith("float") or dtype.startswith("int"):
+                summary += f"  - {col}: numeric (e.g. {type(sample_val).__name__})\n"
+            elif dtype == "object":
+                summary += f"  - {col}: text ({len(str(sample_val))} chars)\n"
+            else:
+                summary += f"  - {col}: {dtype}\n"
+        return summary
+    except Exception as exc:
+        return f"Could not analyze file: {exc}"
+
+
+def call_claude_chat(messages, system_prompt=None):
+    """Call Claude API for tool creation chat. Returns assistant message text."""
+    if anthropic_sdk is None:
+        return "שגיאה: ספריית Anthropic לא מותקנת. נא לפנות למנהל המערכת."
+
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not api_key:
+        return "שגיאה: מפתח API של Claude לא הוגדר. נא לפנות למנהל המערכת."
+
+    client = anthropic_sdk.Anthropic(api_key=api_key)
+    try:
+        response = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=4096,
+            system=system_prompt or TOOL_CREATION_SYSTEM_PROMPT,
+            messages=messages,
+        )
+        return response.content[0].text
+    except Exception as exc:
+        return f"שגיאה בתקשורת עם AI: {exc}"
+
+
+def extract_tool_json_from_message(text):
+    """Try to extract a JSON tool definition from an AI message."""
+    import re as _re
+    # Look for ```json ... ``` blocks
+    matches = _re.findall(r"```json\s*(.*?)```", text, _re.DOTALL)
+    for match in matches:
+        try:
+            parsed = json.loads(match.strip())
+            if isinstance(parsed, dict) and "steps" in parsed:
+                return parsed
+        except (json.JSONDecodeError, ValueError):
+            continue
+    # Try parsing the whole message as JSON
+    try:
+        parsed = json.loads(text.strip())
+        if isinstance(parsed, dict) and "steps" in parsed:
+            return parsed
+    except (json.JSONDecodeError, ValueError):
+        pass
+    return None
+
+
+# ── Marketplace Routes ────────────────────────────────────────────
+
+@app.route("/marketplace")
+@login_required
+def marketplace():
+    if session.get("is_admin"):
+        return redirect("/admin")
+
+    lang = get_flow_lang()
+    text = get_flow_text(lang)
+
+    with get_db() as db:
+        tools = db.execute(
+            """SELECT t.*, u.full_name as creator_name, u.company_name as creator_company,
+               (SELECT COUNT(*) FROM tool_ratings WHERE tool_id=t.id) as rating_count,
+               (SELECT COALESCE(AVG(rating),0) FROM tool_ratings WHERE tool_id=t.id) as avg_rating,
+               (SELECT COUNT(*) FROM tool_installs WHERE tool_id=t.id) as install_count
+            FROM marketplace_tools t
+            JOIN users u ON u.id = t.creator_id
+            WHERE t.status = 'approved' AND t.is_public = 1
+            ORDER BY t.usage_count DESC, t.created_at DESC""",
+        ).fetchall()
+
+        user_installed = set()
+        installs = db.execute(
+            "SELECT tool_id FROM tool_installs WHERE user_id=?",
+            (session["user_id"],),
+        ).fetchall()
+        for inst in installs:
+            user_installed.add(inst["tool_id"])
+
+        user_tools = db.execute(
+            "SELECT * FROM marketplace_tools WHERE creator_id=? ORDER BY created_at DESC",
+            (session["user_id"],),
+        ).fetchall()
+
+    search_query = request.args.get("q", "").strip()
+    category_filter = request.args.get("category", "").strip()
+
+    # Build tool cards
+    tool_cards = ""
+    for tool in tools:
+        if search_query and search_query.lower() not in (tool["name"] or "").lower() and search_query.lower() not in (tool["description"] or "").lower():
+            continue
+        if category_filter and tool["category"] != category_filter:
+            continue
+        stars = "⭐" * max(1, min(5, int(float(tool["avg_rating"] or 0) + 0.5)))
+        installed_badge = '<span style="background:#ecfdf5;color:#047857;padding:3px 8px;border-radius:99px;font-size:11px;font-weight:700">מותקן</span>' if tool["id"] in user_installed else ""
+        cat_label = TOOL_CATEGORIES.get(tool["category"], tool["category"] or "כללי")
+
+        tool_cards += (
+            '<a href="/marketplace/tool/' + str(tool["id"]) + '" style="background:white;border-radius:16px;box-shadow:0 2px 16px rgba(0,0,0,.06);padding:1.25rem;text-decoration:none;display:block;border:1px solid #e2e8f0;transition:transform .15s,box-shadow .15s" '
+            'onmouseover="this.style.transform=\'translateY(-2px)\';this.style.boxShadow=\'0 8px 30px rgba(37,99,235,.12)\'" '
+            'onmouseout="this.style.transform=\'none\';this.style.boxShadow=\'0 2px 16px rgba(0,0,0,.06)\'">'
+            '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">'
+            '<span style="font-size:28px">' + esc(tool["icon"] or "🔧") + '</span>'
+            + installed_badge
+            + '</div>'
+            '<div style="font-size:15px;font-weight:700;color:#1e3a8a;margin-bottom:4px">' + esc(tool["name"]) + '</div>'
+            '<div style="font-size:12px;color:#64748b;margin-bottom:8px;line-height:1.5;min-height:36px">' + esc((tool["description"] or "")[:100]) + '</div>'
+            '<div style="display:flex;align-items:center;justify-content:space-between;font-size:11px;color:#94a3b8">'
+            '<span>' + esc(cat_label) + '</span>'
+            '<span>' + stars + ' (' + str(tool["rating_count"] or 0) + ')</span>'
+            '</div>'
+            '<div style="font-size:11px;color:#94a3b8;margin-top:4px">' + esc(tool["creator_name"] or "אנונימי") + ' · ' + str(tool["usage_count"] or 0) + ' שימושים</div>'
+            '</a>'
+        )
+
+    if not tool_cards:
+        tool_cards = (
+            '<div style="text-align:center;padding:3rem;color:#94a3b8;grid-column:1/-1">'
+            '<div style="font-size:48px;margin-bottom:1rem">🔍</div>'
+            '<div>לא נמצאו כלים' + (' עבור "' + esc(search_query) + '"' if search_query else '') + '</div>'
+            '</div>'
+        )
+
+    # Category filter pills
+    cat_pills = '<a href="/marketplace" style="padding:6px 14px;border-radius:99px;font-size:12px;font-weight:600;text-decoration:none;' + ('background:#1e3a8a;color:white' if not category_filter else 'background:#f1f5f9;color:#475569') + '">הכל</a>'
+    for cat_id, cat_name in TOOL_CATEGORIES.items():
+        active = category_filter == cat_id
+        cat_pills += '<a href="/marketplace?category=' + cat_id + (('&q=' + esc(search_query)) if search_query else '') + '" style="padding:6px 14px;border-radius:99px;font-size:12px;font-weight:600;text-decoration:none;' + ('background:#1e3a8a;color:white' if active else 'background:#f1f5f9;color:#475569') + '">' + esc(cat_name) + '</a>'
+
+    # My tools section
+    my_tools_html = ""
+    if user_tools:
+        my_tools_rows = ""
+        status_labels = {"draft": "טיוטה", "pending_review": "ממתין לאישור", "approved": "מאושר", "rejected": "נדחה"}
+        status_colors = {"draft": ("#f8fafc", "#475569"), "pending_review": ("#fff7ed", "#c2410c"), "approved": ("#ecfdf5", "#047857"), "rejected": ("#fef2f2", "#b91c1c")}
+        for t in user_tools:
+            s_bg, s_fg = status_colors.get(t["status"], ("#f8fafc", "#475569"))
+            my_tools_rows += (
+                '<div style="display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-bottom:1px solid #f1f5f9">'
+                '<div><span style="font-size:15px;font-weight:700;color:#0f172a">' + esc(t["icon"] or "🔧") + " " + esc(t["name"]) + '</span></div>'
+                '<span style="padding:4px 10px;border-radius:99px;font-size:11px;font-weight:700;background:' + s_bg + ';color:' + s_fg + '">' + esc(status_labels.get(t["status"], t["status"])) + '</span>'
+                '</div>'
+            )
+        my_tools_html = (
+            '<div class="card" style="margin-bottom:1.5rem;border:1px solid #dbeafe">'
+            '<div style="font-size:18px;font-weight:800;color:#1e3a8a;margin-bottom:12px">הכלים שלי</div>'
+            + my_tools_rows
+            + '</div>'
+        )
+
+    body = (
+        '<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;margin-bottom:1.5rem">'
+        '<div>'
+        '<h2 style="font-size:24px;font-weight:800;color:#1e3a8a;margin-bottom:4px">🛒 שוק הכלים</h2>'
+        '<p style="font-size:14px;color:#64748b">גלה כלים שנבנו על ידי משתמשים אחרים — או צור כלי משלך עם AI</p>'
+        '</div>'
+        '<a href="/tools/create" class="btn btn-blue" style="text-decoration:none;display:inline-flex;align-items:center;gap:6px;padding:12px 24px;font-size:14px;border-radius:12px">🤖 צור כלי חדש עם AI</a>'
+        '</div>'
+        + my_tools_html
+        + '<form method="get" action="/marketplace" style="margin-bottom:1rem;display:flex;gap:8px">'
+        '<input type="text" name="q" value="' + esc(search_query) + '" placeholder="חיפוש כלים..." style="flex:1;padding:10px 14px;border:1.5px solid #e2e8f0;border-radius:12px;font-size:14px;font-family:inherit">'
+        '<button type="submit" class="btn btn-blue" style="border-radius:12px">חפש</button>'
+        '</form>'
+        '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:1.5rem">' + cat_pills + '</div>'
+        '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:1rem">'
+        + tool_cards
+        + '</div>'
+        '<div style="text-align:center;margin-top:2rem">'
+        '<a href="/dashboard" style="color:#2563eb;font-size:14px;text-decoration:none">← חזרה לדשבורד</a>'
+        '</div>'
+    )
+
+    return render("שוק הכלים", body, lang=lang, topbar_greeting=text["topbar_greeting"], logout_label=text["logout"], show_lang_switch=True)
+
+
+@app.route("/marketplace/tool/<int:tool_id>")
+@login_required
+def marketplace_tool_detail(tool_id):
+    lang = get_flow_lang()
+    text = get_flow_text(lang)
+
+    with get_db() as db:
+        tool = db.execute(
+            """SELECT t.*, u.full_name as creator_name, u.company_name as creator_company
+            FROM marketplace_tools t JOIN users u ON u.id = t.creator_id
+            WHERE t.id = ?""",
+            (tool_id,),
+        ).fetchone()
+        if not tool:
+            add_flash("הכלי לא נמצא")
+            return redirect("/marketplace")
+
+        rating_info = db.execute(
+            "SELECT COUNT(*) as cnt, COALESCE(AVG(rating),0) as avg FROM tool_ratings WHERE tool_id=?",
+            (tool_id,),
+        ).fetchone()
+        user_rating = db.execute(
+            "SELECT rating FROM tool_ratings WHERE tool_id=? AND user_id=?",
+            (tool_id, session["user_id"]),
+        ).fetchone()
+        is_installed = db.execute(
+            "SELECT 1 FROM tool_installs WHERE tool_id=? AND user_id=?",
+            (tool_id, session["user_id"]),
+        ).fetchone()
+        comments = db.execute(
+            "SELECT * FROM tool_comments WHERE tool_id=? ORDER BY created_at DESC LIMIT 20",
+            (tool_id,),
+        ).fetchall()
+
+    avg_rating = float(rating_info["avg"] or 0)
+    rating_count = int(rating_info["cnt"] or 0)
+    user_stars = user_rating["rating"] if user_rating else 0
+
+    # Parse definition for display
+    try:
+        definition = json.loads(tool["definition_json"])
+    except (json.JSONDecodeError, TypeError):
+        definition = {}
+
+    steps_html = ""
+    for i, step in enumerate(definition.get("steps", []), 1):
+        action = step.get("action", "?")
+        detail = ""
+        if action == "filter":
+            detail = f'{step.get("field", "?")} {step.get("operator", "?")} {step.get("value", "?")}'
+        elif action == "group_by":
+            detail = f'{step.get("field", "?")} → {step.get("agg_func", "sum")}({step.get("agg_field", "?")})'
+        elif action == "sort":
+            detail = f'{step.get("field", "?")} ({step.get("order", "asc")})'
+        elif action == "select_columns":
+            detail = ", ".join(step.get("columns", [])[:5])
+        elif action == "math":
+            detail = f'{step.get("field_a", "?")} {step.get("operator", "?")} {step.get("field_b", "?")} → {step.get("result_name", "?")}'
+        else:
+            detail = step.get("field", "") or step.get("name", "")
+        steps_html += (
+            '<div style="display:flex;align-items:center;gap:10px;padding:8px 12px;background:#f8fafc;border-radius:10px;margin-bottom:6px">'
+            '<span style="background:#1e3a8a;color:white;width:24px;height:24px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;flex-shrink:0">' + str(i) + '</span>'
+            '<span style="font-size:13px;color:#0f172a"><strong>' + esc(action) + '</strong> ' + esc(detail) + '</span>'
+            '</div>'
+        )
+
+    # Star rating UI
+    star_html = ""
+    for s in range(1, 6):
+        filled = "⭐" if s <= user_stars else "☆"
+        star_html += '<a href="/marketplace/tool/' + str(tool_id) + '/rate?stars=' + str(s) + '" style="font-size:24px;text-decoration:none;cursor:pointer">' + filled + '</a>'
+
+    # Comments
+    comments_html = ""
+    for c in comments:
+        comments_html += (
+            '<div style="padding:12px 0;border-bottom:1px solid #f1f5f9">'
+            '<div style="display:flex;justify-content:space-between;margin-bottom:4px">'
+            '<span style="font-size:13px;font-weight:700;color:#0f172a">' + esc(c["full_name"] or c["username"] or "אנונימי") + '</span>'
+            '<span style="font-size:11px;color:#94a3b8">' + esc(format_ui_datetime(c["created_at"])) + '</span>'
+            '</div>'
+            '<div style="font-size:13px;color:#334155;line-height:1.7">' + esc(c["body"]) + '</div>'
+            '</div>'
+        )
+
+    install_btn = ""
+    if tool["status"] == "approved" and tool["is_public"]:
+        if is_installed:
+            install_btn = (
+                '<a href="/marketplace/tool/' + str(tool_id) + '/run" class="btn btn-blue" style="text-decoration:none;display:inline-flex;align-items:center;gap:6px;padding:12px 24px;border-radius:12px;font-size:14px">▶ הרץ כלי</a>'
+                '<form method="post" action="/marketplace/tool/' + str(tool_id) + '/uninstall" style="display:inline"><button type="submit" class="btn btn-gray" style="border-radius:12px;font-size:13px">הסר מהדשבורד</button></form>'
+            )
+        else:
+            install_btn = '<form method="post" action="/marketplace/tool/' + str(tool_id) + '/install" style="display:inline"><button type="submit" class="btn btn-blue" style="border-radius:12px;padding:12px 24px;font-size:14px">➕ הוסף לדשבורד שלי</button></form>'
+
+    body = (
+        '<div style="margin-bottom:1.5rem"><a href="/marketplace" style="color:#2563eb;font-size:13px;text-decoration:none">← חזרה לשוק הכלים</a></div>'
+        '<div class="card">'
+        '<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:1rem">'
+        '<div>'
+        '<div style="font-size:36px;margin-bottom:8px">' + esc(tool["icon"] or "🔧") + '</div>'
+        '<h2 style="font-size:22px;font-weight:800;color:#1e3a8a;margin-bottom:4px;border:none;padding:0">' + esc(tool["name"]) + '</h2>'
+        '<div style="font-size:14px;color:#64748b;line-height:1.7;margin-bottom:8px">' + esc(tool["description"] or "") + '</div>'
+        '<div style="font-size:12px;color:#94a3b8">יוצר: ' + esc(tool["creator_name"] or "אנונימי") + ' · ' + str(tool["usage_count"] or 0) + ' שימושים · ' + str(rating_count) + ' דירוגים</div>'
+        '</div>'
+        '<div style="display:flex;flex-direction:column;gap:8px;align-items:flex-end">'
+        + install_btn
+        + '</div></div>'
+        '<div style="margin-bottom:1rem"><span style="font-size:13px;color:#64748b;margin-left:8px">הדירוג שלך:</span>' + star_html + '</div>'
+        '</div>'
+        '<div class="card">'
+        '<div style="font-size:16px;font-weight:800;color:#0f172a;margin-bottom:12px">שלבי עיבוד</div>'
+        + (steps_html or '<div style="color:#94a3b8;font-size:13px">אין שלבי עיבוד מוגדרים</div>')
+        + '</div>'
+        '<div class="card">'
+        '<div style="font-size:16px;font-weight:800;color:#0f172a;margin-bottom:12px">תגובות</div>'
+        '<form method="post" action="/marketplace/tool/' + str(tool_id) + '/comment" style="margin-bottom:1rem;display:flex;gap:8px">'
+        '<input type="text" name="body" placeholder="כתוב תגובה..." style="flex:1;padding:10px 14px;border:1.5px solid #e2e8f0;border-radius:12px;font-size:14px;font-family:inherit" required>'
+        '<button type="submit" class="btn btn-blue" style="border-radius:12px">שלח</button>'
+        '</form>'
+        + (comments_html or '<div style="color:#94a3b8;font-size:13px;text-align:center;padding:1rem">עדיין אין תגובות — היה הראשון!</div>')
+        + '</div>'
+    )
+
+    return render(esc(tool["name"]), body, lang=lang, topbar_greeting=text["topbar_greeting"], logout_label=text["logout"], show_lang_switch=True)
+
+
+@app.route("/marketplace/tool/<int:tool_id>/install", methods=["POST"])
+@login_required
+def install_tool(tool_id):
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with get_db() as db:
+        tool = db.execute("SELECT id, status, is_public FROM marketplace_tools WHERE id=?", (tool_id,)).fetchone()
+        if not tool or tool["status"] != "approved" or not tool["is_public"]:
+            add_flash("לא ניתן להתקין כלי זה")
+            return redirect("/marketplace")
+        existing = db.execute("SELECT 1 FROM tool_installs WHERE tool_id=? AND user_id=?", (tool_id, session["user_id"])).fetchone()
+        if not existing:
+            db.execute("INSERT INTO tool_installs(tool_id, user_id, created_at) VALUES (?,?,?)", (tool_id, session["user_id"], now))
+            db.commit()
+    add_flash("הכלי נוסף לדשבורד שלך!")
+    return redirect("/marketplace/tool/" + str(tool_id))
+
+
+@app.route("/marketplace/tool/<int:tool_id>/uninstall", methods=["POST"])
+@login_required
+def uninstall_tool(tool_id):
+    with get_db() as db:
+        db.execute("DELETE FROM tool_installs WHERE tool_id=? AND user_id=?", (tool_id, session["user_id"]))
+        db.commit()
+    add_flash("הכלי הוסר מהדשבורד שלך")
+    return redirect("/marketplace/tool/" + str(tool_id))
+
+
+@app.route("/marketplace/tool/<int:tool_id>/rate")
+@login_required
+def rate_tool(tool_id):
+    stars = request.args.get("stars", "1")
+    try:
+        stars = max(1, min(5, int(stars)))
+    except (ValueError, TypeError):
+        stars = 1
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with get_db() as db:
+        existing = db.execute("SELECT id FROM tool_ratings WHERE tool_id=? AND user_id=?", (tool_id, session["user_id"])).fetchone()
+        if existing:
+            db.execute("UPDATE tool_ratings SET rating=?, created_at=? WHERE tool_id=? AND user_id=?", (stars, now, tool_id, session["user_id"]))
+        else:
+            db.execute("INSERT INTO tool_ratings(tool_id, user_id, rating, created_at) VALUES (?,?,?,?)", (tool_id, session["user_id"], stars, now))
+        db.commit()
+    return redirect("/marketplace/tool/" + str(tool_id))
+
+
+@app.route("/marketplace/tool/<int:tool_id>/comment", methods=["POST"])
+@login_required
+def comment_tool(tool_id):
+    body_text = request.form.get("body", "").strip()
+    if not body_text or len(body_text) > 1000:
+        add_flash("תגובה חייבת להכיל 1-1000 תווים")
+        return redirect("/marketplace/tool/" + str(tool_id))
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with get_db() as db:
+        db.execute(
+            "INSERT INTO tool_comments(tool_id, user_id, username, full_name, body, created_at) VALUES (?,?,?,?,?,?)",
+            (tool_id, session["user_id"], session.get("username", ""), session.get("name", ""), body_text, now),
+        )
+        db.commit()
+    return redirect("/marketplace/tool/" + str(tool_id))
+
+
+@app.route("/marketplace/tool/<int:tool_id>/run", methods=["GET", "POST"])
+@login_required
+def run_marketplace_tool(tool_id):
+    if session.get("is_admin"):
+        return redirect("/admin")
+
+    lang = get_flow_lang()
+    text = get_flow_text(lang)
+
+    with get_db() as db:
+        tool = db.execute("SELECT * FROM marketplace_tools WHERE id=?", (tool_id,)).fetchone()
+        if not tool:
+            add_flash("הכלי לא נמצא")
+            return redirect("/marketplace")
+
+        # Check user has installed it or is the creator
+        is_installed = db.execute("SELECT 1 FROM tool_installs WHERE tool_id=? AND user_id=?", (tool_id, session["user_id"])).fetchone()
+        if not is_installed and tool["creator_id"] != session["user_id"]:
+            add_flash("יש להתקין את הכלי לפני השימוש")
+            return redirect("/marketplace/tool/" + str(tool_id))
+
+    try:
+        definition = json.loads(tool["definition_json"])
+    except (json.JSONDecodeError, TypeError):
+        add_flash("הגדרת הכלי שגויה")
+        return redirect("/marketplace")
+
+    error = ""
+    result = None
+
+    if request.method == "POST":
+        file_obj = request.files.get("file")
+        validation_error, ext = validate_upload(file_obj)
+        if validation_error == "missing":
+            error = '<div class="flash-err">לא נבחר קובץ</div>'
+        elif validation_error == "unsupported":
+            error = '<div class="flash-err">סוג קובץ לא נתמך</div>'
+        elif validation_error == "invalid_excel":
+            error = '<div class="flash-err">הקובץ אינו קובץ Excel תקין</div>'
+        elif validation_error == "empty":
+            error = '<div class="flash-err">הקובץ ריק</div>'
+        elif validation_error == "too_large":
+            error = '<div class="flash-err">הקובץ גדול מדי</div>'
+        else:
+            uid = str(uuid.uuid4())[:8]
+            inp = str(UPLOAD_FOLDER / f"{uid}.{ext}")
+            out_name = f"{uid}_{tool['name'][:30]}.xlsx"
+            out = str(OUTPUT_FOLDER / out_name)
+            file_obj.save(inp)
+            try:
+                exec_result = execute_tool_definition(definition, inp, out, ext)
+                # Update usage count
+                with get_db() as db:
+                    db.execute("UPDATE marketplace_tools SET usage_count = usage_count + 1 WHERE id=?", (tool_id,))
+                    db.commit()
+                log_user_activity("run_marketplace_tool", "הרצת כלי מרקטפלייס", "marketplace_" + str(tool_id), tool["name"], "")
+                result = out_name
+            except Exception as exc:
+                error = '<div class="flash-err">שגיאה בעיבוד: ' + esc(str(exc)) + '</div>'
+            finally:
+                try:
+                    os.remove(inp)
+                except OSError:
+                    pass
+
+    if result:
+        body = (
+            '<div class="card" style="text-align:center">'
+            '<div style="font-size:48px;margin-bottom:12px">✅</div>'
+            '<div style="font-size:18px;font-weight:800;color:#047857;margin-bottom:12px">הקובץ מוכן!</div>'
+            '<a href="/download/' + esc(result) + '" class="btn btn-blue" style="text-decoration:none;display:inline-flex;padding:12px 28px;border-radius:12px;font-size:15px;margin-bottom:12px">⬇ הורדת הקובץ</a><br>'
+            '<a href="/marketplace/tool/' + str(tool_id) + '/run" style="color:#2563eb;font-size:13px;text-decoration:none">עיבוד קובץ נוסף</a>'
+            '</div>'
+        )
+    else:
+        input_type = definition.get("input_type", "xlsx")
+        accept_val = ".xlsx,.xls,.csv"
+        if input_type == "csv":
+            accept_val = ".csv"
+        elif input_type in ("xlsx", "xls"):
+            accept_val = ".xls,.xlsx"
+
+        body = (
+            '<div style="margin-bottom:1rem"><a href="/marketplace" style="color:#2563eb;font-size:13px;text-decoration:none">← חזרה לשוק הכלים</a></div>'
+            '<div class="card">'
+            '<div style="font-size:28px;margin-bottom:8px">' + esc(tool["icon"] or "🔧") + '</div>'
+            '<h2 style="font-size:20px;font-weight:800;color:#1e3a8a;margin-bottom:4px;border:none;padding:0">' + esc(tool["name"]) + '</h2>'
+            '<div style="font-size:13px;color:#64748b;margin-bottom:1rem;line-height:1.7">' + esc(tool["description"] or "") + '</div>'
+            + error
+            + '<form method="post" enctype="multipart/form-data">'
+            '<div class="drop-zone" id="dropZone" onclick="document.getElementById(\'fileInput\').click()">'
+            '<div style="font-size:32px;margin-bottom:8px">📁</div>'
+            '<div style="font-size:14px;color:#475569">לחץ לבחירת קובץ או גרור לכאן</div>'
+            '<div style="font-size:12px;color:#94a3b8;margin-top:4px" id="fileName">נתמכים: ' + esc(accept_val) + '</div>'
+            '<input type="file" name="file" id="fileInput" accept="' + esc(accept_val) + '" style="display:none" onchange="document.getElementById(\'fileName\').textContent=this.files[0]?this.files[0].name:\'\'">'
+            '</div>'
+            '<button type="submit" class="btn btn-blue" style="width:100%;padding:14px;border-radius:12px;font-size:15px">▶ הרץ</button>'
+            '</form>'
+            '</div>'
+        )
+
+    return render(esc(tool["name"] or "כלי"), body, lang=lang, topbar_greeting=text["topbar_greeting"], logout_label=text["logout"], show_lang_switch=True)
+
+
+# ── AI Tool Creation Chat ────────────────────────────────────────
+
+@app.route("/tools/create", methods=["GET"])
+@login_required
+def tools_create():
+    if session.get("is_admin"):
+        return redirect("/admin")
+
+    lang = get_flow_lang()
+    text = get_flow_text(lang)
+
+    # Create new chat session
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with get_db() as db:
+        # Check for existing active session
+        existing = db.execute(
+            "SELECT id FROM tool_chat_sessions WHERE user_id=? AND status='active' ORDER BY created_at DESC LIMIT 1",
+            (session["user_id"],),
+        ).fetchone()
+        if existing:
+            chat_session_id = existing["id"]
+        else:
+            db.execute(
+                "INSERT INTO tool_chat_sessions(user_id, messages_json, status, created_at, updated_at) VALUES (?,?,?,?,?)",
+                (session["user_id"], "[]", "active", now, now),
+            )
+            db.commit()
+            chat_session_id = db.execute("SELECT id FROM tool_chat_sessions WHERE user_id=? ORDER BY id DESC LIMIT 1", (session["user_id"],)).fetchone()["id"]
+
+    body = (
+        '<div style="margin-bottom:1rem;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">'
+        '<div><a href="/marketplace" style="color:#2563eb;font-size:13px;text-decoration:none">← חזרה לשוק הכלים</a></div>'
+        '<form method="post" action="/tools/create/reset"><button type="submit" class="btn btn-gray" style="font-size:12px;border-radius:8px">🔄 שיחה חדשה</button></form>'
+        '</div>'
+        '<div class="card" style="padding:0;overflow:hidden;border:1px solid #dbeafe">'
+        '<div style="background:linear-gradient(135deg,#1e3a8a,#2563eb);padding:16px 20px;color:white">'
+        '<div style="font-size:18px;font-weight:800;margin-bottom:4px">🤖 בניית כלי עם AI</div>'
+        '<div style="font-size:13px;opacity:.85">תאר מה אתה רוצה לעשות עם הנתונים ו-AI יבנה את הכלי עבורך</div>'
+        '</div>'
+        '<div id="chatMessages" style="padding:16px 20px;min-height:300px;max-height:500px;overflow-y:auto;background:#fafcff">'
+        '<div style="background:#eff6ff;border-radius:14px;padding:12px 16px;font-size:14px;color:#1e3a8a;line-height:1.7;margin-bottom:12px;max-width:85%">'
+        'שלום! 👋 אני עוזר AI של Scriptly.<br>'
+        'תאר לי מה אתה רוצה לעשות — למשל:<br>'
+        '• "אני רוצה דוח שמסנן עובדים עם יותר מ-9 שעות עבודה"<br>'
+        '• "אני צריך סיכום שכר לפי מחלקה"<br>'
+        '• "אני רוצה למצוא כפילויות ברשימת עובדים"<br><br>'
+        'אפשר גם להעלות קובץ דוגמה ואני אזהה את העמודות בשבילך.'
+        '</div>'
+        '</div>'
+        '<div style="padding:12px 20px 16px;border-top:1px solid #e2e8f0;background:white">'
+        '<div style="display:flex;gap:8px;margin-bottom:8px">'
+        '<form method="post" action="/tools/create/upload" enctype="multipart/form-data" id="uploadForm" style="display:flex;gap:8px;flex:0">'
+        '<input type="hidden" name="session_id" value="' + str(chat_session_id) + '">'
+        '<input type="file" name="sample_file" id="sampleFile" accept=".xls,.xlsx,.csv" style="display:none" '
+        'onchange="if(this.files[0]){document.getElementById(\'uploadBtn\').textContent=\'📎 \'+this.files[0].name;document.getElementById(\'uploadForm\').submit()}">'
+        '<button type="button" id="uploadBtn" onclick="document.getElementById(\'sampleFile\').click()" class="btn btn-gray" style="border-radius:10px;font-size:12px;white-space:nowrap">📎 העלה דוגמה</button>'
+        '</form>'
+        '</div>'
+        '<form method="post" action="/tools/create/chat" style="display:flex;gap:8px">'
+        '<input type="hidden" name="session_id" value="' + str(chat_session_id) + '">'
+        '<input type="text" name="message" placeholder="כתוב הודעה..." style="flex:1;padding:12px 16px;border:1.5px solid #e2e8f0;border-radius:12px;font-size:14px;font-family:inherit" autocomplete="off" required>'
+        '<button type="submit" class="btn btn-blue" style="border-radius:12px;padding:12px 20px">שלח</button>'
+        '</form>'
+        '</div>'
+        '</div>'
+        '<div style="text-align:center;margin-top:12px;font-size:11px;color:#94a3b8">'
+        'שים לב: אין לשתף מידע אישי של עובדים בצ\'אט. השתמש רק בכותרות עמודות ומבנה הנתונים.'
+        '</div>'
+    )
+
+    # If there are existing messages, render them
+    with get_db() as db:
+        chat_data = db.execute("SELECT messages_json FROM tool_chat_sessions WHERE id=?", (chat_session_id,)).fetchone()
+    if chat_data:
+        try:
+            messages = json.loads(chat_data["messages_json"])
+        except (json.JSONDecodeError, TypeError):
+            messages = []
+
+        if messages:
+            msgs_html = ""
+            for msg in messages:
+                if msg["role"] == "user":
+                    msgs_html += '<div style="background:#e0e7ff;border-radius:14px;padding:12px 16px;font-size:14px;color:#1e3a5c;line-height:1.7;margin-bottom:12px;max-width:85%;margin-right:0;margin-left:auto">' + esc(msg["content"]) + '</div>'
+                else:
+                    content_html = esc(msg["content"]).replace("```json", '<pre style="background:#0f172a;color:#38bdf8;padding:12px;border-radius:10px;font-size:12px;overflow-x:auto;direction:ltr;text-align:left">').replace("```", "</pre>").replace("\n", "<br>")
+                    msgs_html += '<div style="background:#eff6ff;border-radius:14px;padding:12px 16px;font-size:14px;color:#1e3a8a;line-height:1.7;margin-bottom:12px;max-width:85%">' + content_html + '</div>'
+
+                    # Check if AI produced a tool definition
+                    tool_def = extract_tool_json_from_message(msg["content"])
+                    if tool_def:
+                        msgs_html += (
+                            '<div style="background:#ecfdf5;border:1px solid #86efac;border-radius:14px;padding:12px 16px;margin-bottom:12px">'
+                            '<div style="font-size:14px;font-weight:700;color:#047857;margin-bottom:8px">🎉 הכלי מוכן!</div>'
+                            '<form method="post" action="/tools/create/save">'
+                            '<input type="hidden" name="session_id" value="' + str(chat_session_id) + '">'
+                            '<input type="hidden" name="definition" value="' + esc(json.dumps(tool_def, ensure_ascii=False)) + '">'
+                            '<div style="display:flex;gap:8px;flex-wrap:wrap">'
+                            '<button type="submit" name="action" value="save_draft" class="btn btn-blue" style="border-radius:10px;font-size:13px">💾 שמור כטיוטה</button>'
+                            '<button type="submit" name="action" value="publish" class="btn btn-blue" style="border-radius:10px;font-size:13px;background:#047857">📤 שלח לאישור ופרסום</button>'
+                            '</div></form></div>'
+                        )
+
+            body = body.replace(
+                '<div style="background:#eff6ff;border-radius:14px;padding:12px 16px;font-size:14px;color:#1e3a8a;line-height:1.7;margin-bottom:12px;max-width:85%">'
+                'שלום! 👋 אני עוזר AI של Scriptly.<br>'
+                'תאר לי מה אתה רוצה לעשות — למשל:<br>'
+                '• "אני רוצה דוח שמסנן עובדים עם יותר מ-9 שעות עבודה"<br>'
+                '• "אני צריך סיכום שכר לפי מחלקה"<br>'
+                '• "אני רוצה למצוא כפילויות ברשימת עובדים"<br><br>'
+                'אפשר גם להעלות קובץ דוגמה ואני אזהה את העמודות בשבילך.'
+                '</div>',
+                '<div style="background:#eff6ff;border-radius:14px;padding:12px 16px;font-size:14px;color:#1e3a8a;line-height:1.7;margin-bottom:12px;max-width:85%">'
+                'שלום! 👋 אני עוזר AI של Scriptly. תאר מה אתה צריך ואני אבנה את הכלי.</div>'
+                + msgs_html,
+            )
+
+    return render("בניית כלי עם AI", body, lang=lang, topbar_greeting=text["topbar_greeting"], logout_label=text["logout"], show_lang_switch=True)
+
+
+@app.route("/tools/create/chat", methods=["POST"])
+@login_required
+def tools_create_chat():
+    chat_session_id = request.form.get("session_id", "")
+    user_message = request.form.get("message", "").strip()
+
+    if not user_message:
+        return redirect("/tools/create")
+
+    # Get chat session
+    with get_db() as db:
+        chat_data = db.execute(
+            "SELECT * FROM tool_chat_sessions WHERE id=? AND user_id=?",
+            (chat_session_id, session["user_id"]),
+        ).fetchone()
+        if not chat_data:
+            add_flash("שיחה לא נמצאה")
+            return redirect("/tools/create")
+
+        try:
+            messages = json.loads(chat_data["messages_json"])
+        except (json.JSONDecodeError, TypeError):
+            messages = []
+
+    # Add user message
+    messages.append({"role": "user", "content": user_message})
+
+    # Call Claude API
+    api_messages = [{"role": m["role"], "content": m["content"]} for m in messages]
+    assistant_response = call_claude_chat(api_messages)
+    messages.append({"role": "assistant", "content": assistant_response})
+
+    # Save updated messages
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with get_db() as db:
+        db.execute(
+            "UPDATE tool_chat_sessions SET messages_json=?, updated_at=? WHERE id=?",
+            (json.dumps(messages, ensure_ascii=False), now, chat_session_id),
+        )
+        db.commit()
+
+    log_user_activity("ai_chat", "שיחת AI ליצירת כלי", "", "", f"session={chat_session_id}")
+    return redirect("/tools/create")
+
+
+@app.route("/tools/create/upload", methods=["POST"])
+@login_required
+def tools_create_upload():
+    chat_session_id = request.form.get("session_id", "")
+    file_obj = request.files.get("sample_file")
+
+    if not file_obj or not file_obj.filename:
+        add_flash("לא נבחר קובץ")
+        return redirect("/tools/create")
+
+    validation_error, ext = validate_upload(file_obj)
+    if validation_error:
+        add_flash("שגיאה בקובץ: " + validation_error)
+        return redirect("/tools/create")
+
+    # Save temp file for analysis
+    uid = str(uuid.uuid4())[:8]
+    temp_path = str(UPLOAD_FOLDER / f"{uid}_sample.{ext}")
+    file_obj.save(temp_path)
+
+    try:
+        # Analyze file
+        analysis = analyze_sample_file_for_chat(temp_path, ext)
+
+        # Get chat session
+        with get_db() as db:
+            chat_data = db.execute(
+                "SELECT * FROM tool_chat_sessions WHERE id=? AND user_id=?",
+                (chat_session_id, session["user_id"]),
+            ).fetchone()
+            if not chat_data:
+                add_flash("שיחה לא נמצאה")
+                return redirect("/tools/create")
+
+            try:
+                messages = json.loads(chat_data["messages_json"])
+            except (json.JSONDecodeError, TypeError):
+                messages = []
+
+        # Add file analysis as user message
+        messages.append({
+            "role": "user",
+            "content": f"העליתי קובץ דוגמה ({file_obj.filename}).\n\nניתוח הקובץ:\n{analysis}\n\nבבקשה נתח את העמודות ושאל אותי מה אני רוצה לעשות עם הנתונים.",
+        })
+
+        # Call Claude
+        api_messages = [{"role": m["role"], "content": m["content"]} for m in messages]
+        assistant_response = call_claude_chat(api_messages)
+        messages.append({"role": "assistant", "content": assistant_response})
+
+        # Save
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        with get_db() as db:
+            db.execute(
+                "UPDATE tool_chat_sessions SET messages_json=?, updated_at=? WHERE id=?",
+                (json.dumps(messages, ensure_ascii=False), now, chat_session_id),
+            )
+            db.commit()
+    finally:
+        try:
+            os.remove(temp_path)
+        except OSError:
+            pass
+
+    return redirect("/tools/create")
+
+
+@app.route("/tools/create/reset", methods=["POST"])
+@login_required
+def tools_create_reset():
+    # Close existing sessions and redirect to create a fresh one
+    with get_db() as db:
+        db.execute(
+            "UPDATE tool_chat_sessions SET status='closed' WHERE user_id=? AND status='active'",
+            (session["user_id"],),
+        )
+        db.commit()
+    return redirect("/tools/create")
+
+
+@app.route("/tools/create/save", methods=["POST"])
+@login_required
+def tools_create_save():
+    definition_text = request.form.get("definition", "")
+    action = request.form.get("action", "save_draft")
+
+    try:
+        definition = json.loads(definition_text)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        add_flash("הגדרת הכלי שגויה")
+        return redirect("/tools/create")
+
+    ok, errors = validate_tool_definition(definition)
+    if not ok:
+        add_flash("שגיאות בהגדרת הכלי: " + "; ".join(errors))
+        return redirect("/tools/create")
+
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    status = "draft" if action == "save_draft" else "pending_review"
+    name = definition.get("name", "כלי ללא שם")
+    description = definition.get("description", "")
+    icon = definition.get("icon", "🔧")
+    category = definition.get("category", "general")
+    if category not in TOOL_CATEGORIES:
+        category = "general"
+
+    with get_db() as db:
+        db.execute(
+            """INSERT INTO marketplace_tools(creator_id, name, description, icon, category,
+               definition_json, status, is_public, created_at, updated_at)
+               VALUES (?,?,?,?,?,?,?,0,?,?)""",
+            (session["user_id"], name, description, icon, category,
+             json.dumps(definition, ensure_ascii=False), status, now, now),
+        )
+        db.commit()
+
+        # Close the chat session
+        db.execute(
+            "UPDATE tool_chat_sessions SET status='completed' WHERE user_id=? AND status='active'",
+            (session["user_id"],),
+        )
+        db.commit()
+
+    if status == "pending_review":
+        add_flash("הכלי נשלח לאישור! הוא יופיע בשוק לאחר בדיקה.")
+    else:
+        add_flash("הכלי נשמר כטיוטה.")
+    log_user_activity("create_tool", "יצירת כלי AI", "", name, f"status={status}")
+    return redirect("/marketplace")
+
+
+# ── Admin: Tool Moderation ────────────────────────────────────────
+
+@app.route("/admin/tools")
+@login_required
+@admin_required
+def admin_tools():
+    lang = get_flow_lang()
+    with get_db() as db:
+        tools = db.execute(
+            """SELECT t.*, u.full_name as creator_name, u.username as creator_username
+            FROM marketplace_tools t JOIN users u ON u.id = t.creator_id
+            ORDER BY
+                CASE WHEN t.status='pending_review' THEN 0 ELSE 1 END,
+                t.created_at DESC""",
+        ).fetchall()
+
+    status_labels = {"draft": "טיוטה", "pending_review": "ממתין לאישור", "approved": "מאושר", "rejected": "נדחה"}
+    status_colors = {"draft": ("#f8fafc", "#475569"), "pending_review": ("#fff7ed", "#c2410c"), "approved": ("#ecfdf5", "#047857"), "rejected": ("#fef2f2", "#b91c1c")}
+
+    rows = ""
+    for t in tools:
+        s_bg, s_fg = status_colors.get(t["status"], ("#f8fafc", "#475569"))
+        actions = ""
+        if t["status"] == "pending_review":
+            actions = (
+                '<form method="post" action="/admin/tools/' + str(t["id"]) + '/approve" style="display:inline"><button type="submit" class="btn btn-blue" style="font-size:12px;padding:6px 12px;border-radius:8px">✅ אשר</button></form> '
+                '<form method="post" action="/admin/tools/' + str(t["id"]) + '/reject" style="display:inline"><button type="submit" class="btn btn-red" style="font-size:12px;padding:6px 12px;border-radius:8px">❌ דחה</button></form>'
+            )
+        elif t["status"] == "approved":
+            actions = '<form method="post" action="/admin/tools/' + str(t["id"]) + '/reject" style="display:inline"><button type="submit" class="btn btn-red" style="font-size:12px;padding:6px 12px;border-radius:8px">הסר</button></form>'
+
+        rows += (
+            '<tr>'
+            '<td>' + esc(t["icon"] or "🔧") + ' ' + esc(t["name"]) + '</td>'
+            '<td>' + esc(t["creator_name"] or t["creator_username"]) + '</td>'
+            '<td><span style="padding:3px 10px;border-radius:99px;font-size:11px;font-weight:700;background:' + s_bg + ';color:' + s_fg + '">' + esc(status_labels.get(t["status"], t["status"])) + '</span></td>'
+            '<td>' + str(t["usage_count"] or 0) + '</td>'
+            '<td>' + esc(format_ui_datetime(t["created_at"])) + '</td>'
+            '<td>' + actions + '</td>'
+            '</tr>'
+        )
+
+    body = (
+        '<div style="margin-bottom:1rem"><a href="/admin" style="color:#2563eb;font-size:13px;text-decoration:none">← חזרה לניהול</a></div>'
+        '<div class="card">'
+        '<h2>ניהול כלים — שוק הכלים</h2>'
+        '<table><thead><tr>'
+        '<th>כלי</th><th>יוצר</th><th>סטטוס</th><th>שימושים</th><th>תאריך</th><th>פעולות</th>'
+        '</tr></thead><tbody>'
+        + (rows or '<tr><td colspan="6" style="text-align:center;color:#94a3b8;padding:2rem">אין כלים</td></tr>')
+        + '</tbody></table></div>'
+    )
+
+    return render("ניהול כלים", body, lang=lang)
+
+
+@app.route("/admin/tools/<int:tool_id>/approve", methods=["POST"])
+@login_required
+@admin_required
+def admin_approve_tool(tool_id):
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with get_db() as db:
+        db.execute(
+            "UPDATE marketplace_tools SET status='approved', is_public=1, approved_at=?, approved_by=? WHERE id=?",
+            (now, session["user_id"], tool_id),
+        )
+        db.commit()
+    add_flash("הכלי אושר ופורסם בשוק")
+    return redirect("/admin/tools")
+
+
+@app.route("/admin/tools/<int:tool_id>/reject", methods=["POST"])
+@login_required
+@admin_required
+def admin_reject_tool(tool_id):
+    with get_db() as db:
+        db.execute(
+            "UPDATE marketplace_tools SET status='rejected', is_public=0 WHERE id=?",
+            (tool_id,),
+        )
+        db.commit()
+    add_flash("הכלי נדחה")
+    return redirect("/admin/tools")
 
 
 if __name__ == "__main__":
