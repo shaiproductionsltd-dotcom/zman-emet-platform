@@ -7482,7 +7482,10 @@ def register():
         + t["login_link"] + ' '
         '<a href="/login" style="color:#2563eb;font-weight:600;text-decoration:none">' + t["login_text"] + '</a>'
         '</p>'
-        '<p style="text-align:center;margin-top:1rem;font-size:11px;color:#bbb">&#169; Scriptly</p>'
+        '<p style="text-align:center;margin-top:1rem"><a href="/" style="font-size:13px;color:#2563eb;text-decoration:none">'
+        + ("&#8592; חזרה לדף הבית" if lang == "he" else "&#8592; Back to homepage")
+        + '</a></p>'
+        '<p style="text-align:center;margin-top:.5rem;font-size:11px;color:#bbb">&#169; Scriptly</p>'
         '</div>'
     )
     return render(t["title"], body, nav=False, lang=lang)
@@ -7534,7 +7537,10 @@ def login():
         + '<a href="/register" style="color:#2563eb;font-weight:600;text-decoration:none">'
         + ("הרשמה בחינם" if lang == "he" else "Register free")
         + "</a></p>"
-        '<p style="text-align:center;margin-top:1rem;font-size:11px;color:#bbb">&#169; Scriptly</p>'
+        '<p style="text-align:center;margin-top:1rem"><a href="/" style="font-size:13px;color:#2563eb;text-decoration:none">'
+        + ("&#8592; חזרה לדף הבית" if lang == "he" else "&#8592; Back to homepage")
+        + '</a></p>'
+        '<p style="text-align:center;margin-top:.5rem;font-size:11px;color:#bbb">&#169; Scriptly</p>'
         "</div>"
     )
     return render(text["login_page_title"], body, nav=False, lang=lang)
