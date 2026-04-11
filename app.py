@@ -9512,9 +9512,35 @@ def analyze_sample_file_for_chat(file_path, extension):
     """Read column headers and first 3 rows from a file for AI context.
     Returns anonymized summary string."""
     try:
+        if extension == "xls":
+            # Use xlrd directly — pandas 2.0+ rejects xlrd 1.x
+            wb = xlrd.open_workbook(file_path)
+            sh = wb.sheet_by_index(0)
+            if sh.nrows == 0:
+                return "File is empty"
+            cols = [str(sh.cell_value(0, c)) for c in range(sh.ncols)]
+            summary = f"Column headers ({len(cols)} columns): {', '.join(cols)}\n"
+            data_rows = min(sh.nrows - 1, 5)
+            summary += f"Total rows in sample: {data_rows}\n"
+            summary += "Column types:\n"
+            for ci, col in enumerate(cols):
+                # Find first non-empty value in column
+                sample_val = None
+                for ri in range(1, min(sh.nrows, 6)):
+                    v = sh.cell_value(ri, ci)
+                    if v not in (None, ""):
+                        sample_val = v
+                        break
+                if isinstance(sample_val, float):
+                    summary += f"  - {col}: numeric\n"
+                elif isinstance(sample_val, str):
+                    summary += f"  - {col}: text ({len(sample_val)} chars)\n"
+                else:
+                    summary += f"  - {col}: {type(sample_val).__name__ if sample_val is not None else 'empty'}\n"
+            return summary
         if pd is None:
             return "Cannot analyze file: pandas not installed"
-        if extension in ("xlsx", "xls"):
+        if extension == "xlsx":
             df = pd.read_excel(file_path, nrows=5)
         elif extension == "csv":
             df = pd.read_csv(file_path, nrows=5)
