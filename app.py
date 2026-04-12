@@ -4977,6 +4977,38 @@ def init_db():
             updated_at TEXT NOT NULL)"""
         )
         db.execute("CREATE INDEX IF NOT EXISTS idx_tool_chat_sessions_user ON tool_chat_sessions(user_id)")
+        # ── Tool requests (developer briefs from AI chat) ─────────
+        db.execute(
+            """CREATE TABLE IF NOT EXISTS tool_requests (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            username TEXT,
+            full_name TEXT,
+            company_name TEXT,
+            tool_name TEXT NOT NULL,
+            request_type TEXT NOT NULL DEFAULT 'new',
+            existing_tool_name TEXT,
+            brief_text TEXT NOT NULL,
+            chat_session_id INTEGER,
+            status TEXT NOT NULL DEFAULT 'pending',
+            admin_notes TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL)"""
+        )
+        db.execute("CREATE INDEX IF NOT EXISTS idx_tool_requests_user ON tool_requests(user_id)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_tool_requests_status ON tool_requests(status)")
+        # ── Chat token usage (cost tracking) ──────────────────────
+        db.execute(
+            """CREATE TABLE IF NOT EXISTS chat_token_usage (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            session_id INTEGER,
+            input_tokens INTEGER NOT NULL DEFAULT 0,
+            output_tokens INTEGER NOT NULL DEFAULT 0,
+            estimated_cost_usd REAL NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL)"""
+        )
+        db.execute("CREATE INDEX IF NOT EXISTS idx_chat_token_usage_user ON chat_token_usage(user_id)")
         # ── End marketplace tables ────────────────────────────────
 
         existing_columns = get_table_columns(db, "users")
@@ -9791,6 +9823,16 @@ def admin():
         perms = db.execute("SELECT * FROM permissions").fetchall()
         all_activity_logs = db.execute("SELECT * FROM activity_logs ORDER BY created_at DESC, id DESC").fetchall()
         support_requests = db.execute("SELECT * FROM support_requests ORDER BY created_at DESC, id DESC").fetchall()
+        # Tool requests (developer briefs)
+        tool_requests_rows = db.execute("SELECT * FROM tool_requests ORDER BY created_at DESC, id DESC").fetchall()
+        pending_tool_requests = sum(1 for r in tool_requests_rows if r["status"] == "pending")
+        # Token usage per user (cost monitoring)
+        token_usage_by_user = db.execute(
+            """SELECT user_id, SUM(input_tokens) as total_input, SUM(output_tokens) as total_output,
+               SUM(estimated_cost_usd) as total_cost, COUNT(*) as request_count
+               FROM chat_token_usage GROUP BY user_id ORDER BY total_cost DESC"""
+        ).fetchall()
+        total_platform_cost = sum(row["total_cost"] or 0 for row in token_usage_by_user)
 
     user_perms = {}
     for perm in perms:
@@ -10068,6 +10110,75 @@ def admin():
         )
     support_table = ('<div class="support-request-list">' + support_rows + '</div>') if support_requests else '<p style="color:#94a3b8;text-align:center;padding:2rem">עדיין אין פניות שירות מצד לקוחות</p>'
 
+    # Build tool requests table
+    tool_requests_html = ""
+    if tool_requests_rows:
+        req_status_meta = {
+            "pending": ("ממתין לפיתוח", "#fff7ed", "#c2410c"),
+            "in_progress": ("בפיתוח", "#eff6ff", "#1d4ed8"),
+            "completed": ("הושלם", "#ecfdf5", "#047857"),
+            "cancelled": ("בוטל", "#fef2f2", "#b91c1c"),
+        }
+        for req in tool_requests_rows:
+            s_label, s_bg, s_fg = req_status_meta.get(req["status"], ("לא ידוע", "#f8fafc", "#475569"))
+            req_date = format_ui_datetime(req["created_at"]) if req["created_at"] else ""
+            req_type_label = "כלי חדש" if req["request_type"] == "new" else "שיפור כלי"
+            tool_requests_html += (
+                '<details class="support-request-card" style="margin-bottom:10px">'
+                '<summary style="display:flex;justify-content:space-between;align-items:center;cursor:pointer;padding:12px 16px">'
+                '<div style="flex:1">'
+                '<div style="font-weight:700;color:#0f172a;font-size:14px">&#128736; ' + esc(req["tool_name"] or "") + '</div>'
+                '<div style="font-size:12px;color:#64748b;margin-top:2px">'
+                + esc(req["full_name"] or req["username"] or "") + ' &middot; ' + esc(req_type_label) + ' &middot; ' + esc(req_date) + '</div></div>'
+                '<span style="font-size:11px;padding:3px 10px;border-radius:99px;font-weight:700;background:' + s_bg + ';color:' + s_fg + '">' + s_label + '</span>'
+                '</summary>'
+                '<div style="padding:0 16px 16px;border-top:1px solid #e2e8f0">'
+                '<div style="margin-top:12px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:14px;font-size:13px;line-height:1.8;white-space:pre-wrap;direction:rtl">'
+                + esc(req["brief_text"] or "") + '</div>'
+                '<div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">'
+            )
+            if req["status"] == "pending":
+                tool_requests_html += (
+                    '<form method="POST" action="/admin/tool-request/' + str(req["id"]) + '/status">'
+                    '<input type="hidden" name="status" value="in_progress">'
+                    '<button type="submit" class="btn btn-blue" style="font-size:12px;border-radius:8px;padding:6px 14px">&#9997; התחל פיתוח</button></form>'
+                    '<form method="POST" action="/admin/tool-request/' + str(req["id"]) + '/status">'
+                    '<input type="hidden" name="status" value="cancelled">'
+                    '<button type="submit" class="btn btn-gray" style="font-size:12px;border-radius:8px;padding:6px 14px">&#10005; בטל</button></form>'
+                )
+            elif req["status"] == "in_progress":
+                tool_requests_html += (
+                    '<form method="POST" action="/admin/tool-request/' + str(req["id"]) + '/status">'
+                    '<input type="hidden" name="status" value="completed">'
+                    '<button type="submit" class="btn btn-blue" style="font-size:12px;border-radius:8px;padding:6px 14px;background:#047857">&#9989; סמן כהושלם</button></form>'
+                )
+            tool_requests_html += '</div></div></details>'
+    else:
+        tool_requests_html = '<p style="color:#94a3b8;text-align:center;padding:2rem">אין בקשות כלים כרגע</p>'
+
+    # Build cost monitoring table
+    # Map user_ids to names
+    user_name_map = {u["id"]: (u["full_name"] or u["username"] or f"#{u['id']}") for u in users}
+    user_name_map[1] = "מנהל מערכת"  # admin
+    cost_table_html = ""
+    if token_usage_by_user:
+        cost_table_html += '<table><thead><tr><th>לקוח</th><th>בקשות</th><th>טוקנים (קלט)</th><th>טוקנים (פלט)</th><th>עלות ($)</th></tr></thead><tbody>'
+        for row in token_usage_by_user:
+            uname = user_name_map.get(row["user_id"], f"#{row['user_id']}")
+            cost_table_html += (
+                '<tr>'
+                '<td style="font-weight:700">' + esc(uname) + '</td>'
+                '<td>' + str(row["request_count"] or 0) + '</td>'
+                '<td>' + f'{row["total_input"] or 0:,}' + '</td>'
+                '<td>' + f'{row["total_output"] or 0:,}' + '</td>'
+                '<td style="font-weight:700;color:#b91c1c">$' + f'{row["total_cost"] or 0:.4f}' + '</td>'
+                '</tr>'
+            )
+        cost_table_html += '</tbody></table>'
+        cost_table_html += '<div style="text-align:left;margin-top:12px;font-size:14px;font-weight:800;color:#b91c1c">סה"כ עלות פלטפורמה: $' + f'{total_platform_cost:.4f}' + '</div>'
+    else:
+        cost_table_html = '<p style="color:#94a3b8;text-align:center;padding:2rem">אין נתוני שימוש עדיין</p>'
+
     activity_logs_payload = json.dumps(
         [
             {
@@ -10093,6 +10204,10 @@ def admin():
         '<a href="#adminSupport" class="btn btn-gray" style="text-decoration:none;justify-content:center">פניות שירות'
         + (' (' + str(pending_support) + ')' if pending_support else '')
         + '</a>'
+        '<a href="#adminToolRequests" class="btn btn-gray" style="text-decoration:none;justify-content:center">בקשות כלים'
+        + (' (' + str(pending_tool_requests) + ')' if pending_tool_requests else '')
+        + '</a>'
+        '<a href="#adminAICosts" class="btn btn-gray" style="text-decoration:none;justify-content:center">עלויות AI</a>'
         '<a href="#adminLogs" class="btn btn-gray" style="text-decoration:none;justify-content:center">לוגים</a>'
         '</div>'
     )
@@ -10135,7 +10250,24 @@ def admin():
         '<span style="font-size:18px;color:#64748b">+</span>'
         '</summary><div style="padding:0 20px 20px">'
         + support_table
-        + '</div></details><details class="card" id="adminLogs" style="padding:0;overflow:hidden" dir="rtl">'
+        + '</div></details>'
+        '<details class="card" id="adminToolRequests" style="padding:0;overflow:hidden" dir="rtl">'
+        '<summary class="admin-collapsible-summary">'
+        '<div><div style="font-size:22px;font-weight:800;color:#0f172a;margin-bottom:4px">&#128736; בקשות כלים</div><div class="admin-collapsible-sub">'
+        + ('יש ' + str(pending_tool_requests) + ' בקשות שממתינות לפיתוח' if pending_tool_requests else 'אין כרגע בקשות ממתינות')
+        + '</div></div>'
+        '<span style="font-size:18px;color:#64748b">+</span>'
+        '</summary><div style="padding:0 20px 20px">'
+        + tool_requests_html
+        + '</div></details>'
+        '<details class="card" id="adminAICosts" style="padding:0;overflow:hidden" dir="rtl">'
+        '<summary class="admin-collapsible-summary">'
+        '<div><div style="font-size:22px;font-weight:800;color:#0f172a;margin-bottom:4px">&#128176; עלויות AI לפי לקוח</div><div class="admin-collapsible-sub">ניטור שימוש בטוקנים ועלויות API</div></div>'
+        '<span style="font-size:18px;color:#64748b">+</span>'
+        '</summary><div style="padding:0 20px 20px">'
+        + cost_table_html
+        + '</div></details>'
+        '<details class="card" id="adminLogs" style="padding:0;overflow:hidden" dir="rtl">'
         '<summary class="admin-collapsible-summary">'
         '<div><div style="font-size:22px;font-weight:800;color:#0f172a;margin-bottom:4px">&#128221; לוג פעילות משתמשים</div><div style="font-size:13px;color:#64748b">פתיחה לפי צורך בלבד לצפייה ועבודה על הלוגים</div></div>'
         '<span style="font-size:18px;color:#64748b">+</span>'
@@ -10314,6 +10446,22 @@ def update_support_request_status(request_id):
         db.commit()
     add_flash("סטטוס הפנייה עודכן בהצלחה")
     return redirect("/admin#adminSupport")
+
+
+@app.route("/admin/tool-request/<int:request_id>/status", methods=["POST"])
+@login_required
+@admin_required
+def update_tool_request_status(request_id):
+    new_status = request.form.get("status", "").strip().lower()
+    if new_status not in {"in_progress", "completed", "cancelled"}:
+        add_flash("סטטוס הבקשה אינו תקין")
+        return redirect("/admin#adminToolRequests")
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with get_db() as db:
+        db.execute("UPDATE tool_requests SET status=?, updated_at=? WHERE id=?", (new_status, now, request_id))
+        db.commit()
+    add_flash("סטטוס הבקשה עודכן בהצלחה")
+    return redirect("/admin#adminToolRequests")
 
 
 @app.route("/admin/delete/<int:uid>")
@@ -10694,42 +10842,156 @@ def _apply_tool_step(df, step, warnings):
 
 # ── AI Chat System Prompt ─────────────────────────────────────────
 
-TOOL_CREATION_SYSTEM_PROMPT = """אתה העוזר החכם של Scriptly — מערכת שעוזרת לאנשי משאבי אנוש ושכר ליצור כלים לעיבוד נתונים, בלי לכתוב קוד.
+TOOL_CREATION_SYSTEM_PROMPT_BASE = """אתה עוזר אפיון כלים עבור פלטפורמת Scriptly — מערכת לעיבוד דוחות HR ושכר.
 
 ## מי המשתמש שלך
 - אנשי HR ושכר שעובדים עם Excel, CSV ודוחות נוכחות.
 - הם לא טכניים — הם לא מכירים JSON, קוד, או מונחים טכניים.
 - הם מדברים עברית.
-- הם יודעים לעבוד עם: Excel (.xls, .xlsx), CSV, Word, PowerPoint, קבצי DAT.
 - הם רוצים תוצאות — לא להבין איך זה עובד מאחורי הקלעים.
 
 ## איך אתה מתנהג
-- **דבר בעברית פשוטה** — אל תשתמש במונחים טכניים כמו JSON, API, function, schema, field, operator.
-- **אל תבקש מהמשתמש JSON** — לעולם אל תציג JSON ואל תבקש ממנו לערוך JSON.
-- **אל תציג קוד** — אל תציג Python, JavaScript, או כל שפת תכנות.
-- **היה חם ומעודד** — המשתמש נכנס לכלי חדש. תגרום לו להרגיש בטוח.
+- **דבר בעברית פשוטה** — אל תשתמש במונחים טכניים כמו JSON, API, function, schema.
+- **היה חם ומעודד** — תגרום למשתמש להרגיש בטוח.
 - **הנחה אותו צעד אחרי צעד** — אל תשאל 5 שאלות בבת אחת.
+- **אל תציג קוד** — אל תציג Python, JavaScript, או כל שפת תכנות.
 
-## זרימת השיחה
-1. **שלב ראשון — הקשבה**: תן למשתמש לתאר מה הוא צריך במילים שלו. אל תפריע. אל תשאל שאלות טכניות עדיין.
-2. **שלב שני — ניתוח**: אם המשתמש העלה קובץ — נתח את העמודות בשבילו. הצג לו רשימה נקייה של שמות העמודות שמצאת ושאל: "אלה העמודות שזיהיתי בקובץ שלך — האם זה נכון?"
-3. **שלב שלישי — שאלות ממוקדות**: שאל שאלה אחת בכל פעם, ברורה ופשוטה:
-   - "לפי איזו עמודה לקבץ?"
-   - "מה לחשב? סכום? ממוצע? ספירה?"
-   - "האם לסנן שורות מסוימות? למשל רק עובדים פעילים?"
-   - "איך תרצה שהפלט ייראה?"
-4. **שלב רביעי — סיכום**: תאר למשתמש בעברית פשוטה מה הכלי יעשה, למשל: "הכלי יקח את הקובץ שלך, יסנן רק עובדים עם יותר מ-9 שעות, יקבץ לפי מחלקה, ויחשב סכום שעות לכל מחלקה." שאל: "זה מה שאתה צריך?"
-5. **שלב חמישי — בנייה**: רק אחרי אישור, בנה את הגדרת הכלי (JSON) ועטוף אותו ב-```json blocks. זה החלק היחיד שבו JSON מופיע — והמשתמש לא צריך לקרוא אותו.
+יש לך שלושה מצבים. אתה עובר ביניהם בצורה חלקה באותה שיחה.
 
-## כשהמשתמש מעלה קבצים
-- **אם זה קובץ נתונים** (Excel, CSV, DAT): נתח את העמודות והצג אותן בצורה ידידותית. אל תצפה מהמשתמש לדעת מה זה "header" או "column type".
-- **אם זה תמונה**: תאר מה אתה רואה (מבנה, טבלה, פריסה). שאל מה המשתמש רוצה לעשות עם הנתונים שבתמונה.
-- **אם יש כמה קבצים**: נתח כל אחד בנפרד, הצג סיכום ברור, ושאל מה הקשר ביניהם ומה המשתמש רוצה לעשות איתם.
+═══════════════════════════════════
+מצב א — ניתוח חופשי ("נסה עכשיו")
+═══════════════════════════════════
+כשלקוח מעלה קובץ ושואל שאלה חופשית:
+- נתח את הקובץ (כותרות + 3-5 שורות בלבד, לא נתונים אמיתיים)
+- ענה על שאלתו
+- אם התשובה שימושית, הצע: "רוצה שאבנה לך כלי שיעשה את זה אוטומטית בכל פעם שתעלה קובץ כזה?"
+- אם הלקוח אומר כן — עבור למצב ב
 
-## מבנה הגדרת כלי (פנימי — אל תציג למשתמש)
-בנה JSON בפורמט הבא. עטוף ב-```json כשמוכן. המערכת תזהה אוטומטית.
+═══════════════════════════════════
+מצב ב — אפיון כלי חדש ("בנה לי כלי")
+═══════════════════════════════════
+המטרה: לאסוף מספיק מידע כדי שמפתח יוכל לבנות את הכלי ללא שאלות נוספות.
 
-```json
+שלב 1 — הבנת המטרה:
+- "מה אתה רוצה לקבל בסוף? תאר לי את התוצאה האידיאלית."
+- "באיזה מצבים תשתמש בכלי הזה?"
+
+שלב 2 — הבנת הקלט:
+- בקש קובץ לדוגמה (אמיתי או מדומה)
+- רשום את כל העמודות שזיהית
+- אשר עם הלקוח: "זיהיתי את העמודות הבאות: [רשימה]. האם זה נכון?"
+- שאל: "האם יש עמודות נוספות שלא תמיד מופיעות?"
+
+שלב 3 — הבנת הלוגיקה:
+- "מה הכלי צריך לעשות עם המידע? פרט צעד אחר צעד."
+- "האם יש חישובים מיוחדים? לדוגמה — שעות נוספות, אחוזים, תנאים?"
+- "האם יש מקרים חריגים שהכלי צריך לטפל בהם אחרת?"
+
+שלב 4 — משתנים:
+- "האם יש ערכים שמשתנים מפעם לפעם? לדוגמה — תאריך, סף מספרי, שם מחלקה?"
+- "מי קובע אותם — אתה בכל הרצה, או שהם קבועים?"
+
+שלב 5 — הפלט:
+- "איך אתה רוצה לקבל את התוצאה? Excel? PDF? טבלה על המסך?"
+- "אילו עמודות צריכות להופיע בתוצאה?"
+- "האם יש עיצוב מיוחד — צבעים, מיון, כותרות?"
+
+שלב 6 — סיכום ואישור:
+לפני שליחה, הצג ללקוח סיכום בשפה פשוטה:
+"הבנתי שאתה רוצה כלי שעושה את הדברים הבאים:
+[סיכום בשפה פשוטה]
+האם זה נכון? יש משהו לתקן?"
+
+אחרי שהלקוח מאשר — בנה את הסיכום הטכני בפורמט שלהלן ועטוף אותו ב:
+```developer_brief
+---DEVELOPER_BRIEF---
+...
+---END_BRIEF---
+```
+
+═══════════════════════════════════
+מצב ג — שיפור כלי קיים
+═══════════════════════════════════
+כשלקוח אומר שהוא רוצה לשפר או לשנות כלי קיים, או כשמגיע [TOOL_CONTEXT]:
+1. הצג לו את רשימת הכלים שלו (מוזרקים מהמערכת)
+2. שאל איזה כלי ומה הוא רוצה לשנות
+3. החלט:
+
+שינוי פשוט — עשה לבד (עדכן את ה-JSON ועטוף ב-```json):
+✅ הוסף/הסר עמודה מהפלט
+✅ שנה ערך סף (מספר, תאריך)
+✅ שנה מיון
+✅ שנה עיצוב
+
+שינוי מורכב — העבר לאפיון (בנה developer_brief):
+❌ לוגיקה חדשה שלא קיימת בכלי
+❌ חישוב מיוחד
+❌ מבנה פלט שונה לחלוטין
+
+אמור ללקוח בבירור: "את השינוי הזה אני יכול לעשות עכשיו" או "את השינוי הזה אני אעביר למפתח כי הוא דורש בנייה מחדש"
+
+═══════════════════════════════════
+מה אתה יכול ומה אתה לא יכול
+═══════════════════════════════════
+אתה יכול לבנות כלים שכוללים:
+✅ סינון לפי תנאים, קיבוץ וסיכום, חישובים מתמטיים
+✅ מיון ועיצוב, דוחות Excel מעוצבים, טיפול בתאריכים
+✅ השוואה בין קבצים
+
+אתה לא יכול לבנות:
+❌ כלים שמתחברים למערכות חיצוניות
+❌ כלים שדורשים אישורים והרשאות
+❌ ממשקים גרפיים מורכבים
+
+אם לקוח מבקש משהו שאינך יכול — אמור לו בכנות ותציע חלופה.
+
+═══════════════════════════════════
+פורמט הסיכום הטכני למפתח
+═══════════════════════════════════
+כשהאפיון מאושר, עטוף את הסיכום כך:
+```developer_brief
+---DEVELOPER_BRIEF---
+שם כלי: [שם]
+לקוח: {customer_name}
+תאריך אפיון: {today_date}
+סוג: [כלי חדש / שיפור לכלי קיים]
+שם כלי קיים (אם רלוונטי): [שם]
+
+תיאור קצר:
+[משפט אחד מה הכלי עושה]
+
+קלט:
+- סוג קובץ: [xlsx/csv]
+- עמודות חובה: [רשימה]
+- עמודות אופציונליות: [רשימה]
+- דוגמה לשורה: [שורה מהקובץ שהלקוח שיתף]
+
+לוגיקה — צעד אחר צעד:
+1. [צעד]
+2. [צעד]
+3. [צעד]
+
+משתנים (ערכים שמשתנים בכל הרצה):
+- שם המשתנה: [תיאור] | ברירת מחדל: [ערך]
+
+מקרים חריגים:
+- [מקרה]
+
+פלט:
+- סוג: [xlsx/pdf/טבלה]
+- עמודות: [רשימה]
+- מיון: [לפי מה, באיזה כיוון]
+- עיצוב מיוחד: [אם יש]
+
+הערות נוספות למפתח:
+- [הערה]
+---END_BRIEF---
+```
+
+═══════════════════════════════════
+מבנה הגדרת כלי JSON (למצב ג — שינויים פשוטים בלבד)
+═══════════════════════════════════
+כשאתה מבצע שינוי פשוט בכלי קיים, בנה JSON בפורמט הבא ועטוף ב-```json:
 {
   "name": "שם בעברית",
   "description": "תיאור קצר",
@@ -10737,53 +10999,46 @@ TOOL_CREATION_SYSTEM_PROMPT = """אתה העוזר החכם של Scriptly — מ
   "category": "general",
   "input_type": "xlsx",
   "required_fields": ["שם_עמודה1", "שם_עמודה2"],
-  "steps": [
-    {"action": "ACTION_NAME", ...params}
-  ],
+  "steps": [{"action": "ACTION_NAME", ...params}],
   "output_format": {"title": "כותרת הדוח", "columns": ["עמודה1", "עמודה2"]}
 }
-```
 
-## רשימת הפעולות המותרות — חובה להשתמש רק בפעולות האלה!!!
-אתה יכול להשתמש **אך ורק** בפעולות הבאות. כל פעולה אחרת תגרום לשגיאה:
-
-| action | פרמטרים | מה עושה |
-|--------|---------|---------|
-| `filter` | field, operator (>, <, >=, <=, ==, !=, contains, not_contains, is_empty, not_empty), value | מסנן שורות |
-| `group_by` | field, agg_field, agg_func (sum/count/average/min/max) | מקבץ ומחשב |
-| `sum` | field | מוסיף שורת סיכום |
-| `count` | field | סופר ערכים |
-| `average` | field | ממוצע |
-| `min` | field | מינימום |
-| `max` | field | מקסימום |
-| `sort` | field, order (asc/desc) | ממיין |
-| `rename_column` | old_name, new_name | משנה שם עמודה |
-| `select_columns` | columns (רשימה) | משאיר רק עמודות מסוימות |
-| `add_column` | name, value | מוסיף עמודה עם ערך קבוע |
-| `format_number` | field, decimals | עיגול מספרים |
-| `concatenate` | fields (רשימה), separator, result_name | מאחד עמודות לטקסט |
-| `split_column` | field, separator, new_columns | מפצל עמודה |
-| `fill_missing` | field, value | ממלא תאים ריקים |
-| `remove_duplicates` | fields (רשימה, אופציונלי) | מסיר כפילויות |
-| `math` | field_a, operator (+,-,*,/), field_b, result_name | חישוב מתמטי |
-| `date_extract` | field, part (year/month/day/weekday) | חילוץ חלק מתאריך |
-| `pivot` | index, columns, values, agg_func | טבלת ציר |
-| `unpivot` | id_vars, value_vars | הפוך טבלת ציר |
-
-**חשוב מאוד**: אל תמציא פעולות חדשות! אם הבקשה דורשת משהו שלא קיים ברשימה, הסבר למשתמש מה אפשר לעשות עם הפעולות הקיימות והצע חלופה.
-**חשוב**: category חייב להיות אחד מ: general, payroll, attendance, hr, finance, reports.
-
-## שיפור כלים קיימים
-כשמגיע הודעת [TOOL_CONTEXT]:
-1. הבן את מבנה הכלי הנוכחי.
-2. שאל את המשתמש מה הוא רוצה לשנות — בשפה פשוטה.
-3. לכלי מובנה: הסבר שלא ניתן לשנות ישירות, והצע ליצור כלי חדש שמשפר אותו.
-4. לכלי שוק: בנה גרסה משופרת והצג אותה.
+רשימת פעולות מותרות: filter, group_by, sum, count, average, min, max, sort, rename_column, select_columns, add_column, format_number, concatenate, split_column, fill_missing, remove_duplicates, math, date_extract, pivot, unpivot.
+category חייב להיות: general, payroll, attendance, hr, finance, reports.
 
 ## פרטיות
 - אל תבקש ואל תכלול שמות עובדים, תעודות זהות, או מידע אישי.
 - השתמש רק בשמות עמודות ומבנה — אף פעם לא בנתונים אמיתיים.
 """
+
+
+def build_tool_creation_system_prompt(user_id, customer_name=""):
+    """Build the system prompt with user's existing tools injected."""
+    prompt = TOOL_CREATION_SYSTEM_PROMPT_BASE
+    # Replace customer placeholders
+    prompt = prompt.replace("{customer_name}", customer_name or "לקוח")
+    prompt = prompt.replace("{today_date}", datetime.now().strftime("%Y-%m-%d"))
+
+    # Inject user's existing tools from DB
+    try:
+        with get_db() as db:
+            user_tools = db.execute(
+                "SELECT id, name, description, icon, category, definition_json, status FROM marketplace_tools WHERE creator_id=? ORDER BY created_at DESC",
+                (user_id,),
+            ).fetchall()
+        if user_tools:
+            tools_context = "\n\n═══════════════════════════════════\nכלים קיימים של הלקוח\n═══════════════════════════════════\n"
+            for t in user_tools:
+                status_label = {"draft": "טיוטה", "pending_review": "ממתין לאישור", "approved": "מאושר", "rejected": "נדחה"}.get(t["status"], t["status"])
+                tools_context += f"\n📦 {t['icon'] or '🔧'} {t['name']} (סטטוס: {status_label})\n"
+                if t["description"]:
+                    tools_context += f"   תיאור: {t['description']}\n"
+                if t["definition_json"]:
+                    tools_context += f"   הגדרה: {t['definition_json']}\n"
+            prompt += tools_context
+    except Exception:
+        pass
+    return prompt
 
 
 def analyze_sample_file_for_chat(file_path, extension):
@@ -10852,26 +11107,43 @@ def analyze_sample_file_for_chat(file_path, extension):
         return f"Could not analyze file: {exc}"
 
 
-def call_claude_chat(messages, system_prompt=None):
-    """Call Claude API for tool creation chat. Returns assistant message text."""
+def call_claude_chat(messages, system_prompt=None, user_id=None, session_id=None):
+    """Call Claude API for tool creation chat. Returns (text, input_tokens, output_tokens)."""
     if anthropic_sdk is None:
-        return "שגיאה: ספריית Anthropic לא מותקנת. נא לפנות למנהל המערכת."
+        return "שגיאה: ספריית Anthropic לא מותקנת. נא לפנות למנהל המערכת.", 0, 0
 
     api_key = os.environ.get("ANTHROPIC_API_KEY", "")
     if not api_key:
-        return "שגיאה: מפתח API של Claude לא הוגדר. נא לפנות למנהל המערכת."
+        return "שגיאה: מפתח API של Claude לא הוגדר. נא לפנות למנהל המערכת.", 0, 0
 
     client = anthropic_sdk.Anthropic(api_key=api_key)
     try:
         response = client.messages.create(
             model="claude-sonnet-4-6",
             max_tokens=4096,
-            system=system_prompt or TOOL_CREATION_SYSTEM_PROMPT,
+            system=system_prompt or TOOL_CREATION_SYSTEM_PROMPT_BASE,
             messages=messages,
         )
-        return response.content[0].text
+        text = response.content[0].text
+        input_tokens = getattr(response.usage, "input_tokens", 0) or 0
+        output_tokens = getattr(response.usage, "output_tokens", 0) or 0
+        # Sonnet pricing: $3/M input, $15/M output
+        estimated_cost = (input_tokens * 3.0 / 1_000_000) + (output_tokens * 15.0 / 1_000_000)
+        # Save token usage
+        if user_id:
+            try:
+                now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                with get_db() as db:
+                    db.execute(
+                        "INSERT INTO chat_token_usage(user_id, session_id, input_tokens, output_tokens, estimated_cost_usd, created_at) VALUES (?,?,?,?,?,?)",
+                        (user_id, session_id, input_tokens, output_tokens, round(estimated_cost, 6), now),
+                    )
+                    db.commit()
+            except Exception:
+                pass
+        return text, input_tokens, output_tokens
     except Exception as exc:
-        return f"שגיאה בתקשורת עם AI: {exc}"
+        return f"שגיאה בתקשורת עם AI: {exc}", 0, 0
 
 
 def extract_tool_json_from_message(text):
@@ -10894,6 +11166,33 @@ def extract_tool_json_from_message(text):
     except (json.JSONDecodeError, ValueError):
         pass
     return None
+
+
+def extract_developer_brief(text):
+    """Extract a developer brief from AI message. Returns brief text or None."""
+    import re as _re
+    # Look for ```developer_brief ... ``` blocks containing ---DEVELOPER_BRIEF--- ... ---END_BRIEF---
+    block_match = _re.search(r"```developer_brief\s*(.*?)```", text, _re.DOTALL)
+    if block_match:
+        inner = block_match.group(1).strip()
+        brief_match = _re.search(r"---DEVELOPER_BRIEF---(.*?)---END_BRIEF---", inner, _re.DOTALL)
+        if brief_match:
+            return brief_match.group(1).strip()
+        return inner
+    # Fallback: look for markers directly in the text
+    brief_match = _re.search(r"---DEVELOPER_BRIEF---(.*?)---END_BRIEF---", text, _re.DOTALL)
+    if brief_match:
+        return brief_match.group(1).strip()
+    return None
+
+
+def extract_brief_tool_name(brief_text):
+    """Extract tool name from a developer brief text."""
+    import re as _re
+    match = _re.search(r"שם כלי:\s*(.+)", brief_text)
+    if match:
+        return match.group(1).strip()
+    return "כלי ללא שם"
 
 
 # ── Marketplace Routes ────────────────────────────────────────────
@@ -11751,21 +12050,37 @@ def tools_create():
             user_text = esc(msg["content"]).replace("\n", "<br>")
             msgs_html += '<div class="chat-bubble chat-user"><div class="chat-bubble-inner chat-user-inner">' + user_text + '</div></div>'
         else:
-            content_html = esc(msg["content"]).replace("```json", '<pre style="background:#0f172a;color:#38bdf8;padding:12px;border-radius:10px;font-size:12px;overflow-x:auto;direction:ltr;text-align:left">').replace("```", "</pre>").replace("\n", "<br>")
+            import re as _render_re
+            _cleaned = _render_re.sub(r"```developer_brief.*?```", "", msg["content"], flags=_render_re.DOTALL)
+            _cleaned = _render_re.sub(r"---DEVELOPER_BRIEF---.*?---END_BRIEF---", "", _cleaned, flags=_render_re.DOTALL)
+            content_html = esc(_cleaned).replace("```json", '<pre style="background:#0f172a;color:#38bdf8;padding:12px;border-radius:10px;font-size:12px;overflow-x:auto;direction:ltr;text-align:left">').replace("```", "</pre>").replace("\n", "<br>")
             msgs_html += '<div class="chat-bubble chat-ai"><div class="chat-bubble-inner chat-ai-inner">' + content_html + '</div></div>'
-            tool_def = extract_tool_json_from_message(msg["content"])
-            if tool_def:
+            # Check for developer brief first, then tool JSON
+            brief = extract_developer_brief(msg["content"])
+            if brief:
+                brief_name = extract_brief_tool_name(brief)
                 msgs_html += (
-                    '<div class="chat-tool-ready">'
-                    '<div style="font-size:14px;font-weight:700;color:#047857;margin-bottom:8px">&#127881; הכלי מוכן!</div>'
-                    '<form method="post" action="/tools/create/save">'
-                    '<input type="hidden" name="session_id" value="' + str(chat_session_id) + '">'
-                    '<input type="hidden" name="definition" value="' + esc(json.dumps(tool_def, ensure_ascii=False)) + '">'
+                    '<div class="chat-tool-ready" style="background:#eff6ff;border-color:#93c5fd" data-brief="' + esc(brief) + '" data-tool-name="' + esc(brief_name) + '">'
+                    '<div style="font-size:14px;font-weight:700;color:#1e3a8a;margin-bottom:8px">&#128203; האפיון מוכן לשליחה למפתח</div>'
+                    '<div style="font-size:13px;color:#475569;margin-bottom:12px">שם הכלי: <b>' + esc(brief_name) + '</b></div>'
                     '<div style="display:flex;gap:8px;flex-wrap:wrap">'
-                    '<button type="submit" name="action" value="save_draft" class="btn btn-blue" style="border-radius:10px;font-size:13px">&#128190; שמור ובדוק</button>'
-                    '<button type="submit" name="action" value="publish" class="btn btn-blue" style="border-radius:10px;font-size:13px;background:#047857">&#128228; שלח לאישור ופרסום</button>'
-                    '</div></form></div>'
+                    '<button type="button" class="btn btn-blue" style="border-radius:10px;font-size:13px;background:#1e3a8a" onclick="saveBrief(this)">&#128228; שלח לפיתוח</button>'
+                    '</div></div>'
                 )
+            else:
+                tool_def = extract_tool_json_from_message(msg["content"])
+                if tool_def:
+                    msgs_html += (
+                        '<div class="chat-tool-ready">'
+                        '<div style="font-size:14px;font-weight:700;color:#047857;margin-bottom:8px">&#127881; הכלי מוכן!</div>'
+                        '<form method="post" action="/tools/create/save">'
+                        '<input type="hidden" name="session_id" value="' + str(chat_session_id) + '">'
+                        '<input type="hidden" name="definition" value="' + esc(json.dumps(tool_def, ensure_ascii=False)) + '">'
+                        '<div style="display:flex;gap:8px;flex-wrap:wrap">'
+                        '<button type="submit" name="action" value="save_draft" class="btn btn-blue" style="border-radius:10px;font-size:13px">&#128190; שמור ובדוק</button>'
+                        '<button type="submit" name="action" value="publish" class="btn btn-blue" style="border-radius:10px;font-size:13px;background:#047857">&#128228; שלח לאישור ופרסום</button>'
+                        '</div></form></div>'
+                    )
 
     body = (
         '<style>'
@@ -11878,20 +12193,19 @@ def tools_create():
         '</div>'
         '</div>'
         '<div class="chat-header">'
-        '<div class="chat-header-title">&#129302; בניית כלי עם AI</div>'
-        '<div class="chat-header-sub">תאר מה אתה רוצה לעשות עם הנתונים ו-AI יבנה את הכלי עבורך</div>'
+        '<div class="chat-header-title">&#129302; העוזר החכם של Scriptly</div>'
+        '<div class="chat-header-sub">נתח קבצים, בנה כלים חדשים, או שפר כלים קיימים — הכל בשיחה אחת</div>'
         '</div>'
         '<div class="chat-messages" id="chatMessages">'
         # Welcome message
         '<div class="chat-bubble chat-ai">'
         '<div class="chat-bubble-inner chat-ai-inner">'
-        'שלום! &#128075; אני עוזר AI של Scriptly.<br>'
-        'תאר לי מה אתה רוצה לעשות — למשל:<br>'
-        '&#8226; "אני רוצה דוח שמסנן עובדים עם יותר מ-9 שעות עבודה"<br>'
-        '&#8226; "אני צריך סיכום שכר לפי מחלקה"<br>'
-        '&#8226; "אני רוצה למצוא כפילויות ברשימת עובדים"<br><br>'
-        'אפשר גם להעלות קובץ דוגמה ואני אזהה את העמודות בשבילך.<br><br>'
-        '<b>רוצה לשפר כלי קיים?</b> לחץ על הכפתור למטה &#11015;'
+        'שלום! &#128075; אני העוזר החכם של Scriptly.<br><br>'
+        '<b>מה אני יכול לעשות בשבילך?</b><br>'
+        '&#128269; <b>לנתח קובץ</b> — העלה קובץ ושאל שאלה, אני אנתח ואענה<br>'
+        '&#128736; <b>לבנות כלי חדש</b> — אני אשאל אותך שאלות ואבנה אפיון מדויק<br>'
+        '&#9998; <b>לשפר כלי קיים</b> — לחץ על הכפתור למטה<br><br>'
+        'אפשר להעלות קבצים (Excel, CSV, Word, PDF, תמונות) ואני אזהה את המבנה בשבילך.'
         '</div></div>'
         + msgs_html
         + '</div>'
@@ -11938,6 +12252,9 @@ def tools_create():
         ''
         'function formatAiMessage(text){'
         '  var h = escapeHtml(text);'
+        '  /* Hide developer_brief blocks from user — the brief card handles display */'
+        '  h = h.replace(/```developer_brief[\\s\\S]*?```/g, "");'
+        '  h = h.replace(/---DEVELOPER_BRIEF---[\\s\\S]*?---END_BRIEF---/g, "");'
         '  h = h.replace(/```json/g, \'<pre style="background:#0f172a;color:#38bdf8;padding:12px;border-radius:10px;font-size:12px;overflow-x:auto;direction:ltr;text-align:left">\');'
         '  h = h.replace(/```/g, "</pre>");'
         '  h = h.replace(/\\n/g, "<br>");'
@@ -12003,6 +12320,56 @@ def tools_create():
         '    + \'</div></form>\';'
         '  el.appendChild(div);'
         '  scrollToBottom();'
+        '}'
+        ''
+        'function addBriefReady(briefText, toolName){'
+        '  var el = document.getElementById("chatMessages");'
+        '  var div = document.createElement("div");'
+        '  div.className = "chat-tool-ready";'
+        '  div.style.background = "#eff6ff";'
+        '  div.style.borderColor = "#93c5fd";'
+        '  var briefSaved = false;'
+        '  div.innerHTML = \'<div style="font-size:14px;font-weight:700;color:#1e3a8a;margin-bottom:8px">&#128203; האפיון מוכן לשליחה למפתח</div>\''
+        '    + \'<div style="font-size:13px;color:#475569;margin-bottom:12px">שם הכלי: <b>\' + escapeHtml(toolName) + \'</b></div>\''
+        '    + \'<div style="display:flex;gap:8px;flex-wrap:wrap">\''
+        '    + \'<button type="button" class="btn btn-blue" style="border-radius:10px;font-size:13px;background:#1e3a8a" onclick="saveBrief(this)">&#128228; שלח לפיתוח</button>\''
+        '    + \'</div>\';'
+        '  div.setAttribute("data-brief", briefText);'
+        '  div.setAttribute("data-tool-name", toolName);'
+        '  el.appendChild(div);'
+        '  scrollToBottom();'
+        '}'
+        ''
+        'function saveBrief(btn){'
+        '  var card = btn.closest(".chat-tool-ready");'
+        '  if(!card) return;'
+        '  var brief = card.getAttribute("data-brief");'
+        '  var toolName = card.getAttribute("data-tool-name");'
+        '  if(!brief) return;'
+        '  btn.disabled = true;'
+        '  btn.innerHTML = \'<span class="chat-send-spinner" style="display:inline-block;width:14px;height:14px"></span> שולח...\';'
+        '  fetch("/tools/create/save-brief", {'
+        '    method: "POST",'
+        '    headers: {"Content-Type":"application/json","X-Requested-With":"XMLHttpRequest"},'
+        '    body: JSON.stringify({brief_text: brief, tool_name: toolName, session_id: CHAT_SESSION_ID, request_type: "new"})'
+        '  })'
+        '  .then(function(r){return r.json();})'
+        '  .then(function(data){'
+        '    if(data.ok){'
+        '      card.style.background = "#ecfdf5";'
+        '      card.style.borderColor = "#86efac";'
+        '      card.innerHTML = \'<div style="font-size:14px;font-weight:700;color:#047857">&#9989; \' + escapeHtml(data.message || "הבקשה נשלחה בהצלחה!") + \'</div>\';'
+        '    } else {'
+        '      btn.disabled = false;'
+        '      btn.textContent = "&#128228; שלח לפיתוח";'
+        '      addAiBubble("שגיאה: " + (data.error || "לא ידוע"));'
+        '    }'
+        '  })'
+        '  .catch(function(){'
+        '    btn.disabled = false;'
+        '    btn.textContent = "&#128228; שלח לפיתוח";'
+        '    addAiBubble("שגיאה בשליחה. נסה שוב.");'
+        '  });'
         '}'
         ''
         'function showTypingIndicator(){'
@@ -12093,7 +12460,8 @@ def tools_create():
         '    if(data.error){ addAiBubble("שגיאה: " + data.error); }'
         '    else {'
         '      addAiBubble(data.assistant_message);'
-        '      if(data.has_tool && data.tool_definition) addToolReady(data.tool_definition);'
+        '      if(data.has_brief && data.brief_text) addBriefReady(data.brief_text, data.brief_tool_name || "כלי ללא שם");'
+        '      else if(data.has_tool && data.tool_definition) addToolReady(data.tool_definition);'
         '    }'
         '    setLoading(false);'
         '  })'
@@ -12392,7 +12760,7 @@ def tools_create():
         '</script>'
     )
 
-    return render("בניית כלי עם AI", body, lang=lang, topbar_greeting=text["topbar_greeting"], logout_label=text["logout"], show_lang_switch=True)
+    return render("העוזר החכם של Scriptly", body, lang=lang, topbar_greeting=text["topbar_greeting"], logout_label=text["logout"], show_lang_switch=True)
 
 
 @app.route("/tools/create/list-tools", methods=["GET"])
@@ -12616,10 +12984,22 @@ def tools_create_chat():
         api_messages = head + tail
     else:
         api_messages = all_msgs
-    assistant_response = call_claude_chat(api_messages)
+    # Build dynamic system prompt with user's tools
+    user_row = None
+    with get_db() as db:
+        user_row = db.execute("SELECT * FROM users WHERE id=?", (session["user_id"],)).fetchone()
+    customer_name = (user_row["full_name"] if user_row else "") or ""
+    system_prompt = build_tool_creation_system_prompt(session["user_id"], customer_name)
+
+    assistant_response, _in_tok, _out_tok = call_claude_chat(
+        api_messages, system_prompt=system_prompt,
+        user_id=session["user_id"], session_id=int(chat_session_id) if chat_session_id else None,
+    )
     messages.append({"role": "assistant", "content": assistant_response})
 
-    # Check if tool definition exists in response
+    # Check for developer brief in response
+    brief_text = extract_developer_brief(assistant_response)
+    # Check if tool definition exists in response (for Mode C simple changes)
     tool_def = extract_tool_json_from_message(assistant_response)
 
     # Save updated messages
@@ -12639,6 +13019,9 @@ def tools_create_chat():
             "assistant_message": assistant_response,
             "has_tool": tool_def is not None,
             "tool_definition": json.dumps(tool_def, ensure_ascii=False) if tool_def else None,
+            "has_brief": brief_text is not None,
+            "brief_text": brief_text,
+            "brief_tool_name": extract_brief_tool_name(brief_text) if brief_text else None,
         })
     return redirect("/tools/create")
 
@@ -12794,6 +13177,56 @@ def tools_create_save():
         add_flash("הכלי נשמר! תוכל לבדוק אותו כאן לפני פרסום.")
         log_user_activity("create_tool", "יצירת כלי AI", "", name, f"status={status}")
         return redirect(f"/tools/my-tools")
+
+
+@app.route("/tools/create/save-brief", methods=["POST"])
+@login_required
+def tools_create_save_brief():
+    """Save a developer brief (technical spec) from the AI chat."""
+    is_ajax = request.headers.get("X-Requested-With") == "XMLHttpRequest" or request.is_json
+    data = request.get_json(silent=True) or {}
+    brief_text = (data.get("brief_text") or "").strip()
+    tool_name = (data.get("tool_name") or "כלי ללא שם").strip()
+    request_type = data.get("request_type", "new")
+    existing_tool_name = (data.get("existing_tool_name") or "").strip()
+    chat_session_id = data.get("session_id")
+
+    if not brief_text:
+        if is_ajax:
+            return jsonify({"error": "סיכום טכני ריק"}), 400
+        add_flash("סיכום טכני ריק")
+        return redirect("/tools/create")
+
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with get_db() as db:
+        user_row = db.execute("SELECT * FROM users WHERE id=?", (session["user_id"],)).fetchone()
+        db.execute(
+            """INSERT INTO tool_requests(user_id, username, full_name, company_name, tool_name,
+               request_type, existing_tool_name, brief_text, chat_session_id, status, created_at, updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                session["user_id"],
+                (user_row["username"] if user_row else "") or "",
+                (user_row["full_name"] if user_row else "") or "",
+                (user_row["company_name"] if user_row else "") or "",
+                tool_name,
+                request_type if request_type in ("new", "improvement") else "new",
+                existing_tool_name,
+                brief_text,
+                chat_session_id,
+                "pending",
+                now,
+                now,
+            ),
+        )
+        db.commit()
+
+    log_user_activity("tool_request", "בקשת כלי חדש", "", tool_name, f"type={request_type}")
+
+    if is_ajax:
+        return jsonify({"ok": True, "message": "הבקשה נשלחה בהצלחה! צוות הפיתוח יבנה את הכלי ויעדכן אותך."})
+    add_flash("הבקשה נשלחה בהצלחה! צוות הפיתוח יבנה את הכלי ויעדכן אותך.")
+    return redirect("/tools/create")
 
 
 # ── My Tools: Private tool area ───────────────────────────────────
