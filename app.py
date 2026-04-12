@@ -3680,6 +3680,7 @@ def default_dept_payroll_mapping():
         "date_source": "meta:תאריך",
         "total_hours_source": "meta:סה\"כ",
         "hourly_rate_source": "meta:תעריף שעתי",
+        "housing_source": "__auto__",
     }
 
 
@@ -3738,32 +3739,46 @@ def extract_dept_payroll_worker(detail_sheet, summary_sheet, workbook_kind, mapp
         status = "חסרות שעות לתשלום"
         notes.append("לא זוהו שעות לתשלום עבור העובד.")
 
-    # ── Extract housing charge from הערות field ──
+    # ── Extract housing charge ──
     housing_charge = 0
     rows, cols = get_flamingo_sheet_dims(detail_sheet, workbook_kind)
-    notes_label_row = find_sheet_label_row(detail_sheet, workbook_kind, "הערות")
-    if notes_label_row >= 0:
-        for r in range(max(0, notes_label_row - 1), min(rows, notes_label_row + 5)):
-            for c in range(cols):
-                cell_val = stringify_excel_value(get_flamingo_sheet_cell(detail_sheet, workbook_kind, r, c))
-                if not cell_val:
-                    continue
-                housing_match = re.search(r'חיוב\s*דירה\s*(\d+(?:\.\d+)?)', cell_val)
-                if housing_match:
-                    housing_charge = float(housing_match.group(1))
+    housing_source = mapping.get("housing_source", "__auto__")
+    if housing_source and housing_source not in ("__auto__", "__manual__", ""):
+        # User selected a specific field from the report
+        raw = extract_flamingo_mapping_value(detail_sheet, summary_sheet, workbook_kind, housing_source)
+        if raw not in ("", None):
+            try:
+                housing_charge = float(str(raw).replace(",", ""))
+            except (ValueError, TypeError):
+                # Try extracting number from text like "חיוב דירה 800"
+                m = re.search(r'(\d+(?:\.\d+)?)', str(raw))
+                if m:
+                    housing_charge = float(m.group(1))
+    if not housing_charge and housing_source in ("__auto__", ""):
+        # Auto mode: scan notes area for "חיוב דירה NNN"
+        notes_label_row = find_sheet_label_row(detail_sheet, workbook_kind, "הערות")
+        if notes_label_row >= 0:
+            for r in range(max(0, notes_label_row - 1), min(rows, notes_label_row + 5)):
+                for c in range(cols):
+                    cell_val = stringify_excel_value(get_flamingo_sheet_cell(detail_sheet, workbook_kind, r, c))
+                    if not cell_val:
+                        continue
+                    housing_match = re.search(r'חיוב\s*דירה\s*(\d+(?:\.\d+)?)', cell_val)
+                    if housing_match:
+                        housing_charge = float(housing_match.group(1))
+                        break
+                if housing_charge:
                     break
-            if housing_charge:
-                break
-    # Fallback: scan meta area for housing
-    if not housing_charge:
-        for r in range(min(rows, 12)):
-            for c in range(cols):
-                cell_val = stringify_excel_value(get_flamingo_sheet_cell(detail_sheet, workbook_kind, r, c))
-                if cell_val and re.search(r'חיוב\s*דירה\s*(\d+(?:\.\d+)?)', cell_val):
-                    housing_charge = float(re.search(r'חיוב\s*דירה\s*(\d+(?:\.\d+)?)', cell_val).group(1))
+        # Fallback: scan meta area for housing
+        if not housing_charge:
+            for r in range(min(rows, 12)):
+                for c in range(cols):
+                    cell_val = stringify_excel_value(get_flamingo_sheet_cell(detail_sheet, workbook_kind, r, c))
+                    if cell_val and re.search(r'חיוב\s*דירה\s*(\d+(?:\.\d+)?)', cell_val):
+                        housing_charge = float(re.search(r'חיוב\s*דירה\s*(\d+(?:\.\d+)?)', cell_val).group(1))
+                        break
+                if housing_charge:
                     break
-            if housing_charge:
-                break
 
     # ── Find daily header row and column positions ──
     daily_header_row = find_sheet_label_row(detail_sheet, workbook_kind, "תאריך")
@@ -4434,11 +4449,11 @@ def write_dept_payroll_output_v2(output_path, worker_rows, dept_settings, client
 
     # Grand total
     if client_workers:
-        ws1.merge_cells(start_row=row, start_column=1, end_row=row, end_column=7)
-        write_cell(ws1, row, 1, f"סה\"כ חיוב כל הלקוחות", font=grand_font, fill=grand_fill)
-        for col_idx in range(2, 9):
+        write_cell(ws1, row, 1, "סה\"כ חיוב כל הלקוחות", font=grand_font, fill=grand_fill)
+        for col_idx in range(2, 8):
             write_cell(ws1, row, col_idx, "", fill=grand_fill)
         write_cell(ws1, row, 8, round(grand_charge_total, 2), font=grand_font, fill=grand_fill, fmt=num_fmt)
+        ws1.merge_cells(start_row=row, start_column=1, end_row=row, end_column=7)
 
     for col_idx in range(1, 9):
         ws1.column_dimensions[get_column_letter(col_idx)].width = 16
@@ -4517,12 +4532,13 @@ def write_dept_payroll_output_v2(output_path, worker_rows, dept_settings, client
         grand_total_gross += wc.get("gross", 0)
 
     # Grand total for employees
-    ws2.merge_cells(start_row=row, start_column=1, end_row=row, end_column=6)
     write_cell(ws2, row, 1, f"סה\"כ תשלום לכל העובדים ({len(worker_calculations)} עובדים)", font=grand_font, fill=grand_fill)
-    for col_idx in range(2, 8):
-        write_cell(ws2, row, col_idx, "", fill=grand_fill)
+    write_cell(ws2, row, 2, "", fill=grand_fill)
     write_cell(ws2, row, 3, round(grand_total_gross, 2), font=grand_font, fill=grand_fill, fmt=num_fmt)
+    for col_idx in range(4, 7):
+        write_cell(ws2, row, col_idx, "", fill=grand_fill)
     write_cell(ws2, row, 7, round(grand_total_net, 2), font=grand_font, fill=grand_fill, fmt=num_fmt)
+    ws2.merge_cells(start_row=row, start_column=1, end_row=row, end_column=2)
 
     for col_idx in range(1, 10):
         ws2.column_dimensions[get_column_letter(col_idx)].width = 16
@@ -4660,6 +4676,26 @@ def run_dept_payroll(input_path, output_path, extension, options=None):
     # Parse department settings from options
     dept_settings_json = options.get("dept_settings_json", "[]")
     dept_settings = parse_dept_settings_json(dept_settings_json)
+
+    # Apply manual overrides for hourly rate and housing
+    manual_hourly_rate = 0
+    if mapping.get("hourly_rate_source") == "__manual__":
+        try:
+            manual_hourly_rate = float(str(options.get("manual_hourly_rate", 0) or 0).replace(",", ""))
+        except (ValueError, TypeError):
+            manual_hourly_rate = 0
+        for w in worker_rows:
+            w["hourly_rate"] = manual_hourly_rate
+
+    manual_housing = 0
+    housing_mode = mapping.get("housing_source", "__auto__")
+    if housing_mode == "__manual__":
+        try:
+            manual_housing = float(str(options.get("manual_housing", 0) or 0).replace(",", ""))
+        except (ValueError, TypeError):
+            manual_housing = 0
+        for w in worker_rows:
+            w["housing_charge"] = manual_housing
 
     # Parse clients Excel if provided
     clients_info = ({}, {})
@@ -6116,7 +6152,8 @@ DEPT_PAYROLL_MAPPING_FIELDS = [
     {"name": "exit_time_source", "label": "יציאה", "required": False},
     {"name": "date_source", "label": "תאריך", "required": False},
     {"name": "total_hours_source", "label": 'סה"כ שעות', "required": True, "critical": True},
-    {"name": "hourly_rate_source", "label": "תעריף שעתי", "required": False},
+    {"name": "hourly_rate_source", "label": "תעריף שעתי", "required": False, "has_manual": True},
+    {"name": "housing_source", "label": "חיוב דירה", "required": False, "has_manual": True},
 ]
 
 DEPT_PAYROLL_SUGGESTION_KEYWORDS = {
@@ -6133,6 +6170,7 @@ DEPT_PAYROLL_SUGGESTION_KEYWORDS = {
     "date_source": ["תאריך", "date"],
     "total_hours_source": ["סהכ", "סה\"כ", "total", "hours", "שעות"],
     "hourly_rate_source": ["תעריףשעתי", "תעריף", "rate", "hourly"],
+    "housing_source": ["חיובדירה", "דירה", "housing", "הערות"],
 }
 
 
@@ -7101,7 +7139,12 @@ def build_dept_payroll_mapping_options(input_path, extension):
     for field in DEPT_PAYROLL_MAPPING_FIELDS:
         field_name = field["name"]
         options = [{"value": "", "label": "לא נבחר", "source_kind": "empty"}]
-        daily_header_fields = {"event_source", "entry_time_source", "exit_time_source", "date_source", "total_hours_source", "hourly_rate_source"}
+        if field_name == "hourly_rate_source":
+            options.append({"value": "__manual__", "label": "הזנה ידנית של תעריף שעתי", "source_kind": "critical"})
+        if field_name == "housing_source":
+            options.append({"value": "__auto__", "label": "זיהוי אוטומטי מהערות הדוח", "source_kind": "meta"})
+            options.append({"value": "__manual__", "label": "הזנה ידנית של חיוב דירה", "source_kind": "critical"})
+        daily_header_fields = {"event_source", "entry_time_source", "exit_time_source", "date_source", "total_hours_source", "hourly_rate_source", "housing_source"}
         for option in base_options:
             token = option.get("match_token", "")
             keywords = DEPT_PAYROLL_SUGGESTION_KEYWORDS.get(field_name, [])
@@ -7152,6 +7195,8 @@ def build_dept_payroll_mapping_options(input_path, extension):
                     if "מחלקה" in token:
                         suggested = option["value"]
                         break
+        elif field_name == "housing_source":
+            suggested = "__auto__"
         else:
             for option in deduped:
                 token = option.get("match_token", "")
@@ -7167,7 +7212,7 @@ def build_dept_payroll_mapping_options(input_path, extension):
     }
 
 
-def build_dept_payroll_mapping_form(script_id, temp_upload_path, temp_upload_ext, inspection, current_mapping, templates, template_name_value, dept_settings_json_value):
+def build_dept_payroll_mapping_form(script_id, temp_upload_path, temp_upload_ext, inspection, current_mapping, templates, template_name_value, dept_settings_json_value, manual_values=None):
     template_options = '<option value="">ללא תבנית שמורה</option>'
     for template in templates:
         template_options += '<option value="' + str(template["id"]) + '">' + esc(template["name"]) + '</option>'
@@ -7178,6 +7223,10 @@ def build_dept_payroll_mapping_form(script_id, temp_upload_path, temp_upload_ext
         for template in templates
     }
 
+    manual_values = manual_values or {}
+    manual_hourly_rate_value = str(manual_values.get("manual_hourly_rate", "") or "")
+    manual_housing_value = str(manual_values.get("manual_housing", "") or "")
+
     mapping_fields_html = ""
     for field in DEPT_PAYROLL_MAPPING_FIELDS:
         field_name = field["name"]
@@ -7186,6 +7235,7 @@ def build_dept_payroll_mapping_form(script_id, temp_upload_path, temp_upload_ext
         blank_options = [option for option in options if not option.get("value")]
         meta_options = [option for option in options if option.get("source_kind") == "meta"]
         summary_options = [option for option in options if option.get("source_kind") == "table_exact"]
+        special_options = [option for option in options if option.get("source_kind") == "critical"]
 
         def render_option(option):
             selected = ' selected' if option["value"] == current_value else ""
@@ -7194,6 +7244,9 @@ def build_dept_payroll_mapping_form(script_id, temp_upload_path, temp_upload_ext
         select_options = ""
         for option in blank_options:
             select_options += render_option(option)
+        if special_options:
+            for option in special_options:
+                select_options += render_option(option)
         if meta_options:
             select_options += '<optgroup label="שדות עליונים">'
             for option in meta_options:
@@ -7209,12 +7262,32 @@ def build_dept_payroll_mapping_form(script_id, temp_upload_path, temp_upload_ext
         wrapper_style = ""
         if field.get("critical"):
             wrapper_style = 'background:#fff7ed;border:1px solid #fdba74;border-radius:12px;padding:10px 10px 12px'
+        # Manual input for hourly_rate_source
+        manual_input_html = ""
+        if field_name == "hourly_rate_source":
+            manual_input_html = (
+                '<div data-manual-wrap="hourly_rate" style="' + ('display:block' if current_value == "__manual__" else 'display:none') + ';margin-top:8px">'
+                + '<label class="field-label" style="margin-bottom:4px;font-size:12px">תעריף שעתי ידני</label>'
+                + '<input type="text" name="manual_hourly_rate" value="' + esc(manual_hourly_rate_value) + '" placeholder="לדוגמה 45.5" style="margin-bottom:0;padding:7px 10px;font-size:13px">'
+                + '<div style="font-size:11px;color:#9a3412;line-height:1.5;margin-top:4px">תעריף אחיד לכל העובדים. אם תבחר שדה מהדוח — כל עובד יחושב לפי התעריף שלו.</div>'
+                + '</div>'
+            )
+        elif field_name == "housing_source":
+            manual_input_html = (
+                '<div data-manual-wrap="housing" style="' + ('display:block' if current_value == "__manual__" else 'display:none') + ';margin-top:8px">'
+                + '<label class="field-label" style="margin-bottom:4px;font-size:12px">חיוב דירה ידני</label>'
+                + '<input type="text" name="manual_housing" value="' + esc(manual_housing_value) + '" placeholder="לדוגמה 800" style="margin-bottom:0;padding:7px 10px;font-size:13px">'
+                + '<div style="font-size:11px;color:#9a3412;line-height:1.5;margin-top:4px">סכום אחיד לכל העובדים. בחירת &laquo;זיהוי אוטומטי&raquo; תחפש את הסכום בהערות כל עובד.</div>'
+                + '</div>'
+            )
         mapping_fields_html += (
             '<div style="' + wrapper_style + '"><label class="field-label">' + field["label"] + required_badge + '</label>'
             + ('<div style="font-size:12px;color:#9a3412;line-height:1.6;margin:-4px 0 8px">שדה קריטי לחישוב. יש לוודא שזהו המקור הנכון.</div>' if field.get("critical") else '')
             + '<select name="' + field_name + '" data-mapping-field="1" data-field-label="' + esc(field["label"]) + '" style="padding:9px 12px;border:1.5px solid #e2e8f0;border-radius:8px;font-size:13px;font-family:inherit;outline:none;width:100%;margin-bottom:0;background:white;transition:background-color .15s ease,border-color .15s ease,box-shadow .15s ease">'
             + select_options
-            + '</select></div>'
+            + '</select>'
+            + manual_input_html
+            + '</div>'
         )
 
     # Department settings section — manual entry table
@@ -7315,9 +7388,10 @@ def build_dept_payroll_mapping_form(script_id, temp_upload_path, temp_upload_ext
         + 'var deptJsonInput=document.getElementById("deptSettingsJsonInput");'
         + 'var deptTableBody=document.getElementById("deptTableBody");'
         + 'var selectStyles={critical:{bg:"#fff7ed",border:"#fb923c",shadow:"rgba(249,115,22,.14)"},meta:{bg:"#eff6ff",border:"#60a5fa",shadow:"rgba(59,130,246,.12)"},table_exact:{bg:"#ecfdf5",border:"#4ade80",shadow:"rgba(34,197,94,.14)"},empty:{bg:"#ffffff",border:"#e2e8f0",shadow:"rgba(148,163,184,.08)"}};'
-        + 'function applySelectVisual(sel){var opt=sel.options[sel.selectedIndex];var kind=(opt&&opt.getAttribute("data-source-kind"))||"empty";var style=selectStyles[kind]||selectStyles.empty;sel.style.backgroundColor=style.bg;sel.style.borderColor=style.border;sel.style.boxShadow="0 0 0 3px "+style.shadow;}'
-        + 'function refreshOptionLabels(){var assignments={};fieldSelects.forEach(function(sel){if(sel.value){assignments[sel.value]=sel.name;}});fieldSelects.forEach(function(sel){Array.prototype.forEach.call(sel.options,function(opt){var base=opt.getAttribute("data-base-label")||opt.text;var assigned=assignments[opt.value];var suffix="";if(opt.value && assigned && assigned!==sel.name){suffix=" [נבחר עבור "+(fieldLabels[assigned]||assigned)+"]";}opt.text=base+suffix;});applySelectVisual(sel);});}'
-        + 'function clearDuplicateSelections(changedSelect){if(!changedSelect.value){refreshOptionLabels();return;}fieldSelects.forEach(function(sel){if(sel!==changedSelect && sel.value===changedSelect.value){sel.value="";}});refreshOptionLabels();}'
+        + 'function toggleManualInputs(sel){if(sel.name==="hourly_rate_source"){var w=document.querySelector("[data-manual-wrap=\'hourly_rate\']");if(w)w.style.display=(sel.value==="__manual__")?"block":"none";}if(sel.name==="housing_source"){var w2=document.querySelector("[data-manual-wrap=\'housing\']");if(w2)w2.style.display=(sel.value==="__manual__")?"block":"none";}}'
+        + 'function applySelectVisual(sel){var opt=sel.options[sel.selectedIndex];var kind=(opt&&opt.getAttribute("data-source-kind"))||"empty";var style=selectStyles[kind]||selectStyles.empty;sel.style.backgroundColor=style.bg;sel.style.borderColor=style.border;sel.style.boxShadow="0 0 0 3px "+style.shadow;toggleManualInputs(sel);}'
+        + 'function refreshOptionLabels(){var assignments={};fieldSelects.forEach(function(sel){if(sel.value){assignments[sel.value]=sel.name;}});fieldSelects.forEach(function(sel){Array.prototype.forEach.call(sel.options,function(opt){var base=opt.getAttribute("data-base-label")||opt.text;var assigned=assignments[opt.value];var suffix="";if(opt.value && assigned && assigned!==sel.name && opt.value!=="__manual__" && opt.value!=="__auto__"){suffix=" [נבחר עבור "+(fieldLabels[assigned]||assigned)+"]";}opt.text=base+suffix;});applySelectVisual(sel);});}'
+        + 'function clearDuplicateSelections(changedSelect){if(!changedSelect.value || changedSelect.value==="__manual__" || changedSelect.value==="__auto__"){refreshOptionLabels();return;}fieldSelects.forEach(function(sel){if(sel!==changedSelect && sel.value===changedSelect.value){sel.value="";}});refreshOptionLabels();}'
         # Department table functions
         + 'var deptFields=["dept_number","customer_name","region_manager","address","charge_rate","contact_person","contact_phone","hourly_rate","housing"];'
         + 'function createDeptRow(data){data=data||{};var tr=document.createElement("tr");tr.style.borderBottom="1px solid #e2e8f0";deptFields.forEach(function(f){var td=document.createElement("td");td.style.padding="4px 3px";var inp=document.createElement("input");inp.type="text";inp.setAttribute("data-dept-field",f);inp.value=data[f]||"";inp.style.cssText="width:100%;padding:6px 8px;border:1.5px solid #e2e8f0;border-radius:6px;font-size:12px;font-family:inherit;outline:none;min-width:80px";inp.addEventListener("input",syncDeptJson);td.appendChild(inp);tr.appendChild(td);});var tdDel=document.createElement("td");tdDel.style.padding="4px 3px";var btn=document.createElement("button");btn.type="button";btn.textContent="✕";btn.style.cssText="background:#fee2e2;color:#dc2626;border:none;border-radius:6px;padding:4px 10px;cursor:pointer;font-size:13px";btn.addEventListener("click",function(){tr.remove();syncDeptJson();});tdDel.appendChild(btn);tr.appendChild(tdDel);deptTableBody.appendChild(tr);return tr;}'
@@ -9597,6 +9671,7 @@ def run_script(script_id):
                         mapping_templates,
                         get_next_mapping_template_name(mapping_templates),
                         "[]",
+                        {},
                     )
                 elif script_id == "matan_manual_corrections":
                     mapping_confirmation_html = build_matan_corrections_mapping_form(
@@ -9646,6 +9721,10 @@ def run_script(script_id):
                 "max_corrections": request.form.get("max_corrections", "").strip(),
             }
             dept_settings_json = request.form.get("dept_settings_json", "[]").strip() if script_id == "dept_payroll" else "[]"
+            dept_manual_values = {
+                "manual_hourly_rate": request.form.get("manual_hourly_rate", "").strip(),
+                "manual_housing": request.form.get("manual_housing", "").strip(),
+            } if script_id == "dept_payroll" else {}
             mapping_templates = get_mapping_templates(session["user_id"], script_id)
             mapping_action = request.form.get("mapping_action", "confirm").strip() or "confirm"
             selected_template_id = request.form.get("selected_template_id", "").strip()
@@ -9681,6 +9760,7 @@ def run_script(script_id):
                             mapping_templates,
                             get_next_mapping_template_name(mapping_templates),
                             dept_settings_json,
+                            dept_manual_values,
                         )
                     elif script_id == "matan_missing":
                         mapping_confirmation_html = build_matan_missing_mapping_form(
@@ -9748,6 +9828,10 @@ def run_script(script_id):
                     manual_hourly_rate = str(selected_template["mapping"].get("manual_hourly_rate", manual_hourly_rate) or "")
                 if script_id == "dept_payroll" and selected_template:
                     dept_settings_json = str(selected_template["mapping"].get("dept_settings_json", dept_settings_json) or "[]")
+                    dept_manual_values = {
+                        "manual_hourly_rate": str(selected_template["mapping"].get("manual_hourly_rate", "") or ""),
+                        "manual_housing": str(selected_template["mapping"].get("manual_housing", "") or ""),
+                    }
                 info_message = '<div class="flash" style="background:#eff6ff;border-color:#bfdbfe;color:#1d4ed8">התבנית נטענה. אפשר לבדוק את השדות ואז להריץ.</div>'
                 if script_id == "flamingo_payroll":
                     mapping_confirmation_html = build_flamingo_mapping_form(
@@ -9770,6 +9854,7 @@ def run_script(script_id):
                         mapping_templates,
                         request.form.get("template_name", "").strip() or get_next_mapping_template_name(mapping_templates),
                         dept_settings_json,
+                        dept_manual_values,
                     )
                 elif script_id == "matan_missing":
                     mapping_confirmation_html = build_matan_missing_mapping_form(
@@ -9882,7 +9967,7 @@ def run_script(script_id):
                         mapping_confirmation_html = build_dept_payroll_mapping_form(
                             script_id, inp, ext, inspection, mapping, mapping_templates,
                             request.form.get("template_name", "").strip() or get_next_mapping_template_name(mapping_templates),
-                            dept_settings_json,
+                            dept_settings_json, dept_manual_values,
                         )
                         return render(
                             scr["name"],
@@ -9900,7 +9985,30 @@ def run_script(script_id):
                         mapping_confirmation_html = build_dept_payroll_mapping_form(
                             script_id, inp, ext, inspection, mapping, mapping_templates,
                             request.form.get("template_name", "").strip() or get_next_mapping_template_name(mapping_templates),
-                            dept_settings_json,
+                            dept_settings_json, dept_manual_values,
+                        )
+                        return render(
+                            scr["name"],
+                            '<a href="/dashboard" style="color:#2563eb;font-size:13px;font-weight:600;text-decoration:none;display:inline-flex;align-items:center;gap:4px;margin-bottom:1rem">' + text["back_arrow"] + ' ' + scr["back_label"] + '</a>'
+                            + '<div class="card"><div style="font-size:40px;margin-bottom:.5rem">' + scr["icon"] + '</div><div style="font-size:20px;font-weight:700;color:#1e3a8a;margin-bottom:4px">' + scr["name"] + '</div>'
+                            + error + mapping_confirmation_html + '</div>',
+                            lang=lang,
+                            topbar_greeting=text["topbar_greeting"],
+                            logout_label=text["logout"],
+                            show_lang_switch=True,
+                        )
+                    dept_manual_missing = []
+                    if mapping.get("hourly_rate_source") == "__manual__" and not dept_manual_values.get("manual_hourly_rate"):
+                        dept_manual_missing.append("תעריף שעתי")
+                    if mapping.get("housing_source") == "__manual__" and not dept_manual_values.get("manual_housing"):
+                        dept_manual_missing.append("חיוב דירה")
+                    if dept_manual_missing:
+                        inspection = build_dept_payroll_mapping_options(inp, ext)
+                        error = '<div class="flash-err">נבחרה הזנה ידנית אבל לא הוזן ערך עבור: ' + ', '.join(dept_manual_missing) + '.</div>'
+                        mapping_confirmation_html = build_dept_payroll_mapping_form(
+                            script_id, inp, ext, inspection, mapping, mapping_templates,
+                            request.form.get("template_name", "").strip() or get_next_mapping_template_name(mapping_templates),
+                            dept_settings_json, dept_manual_values,
                         )
                         return render(
                             scr["name"],
@@ -10199,6 +10307,10 @@ def run_script(script_id):
                     options["manual_hourly_rate"] = manual_hourly_rate
                 elif script_id == "dept_payroll":
                     options["dept_settings_json"] = dept_settings_json
+                    if dept_manual_values.get("manual_hourly_rate"):
+                        options["manual_hourly_rate"] = dept_manual_values["manual_hourly_rate"]
+                    if dept_manual_values.get("manual_housing"):
+                        options["manual_housing"] = dept_manual_values["manual_housing"]
                     # Handle optional clients file upload
                     clients_file = request.files.get("clients_file")
                     if clients_file and clients_file.filename:
@@ -10229,6 +10341,10 @@ def run_script(script_id):
                             template_mapping["manual_hourly_rate"] = manual_hourly_rate
                         if script_id == "dept_payroll" and dept_settings_json:
                             template_mapping["dept_settings_json"] = dept_settings_json
+                        if script_id == "dept_payroll" and dept_manual_values.get("manual_hourly_rate"):
+                            template_mapping["manual_hourly_rate"] = dept_manual_values["manual_hourly_rate"]
+                        if script_id == "dept_payroll" and dept_manual_values.get("manual_housing"):
+                            template_mapping["manual_housing"] = dept_manual_values["manual_housing"]
                         save_mapping_template(session["user_id"], script_id, template_name, template_mapping)
                 except (xlrd.biffh.XLRDError, BadZipFile, OSError, ValueError):
                     error = '<div class="flash-err">' + scr["processing_error"] + '</div>'
