@@ -7442,8 +7442,12 @@ def build_dept_payroll_mapping_form(script_id, temp_upload_path, temp_upload_ext
         + '</div>'
         # Clients file upload section
         + '<div style="background:#fef3c7;border:1px solid #fbbf24;border-radius:14px;padding:1rem;margin-top:1rem">'
-        + '<div style="font-size:15px;font-weight:700;color:#92400e;margin-bottom:10px">קובץ לקוחות (אופציונלי)</div>'
-        + '<div style="font-size:13px;color:#78350f;margin-bottom:12px">ניתן להעלות קובץ אקסל עם נתוני לקוחות — תעריפי גביה, כתובות, אנשי קשר. אם לא מועלה קובץ, המערכת תשתמש בהגדרת פרטי הלקוחות.</div>'
+        + '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">'
+        + '<div style="font-size:15px;font-weight:700;color:#92400e">קובץ לקוחות (אופציונלי)</div>'
+        + '<a href="/sample-clients-file" class="btn btn-gray" style="text-decoration:none;display:inline-flex;align-items:center;gap:6px;padding:6px 14px;font-size:12px;font-weight:600;border-radius:8px;white-space:nowrap" target="_blank">'
+        + '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>'
+        + 'הורד קובץ לדוגמה</a></div>'
+        + '<div style="font-size:13px;color:#78350f;margin-bottom:12px">ניתן להעלות קובץ אקסל עם נתוני לקוחות — תעריפי גביה, כתובות, אנשי קשר. הורד את הקובץ לדוגמה, מלא את הפרטים ושמור.</div>'
         + '<input type="file" name="clients_file" accept=".xls,.xlsx" style="padding:8px;border:1.5px solid #e2e8f0;border-radius:8px;font-size:13px;font-family:inherit;width:100%;background:white">'
         + '</div>'
         # Department settings section
@@ -10705,6 +10709,120 @@ def download(filename):
     if script:
         log_user_activity("download_report", "הוריד דוח", script.get("id", ""), script.get("name", ""), download_name)
     return send_file(path, as_attachment=True, download_name=download_name)
+
+
+@app.route("/sample-clients-file")
+@login_required
+def download_sample_clients_file():
+    """Generate and download a professional sample clients Excel file."""
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "נתוני לקוחות"
+    ws.sheet_view.rightToLeft = True
+
+    # ── Title row ──
+    title_font = Font(bold=True, size=14, color="FFFFFF")
+    title_fill = PatternFill(start_color="1E3A8A", end_color="1E3A8A", fill_type="solid")
+    ws.merge_cells("A1:J1")
+    title_cell = ws.cell(row=1, column=1, value="קובץ נתוני לקוחות — Scriptly")
+    title_cell.font = title_font
+    title_cell.fill = title_fill
+    title_cell.alignment = Alignment(horizontal="center", vertical="center")
+    ws.row_dimensions[1].height = 32
+
+    # ── Subtitle row ──
+    sub_font = Font(size=11, color="475569", italic=True)
+    ws.merge_cells("A2:J2")
+    sub_cell = ws.cell(row=2, column=1, value="מלא את פרטי הלקוחות בשורות מתחת לכותרות. שדות עם * הם חובה. ניתן להוסיף שורות לפי הצורך.")
+    sub_cell.font = sub_font
+    sub_cell.alignment = Alignment(horizontal="center", vertical="center")
+    ws.row_dimensions[2].height = 24
+
+    # ── Headers ──
+    headers = [
+        ("שם העסק *", 22, True),
+        ("תעריף גביה *", 14, True),
+        ("מנהל אזור", 16, False),
+        ("כתובת העסק", 22, False),
+        ("איש קשר", 16, False),
+        ("טלפון", 14, False),
+        ("שם העובד", 18, False),
+        ("מספר פספורט", 14, False),
+        ("שכר שעתי", 12, False),
+        ("חיוב דירה", 12, False),
+    ]
+    header_font = Font(bold=True, size=11, color="FFFFFF")
+    header_fill_req = PatternFill(start_color="166534", end_color="166534", fill_type="solid")
+    header_fill_opt = PatternFill(start_color="1D4ED8", end_color="1D4ED8", fill_type="solid")
+    thin_border = Border(
+        left=Side(style="thin", color="CBD5E1"),
+        right=Side(style="thin", color="CBD5E1"),
+        top=Side(style="thin", color="CBD5E1"),
+        bottom=Side(style="thin", color="CBD5E1"),
+    )
+    for col_idx, (label, width, required) in enumerate(headers, 1):
+        cell = ws.cell(row=3, column=col_idx, value=label)
+        cell.font = header_font
+        cell.fill = header_fill_req if required else header_fill_opt
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+        cell.border = thin_border
+        ws.column_dimensions[get_column_letter(col_idx)].width = width
+    ws.row_dimensions[3].height = 28
+
+    # ── Example rows ──
+    example_data = [
+        ["אצל לקוח", 55, "יוסי כהן", "רחוב הרצל 10, תל אביב", "דנה לוי", "050-1234567", "ישראל ישראלי", "12345678", 42, 800],
+        ["", "", "", "", "", "", "מוחמד אחמד", "87654321", 42, 800],
+        ["בתפקיד", 48, "שרה מזרחי", "שדרות רוטשילד 5, ת\"א", "אבי רון", "052-9876543", "פרסה רוגלי", "11223344", 38, 0],
+        ["דייל", 60, "", "אילת, מלון רויאל", "משה דוד", "054-5551234", "דוד דוד", "55667788", 45, 600],
+    ]
+    example_font = Font(size=11, color="334155")
+    alt_fill_1 = PatternFill(start_color="F8FAFC", end_color="F8FAFC", fill_type="solid")
+    alt_fill_2 = PatternFill(start_color="FFFFFF", end_color="FFFFFF", fill_type="solid")
+    for row_idx, row_data in enumerate(example_data, 4):
+        fill = alt_fill_1 if row_idx % 2 == 0 else alt_fill_2
+        for col_idx, val in enumerate(row_data, 1):
+            cell = ws.cell(row=row_idx, column=col_idx, value=val)
+            cell.font = example_font
+            cell.alignment = Alignment(horizontal="right" if isinstance(val, str) else "center", vertical="center")
+            cell.border = thin_border
+            cell.fill = fill
+
+    # ── Legend section ──
+    legend_row = len(example_data) + 5
+    ws.merge_cells(start_row=legend_row, start_column=1, end_row=legend_row, end_column=6)
+    legend_title = ws.cell(row=legend_row, column=1, value="הסברים")
+    legend_title.font = Font(bold=True, size=12, color="1E3A8A")
+    legend_title.alignment = Alignment(horizontal="right")
+    legend_items = [
+        ("שם העסק *", "שם הלקוח כפי שמופיע בעמודת התנועה המיוחדת בדוח הנוכחות. חובה."),
+        ("תעריף גביה *", "הסכום לשעה שנגבה מהלקוח. חובה לחישוב חיוב."),
+        ("מנהל אזור", "שם מנהל האזור האחראי על הלקוח."),
+        ("כתובת העסק", "כתובת אתר העבודה של הלקוח."),
+        ("איש קשר / טלפון", "פרטי קשר של הלקוח להצגה בדוח."),
+        ("שם העובד", "שם העובד שמוצב אצל הלקוח. ניתן להוסיף מספר שורות לאותו לקוח."),
+        ("שכר שעתי / חיוב דירה", "פרטי שכר והטבות ספציפיים לעובד (אופציונלי — ניתן להגדיר גם במסך הראשי)."),
+    ]
+    info_font = Font(size=10, color="475569")
+    label_font = Font(size=10, color="1E3A8A", bold=True)
+    for i, (label, desc) in enumerate(legend_items, 1):
+        r = legend_row + i
+        cell_label = ws.cell(row=r, column=1, value=label)
+        cell_label.font = label_font
+        cell_label.alignment = Alignment(horizontal="right")
+        ws.merge_cells(start_row=r, start_column=2, end_row=r, end_column=6)
+        cell_desc = ws.cell(row=r, column=2, value=desc)
+        cell_desc.font = info_font
+        cell_desc.alignment = Alignment(horizontal="right")
+
+    # Save to temp file
+    import tempfile
+    tmp = tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False, dir=str(OUTPUT_FOLDER))
+    wb.save(tmp.name)
+    tmp.close()
+    return send_file(tmp.name, as_attachment=True, download_name="קובץ_לקוחות_לדוגמה.xlsx")
 
 
 @app.route("/report-jobs/<int:job_id>/download")
