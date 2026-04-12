@@ -3065,6 +3065,18 @@ def find_sheet_label_row(sheet, workbook_kind, label_text):
     return -1
 
 
+def find_sheet_label_position(sheet, workbook_kind, label_text):
+    """Find the (row, col) position of a label in the sheet. Returns (-1, -1) if not found."""
+    normalized_label = normalize_token(label_text)
+    rows, cols = get_flamingo_sheet_dims(sheet, workbook_kind)
+    for row_index in range(rows):
+        for col_index in range(cols):
+            token = normalize_token(get_flamingo_sheet_cell(sheet, workbook_kind, row_index, col_index))
+            if token == normalized_label:
+                return row_index, col_index
+    return -1, -1
+
+
 def sheet_has_label(sheet, workbook_kind, label_text):
     normalized_label = normalize_token(label_text)
     rows, cols = get_flamingo_sheet_dims(sheet, workbook_kind)
@@ -3919,15 +3931,18 @@ def extract_dept_payroll_worker(detail_sheet, summary_sheet, workbook_kind, mapp
 
     # ── Extract תנועות מיוחדות section ──
     special_movements = {}
-    tnuot_row = find_sheet_label_row(detail_sheet, workbook_kind, "תנועות מיוחדות")
+    tnuot_row, tnuot_col = find_sheet_label_position(detail_sheet, workbook_kind, "תנועות מיוחדות")
     if tnuot_row >= 0:
+        # Scan only in the column range where the header was found (± 10 cols)
+        scan_col_start = max(0, tnuot_col - 2)
+        scan_col_end = min(cols, tnuot_col + 12)
         for r in range(tnuot_row + 1, min(rows, tnuot_row + 20)):
-            for c in range(0, cols - 1):
+            for c in range(scan_col_start, scan_col_end):
                 label_val = stringify_excel_value(get_flamingo_sheet_cell(detail_sheet, workbook_kind, r, c))
                 if not label_val:
                     continue
                 # Look for a numeric value to the right
-                for nc in range(c + 1, min(cols, c + 5)):
+                for nc in range(c + 1, min(cols, c + 10)):
                     val = get_flamingo_sheet_cell(detail_sheet, workbook_kind, r, nc)
                     if val in ("", None):
                         continue
@@ -7250,12 +7265,15 @@ def build_dept_payroll_mapping_options(input_path, extension):
     NON_CLIENT_KEYWORDS = {"חופשה", "מחלה", "חג", "מילואים", "אבל", "היעדרות", "סהכ", "סה\"כ"}
     detected_clients = set()
     for detail_sheet_block, summary_sheet_block in worker_blocks:
-        tnuot_row = find_sheet_label_row(detail_sheet_block, workbook_kind, "תנועות מיוחדות")
+        tnuot_row, tnuot_col = find_sheet_label_position(detail_sheet_block, workbook_kind, "תנועות מיוחדות")
         if tnuot_row < 0:
             continue
         rows_count, cols_count = get_flamingo_sheet_dims(detail_sheet_block, workbook_kind)
+        # Scan only in the column range where the header was found (± a few cols)
+        scan_col_start = max(0, tnuot_col - 2)
+        scan_col_end = min(cols_count, tnuot_col + 12)
         for r in range(tnuot_row + 1, min(rows_count, tnuot_row + 20)):
-            for c in range(0, cols_count - 1):
+            for c in range(scan_col_start, scan_col_end):
                 label_val = stringify_excel_value(get_flamingo_sheet_cell(detail_sheet_block, workbook_kind, r, c))
                 if not label_val or not label_val.strip():
                     continue
@@ -7265,7 +7283,7 @@ def build_dept_payroll_mapping_options(input_path, extension):
                 if any(normalize_token(kw) == label_token or normalize_token(kw) in label_token for kw in NON_CLIENT_KEYWORDS):
                     break
                 # Look for a numeric value to the right (confirming it's a real entry with hours)
-                for nc in range(c + 1, min(cols_count, c + 5)):
+                for nc in range(c + 1, min(cols_count, c + 10)):
                     val = get_flamingo_sheet_cell(detail_sheet_block, workbook_kind, r, nc)
                     if val in ("", None):
                         continue
