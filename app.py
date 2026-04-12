@@ -4735,7 +4735,14 @@ body::before { content: ''; position: fixed; inset: 0; background-image: radial-
 .topbar a { color: #93c5fd; font-size: 13px; text-decoration: none; transition: color .2s; }
 .topbar a:hover { color: #ffffff; }
 .wrap { max-width: 900px; margin: 2rem auto; padding: 0 1rem; position: relative; z-index: 1; animation: panelFadeIn .5s ease-out; }
-.login-wrap { max-width: 420px; margin: 5rem auto; padding: 0 1rem; position: relative; z-index: 1; animation: panelFadeIn .5s ease-out; }
+.login-wrap { max-width: 420px; margin: 0 auto; padding: 2rem 1rem; position: relative; z-index: 1; animation: panelFadeIn .6s ease-out; min-height: 100vh; display: flex; flex-direction: column; align-items: stretch; justify-content: center; }
+.login-bg { min-height: 100vh; background: linear-gradient(160deg, #0f1b3d 0%, #1e3a8a 35%, #2563eb 70%, #3b82f6 100%); position: relative; overflow: hidden; }
+.login-bg::before { content: ''; position: absolute; inset: 0; background-image: radial-gradient(rgba(255,255,255,.04) 1px, transparent 1px); background-size: 40px 40px; pointer-events: none; }
+.login-bg .login-wrap { padding-top: 0; padding-bottom: 0; }
+.login-orb { position: absolute; border-radius: 50%; filter: blur(80px); opacity: .12; pointer-events: none; }
+.login-orb-1 { width: 400px; height: 400px; background: #60a5fa; top: -100px; right: -100px; animation: loginOrbFloat 10s ease-in-out infinite; }
+.login-orb-2 { width: 300px; height: 300px; background: #a78bfa; bottom: -80px; left: -80px; animation: loginOrbFloat 12s ease-in-out infinite reverse; }
+@keyframes loginOrbFloat { 0%,100% { transform: translate(0,0) scale(1); } 50% { transform: translate(30px,-20px) scale(1.05); } }
 .card { background: white; border: 1px solid #e2e8f0; border-radius: 18px; box-shadow: 0 4px 24px rgba(37,99,235,.07); padding: 2rem; margin-bottom: 1.5rem; transition: box-shadow .3s cubic-bezier(.4,0,.2,1), border-color .3s, transform .3s cubic-bezier(.4,0,.2,1); }
 .card:hover { box-shadow: 0 8px 32px rgba(37,99,235,.1); border-color: #bfdbfe; }
 .card h2 { font-size: 17px; font-weight: 800; color: #1e3a8a; margin-bottom: 1rem; padding-bottom: .75rem; border-bottom: 1.5px solid #e0e7ff; }
@@ -7848,18 +7855,24 @@ def render(title, body, nav=True, lang="en", topbar_greeting="Hello, ", logout_l
             "</div></div>"
         )
     wrap_cls = "wrap" if nav else "login-wrap"
+    body_open = "<body>"
+    body_close = ""
+    if not nav:
+        body_open = '<body><div class="login-bg"><div class="login-orb login-orb-1"></div><div class="login-orb login-orb-2"></div>'
+        body_close = '</div>'
     return (
         '<!DOCTYPE html><html dir="' + direction + '" lang="' + lang + '">'
         "<head><meta charset=\"UTF-8\">"
         '<meta name="viewport" content="width=device-width,initial-scale=1">'
         "<title>" + title + " | Scriptly</title>"
         "<style>" + CSS + "</style></head>"
-        + "<body>"
+        + body_open
         + topbar
         + '<div class="' + wrap_cls + '">'
         + pop_flashes()
         + body
         + "</div>"
+        + body_close
         + '<script>'
         + '(function(){'
         + 'function resetTransientUi(){'
@@ -8304,36 +8317,37 @@ def register():
     }
     t = lbl.get(lang, lbl["he"])
 
+    svg_logo = '<svg viewBox="0 0 28 28" fill="none" width="36" height="36" style="color:#2563eb"><circle cx="14" cy="14" r="13" stroke="currentColor" stroke-width="2"/><path d="M9 14h10M14 9v10" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>'
     body = (
-        '<div class="card" style="padding:2.5rem;border-radius:20px;box-shadow:0 8px 32px rgba(37,99,235,.1);border:1px solid #dbeafe">'
+        '<div style="background:rgba(255,255,255,.95);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);padding:2.5rem;border-radius:24px;box-shadow:0 20px 60px rgba(0,0,0,.2),0 0 0 1px rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.3)">'
         '<div style="text-align:center;margin-bottom:2rem">'
-        '<div style="font-size:44px;margin-bottom:4px">&#9201;</div>'
-        '<h1 style="font-size:22px;font-weight:800;color:#0f172a;margin-top:8px;letter-spacing:-0.3px">Scriptly</h1>'
+        '<div style="display:inline-flex;align-items:center;justify-content:center;margin-bottom:8px">' + svg_logo + '</div>'
+        '<h1 style="font-size:24px;font-weight:800;color:#0f172a;letter-spacing:-0.5px">Scriptly</h1>'
         '<p style="font-size:13px;color:#64748b;margin-top:6px;line-height:1.6">' + t["title"] + '</p>'
         '</div>'
         + error
         + '<form method="POST">'
         + '<label class="field-label">' + t["full_name"] + '</label>'
-        '<input type="text" name="full_name" required value="' + esc(request.form.get("full_name", "")) + '">'
+        '<input type="text" name="full_name" required value="' + esc(request.form.get("full_name", "")) + '" style="background:rgba(248,250,255,.8);border-color:#dbeafe">'
         + '<label class="field-label">' + t["company_name"] + '</label>'
-        '<input type="text" name="company_name" value="' + esc(request.form.get("company_name", "")) + '">'
+        '<input type="text" name="company_name" value="' + esc(request.form.get("company_name", "")) + '" style="background:rgba(248,250,255,.8);border-color:#dbeafe">'
         + '<label class="field-label">' + t["company_id"] + '</label>'
-        '<input type="text" name="company_id" value="' + esc(request.form.get("company_id", "")) + '">'
+        '<input type="text" name="company_id" value="' + esc(request.form.get("company_id", "")) + '" style="background:rgba(248,250,255,.8);border-color:#dbeafe">'
         + '<label class="field-label">' + t["email"] + '</label>'
-        '<input type="text" name="email" required value="' + esc(request.form.get("email", "")) + '">'
+        '<input type="text" name="email" required value="' + esc(request.form.get("email", "")) + '" style="background:rgba(248,250,255,.8);border-color:#dbeafe">'
         + '<label class="field-label">' + t["phone"] + '</label>'
-        '<input type="text" name="phone" value="' + esc(request.form.get("phone", "")) + '">'
+        '<input type="text" name="phone" value="' + esc(request.form.get("phone", "")) + '" style="background:rgba(248,250,255,.8);border-color:#dbeafe">'
         + '<label class="field-label">' + t["username"] + '</label>'
-        '<input type="text" name="username" required value="' + esc(request.form.get("username", "")) + '">'
+        '<input type="text" name="username" required value="' + esc(request.form.get("username", "")) + '" style="background:rgba(248,250,255,.8);border-color:#dbeafe">'
         + '<label class="field-label">' + t["password"] + '</label>'
-        '<input type="password" name="password" required>'
+        '<input type="password" name="password" required style="background:rgba(248,250,255,.8);border-color:#dbeafe">'
         + '<button type="submit" class="btn btn-blue" style="width:100%;padding:14px;font-size:15px;margin-top:.75rem;border-radius:14px">' + t["submit"] + '</button>'
         '</form>'
         '<p style="text-align:center;margin-top:1.25rem;font-size:13px;color:#64748b">'
         + t["login_link"] + ' '
         '<a href="/login" style="color:#2563eb;font-weight:700;text-decoration:none">' + t["login_text"] + '</a>'
         '</p>'
-        '<p style="text-align:center;margin-top:1rem"><a href="/" style="font-size:13px;color:#2563eb;text-decoration:none;font-weight:600">'
+        '<p style="text-align:center;margin-top:1rem"><a href="/" style="font-size:13px;color:#64748b;text-decoration:none;font-weight:600">'
         + ("&#8592; חזרה לדף הבית" if lang == "he" else "&#8592; Back to homepage")
         + '</a></p>'
         '<p style="text-align:center;margin-top:.75rem;font-size:11px;color:#94a3b8">&#169; Scriptly</p>'
@@ -8367,20 +8381,23 @@ def login():
             return redirect("/admin" if user["is_admin"] else "/dashboard")
         error = '<div class="flash-err">' + text["login_error"] + "</div>"
 
+    svg_logo = '<svg viewBox="0 0 28 28" fill="none" width="36" height="36" style="color:#2563eb"><circle cx="14" cy="14" r="13" stroke="currentColor" stroke-width="2"/><path d="M9 14h10M14 9v10" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>'
     body = (
-        build_lang_switch(lang).replace('class="lang-switch"', 'class="lang-switch standalone"')
-        + '<div class="card" style="padding:2.5rem;border-radius:20px;box-shadow:0 8px 32px rgba(37,99,235,.1);border:1px solid #dbeafe">'
+        '<div style="text-align:center;margin-bottom:1.5rem">'
+        + build_lang_switch(lang).replace('class="lang-switch"', 'class="lang-switch standalone"').replace('border-color: #dbeafe', 'border-color: rgba(255,255,255,.2)').replace('background: #ffffff', 'background: rgba(255,255,255,.12)').replace('color: #64748b', 'color: rgba(255,255,255,.6)').replace('background: #2563eb; color: #ffffff', 'background: rgba(255,255,255,.2); color: #ffffff')
+        + '</div>'
+        + '<div style="background:rgba(255,255,255,.95);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);padding:2.5rem;border-radius:24px;box-shadow:0 20px 60px rgba(0,0,0,.2),0 0 0 1px rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.3)">'
         '<div style="text-align:center;margin-bottom:2rem">'
-        '<div style="font-size:44px;margin-bottom:4px">&#9201;</div>'
-        '<h1 style="font-size:22px;font-weight:800;color:#0f172a;margin-top:8px;letter-spacing:-0.3px">Scriptly</h1>'
+        '<div style="display:inline-flex;align-items:center;justify-content:center;margin-bottom:8px">' + svg_logo + '</div>'
+        '<h1 style="font-size:24px;font-weight:800;color:#0f172a;letter-spacing:-0.5px">Scriptly</h1>'
         + '<p style="font-size:13px;color:#64748b;margin-top:6px;line-height:1.6">' + text["login_subtitle"] + '</p>'
         "</div>"
         + error
         + '<form method="POST">'
         + '<label class="field-label">' + text["login_username"] + '</label>'
-        '<input type="text" name="username" required autofocus>'
+        '<input type="text" name="username" required autofocus style="background:rgba(248,250,255,.8);border-color:#dbeafe">'
         + '<label class="field-label">' + text["login_password"] + '</label>'
-        '<input type="password" name="password" required>'
+        '<input type="password" name="password" required style="background:rgba(248,250,255,.8);border-color:#dbeafe">'
         + '<button type="submit" class="btn btn-blue" style="width:100%;padding:14px;font-size:15px;margin-top:.75rem;border-radius:14px">' + text["login_submit"] + '</button>'
         "</form>"
         '<p style="text-align:center;margin-top:1.25rem;font-size:13px;color:#64748b">'
@@ -8388,7 +8405,7 @@ def login():
         + '<a href="/register" style="color:#2563eb;font-weight:700;text-decoration:none">'
         + ("הרשמה בחינם" if lang == "he" else "Register free")
         + "</a></p>"
-        '<p style="text-align:center;margin-top:1rem"><a href="/" style="font-size:13px;color:#2563eb;text-decoration:none;font-weight:600">'
+        '<p style="text-align:center;margin-top:1rem"><a href="/" style="font-size:13px;color:#64748b;text-decoration:none;font-weight:600">'
         + ("&#8592; חזרה לדף הבית" if lang == "he" else "&#8592; Back to homepage")
         + '</a></p>'
         '<p style="text-align:center;margin-top:.75rem;font-size:11px;color:#94a3b8">&#169; Scriptly</p>'
