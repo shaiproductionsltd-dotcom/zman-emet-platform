@@ -3674,6 +3674,12 @@ def default_dept_payroll_mapping():
         "id_number_source": "meta:תעודת זהות",
         "phone_source": "",
         "passport_source": "meta:דרכון",
+        "event_source": "meta:אירוע",
+        "entry_time_source": "meta:כניסה",
+        "exit_time_source": "meta:יציאה",
+        "date_source": "meta:תאריך",
+        "total_hours_source": "meta:סה\"כ",
+        "hourly_rate_source": "meta:תעריף שעתי",
     }
 
 
@@ -3704,6 +3710,7 @@ def find_value_by_label_nearby_or_below(sheet, workbook_kind, label_text, max_co
 
 
 def extract_dept_payroll_worker(detail_sheet, summary_sheet, workbook_kind, mapping):
+    """Extract enriched worker data including daily rows, housing, hourly rate, and client breakdown."""
     worker_name = stringify_excel_value(extract_flamingo_mapping_value(detail_sheet, summary_sheet, workbook_kind, mapping.get("worker_name_source")))
     worker_name = worker_name or get_flamingo_sheet_name(detail_sheet, workbook_kind)
     # For dept_number, try standard extraction first, then enhanced below-label search
@@ -3731,6 +3738,145 @@ def extract_dept_payroll_worker(detail_sheet, summary_sheet, workbook_kind, mapp
         status = "חסרות שעות לתשלום"
         notes.append("לא זוהו שעות לתשלום עבור העובד.")
 
+    # ── Extract housing charge from הערות field ──
+    housing_charge = 0
+    rows, cols = get_flamingo_sheet_dims(detail_sheet, workbook_kind)
+    notes_label_row = find_sheet_label_row(detail_sheet, workbook_kind, "הערות")
+    if notes_label_row >= 0:
+        for r in range(max(0, notes_label_row - 1), min(rows, notes_label_row + 5)):
+            for c in range(cols):
+                cell_val = stringify_excel_value(get_flamingo_sheet_cell(detail_sheet, workbook_kind, r, c))
+                if not cell_val:
+                    continue
+                housing_match = re.search(r'חיוב\s*דירה\s*(\d+(?:\.\d+)?)', cell_val)
+                if housing_match:
+                    housing_charge = float(housing_match.group(1))
+                    break
+            if housing_charge:
+                break
+    # Fallback: scan meta area for housing
+    if not housing_charge:
+        for r in range(min(rows, 12)):
+            for c in range(cols):
+                cell_val = stringify_excel_value(get_flamingo_sheet_cell(detail_sheet, workbook_kind, r, c))
+                if cell_val and re.search(r'חיוב\s*דירה\s*(\d+(?:\.\d+)?)', cell_val):
+                    housing_charge = float(re.search(r'חיוב\s*דירה\s*(\d+(?:\.\d+)?)', cell_val).group(1))
+                    break
+            if housing_charge:
+                break
+
+    # ── Find daily header row and column positions ──
+    daily_header_row = find_sheet_label_row(detail_sheet, workbook_kind, "תאריך")
+    col_positions = {}
+    daily_col_fields = {
+        "date_source": "date",
+        "entry_time_source": "entry_time",
+        "exit_time_source": "exit_time",
+        "event_source": "client_name",
+        "total_hours_source": "total_hours",
+        "hourly_rate_source": "hourly_rate",
+    }
+    if daily_header_row >= 0:
+        for c in range(cols):
+            header_val = normalize_token(get_flamingo_sheet_cell(detail_sheet, workbook_kind, daily_header_row, c))
+            if not header_val:
+                continue
+            for field_name, col_key in daily_col_fields.items():
+                source = mapping.get(field_name, "")
+                if source.startswith("meta:"):
+                    source_label = normalize_token(source.split(":", 1)[1])
+                    if source_label and source_label == header_val:
+                        col_positions[col_key] = c
+                        break
+            # Also detect by known tokens as fallback
+            if "date" not in col_positions and header_val == "תאריך":
+                col_positions.setdefault("date", c)
+            if "entry_time" not in col_positions and header_val == "כניסה":
+                col_positions.setdefault("entry_time", c)
+            if "exit_time" not in col_positions and header_val == "יציאה":
+                col_positions.setdefault("exit_time", c)
+            if "client_name" not in col_positions and header_val == "אירוע":
+                col_positions.setdefault("client_name", c)
+            if "total_hours" not in col_positions and (header_val in ("סהכ", "סה\"כ", "סהכשעות")):
+                col_positions.setdefault("total_hours", c)
+            if "hourly_rate" not in col_positions and header_val in ("תעריףשעתי", "תעריף"):
+                col_positions.setdefault("hourly_rate", c)
+
+    # Also try to find יום column for day name
+    if daily_header_row >= 0:
+        for c in range(cols):
+            header_val = normalize_token(get_flamingo_sheet_cell(detail_sheet, workbook_kind, daily_header_row, c))
+            if header_val == "יום":
+                col_positions["day_name"] = c
+                break
+
+    # ── Extract hourly rate from daily rows ──
+    hourly_rate = 0
+    if "hourly_rate" in col_positions and daily_header_row >= 0:
+        for r in range(daily_header_row + 1, min(rows, daily_header_row + 35)):
+            val = get_flamingo_sheet_cell(detail_sheet, workbook_kind, r, col_positions["hourly_rate"])
+            if val not in ("", None):
+                try:
+                    hourly_rate = float(str(val).replace(",", ""))
+                    break
+                except (ValueError, TypeError):
+                    pass
+
+    # ── Extract daily rows ──
+    daily_rows = []
+    if daily_header_row >= 0:
+        for r in range(daily_header_row + 1, min(rows, daily_header_row + 35)):
+            date_val = stringify_excel_value(get_flamingo_sheet_cell(detail_sheet, workbook_kind, r, col_positions.get("date", 0))) if "date" in col_positions else ""
+            if not date_val:
+                # Check if there's any data in event/hours columns
+                event_val = stringify_excel_value(get_flamingo_sheet_cell(detail_sheet, workbook_kind, r, col_positions.get("client_name", 0))) if "client_name" in col_positions else ""
+                hours_val = get_flamingo_sheet_cell(detail_sheet, workbook_kind, r, col_positions.get("total_hours", 0)) if "total_hours" in col_positions else ""
+                if not event_val and not hours_val:
+                    continue
+            day_name = stringify_excel_value(get_flamingo_sheet_cell(detail_sheet, workbook_kind, r, col_positions.get("day_name", 0))) if "day_name" in col_positions else ""
+            entry_time = stringify_excel_value(get_flamingo_sheet_cell(detail_sheet, workbook_kind, r, col_positions.get("entry_time", 0))) if "entry_time" in col_positions else ""
+            exit_time = stringify_excel_value(get_flamingo_sheet_cell(detail_sheet, workbook_kind, r, col_positions.get("exit_time", 0))) if "exit_time" in col_positions else ""
+            client_name = stringify_excel_value(get_flamingo_sheet_cell(detail_sheet, workbook_kind, r, col_positions.get("client_name", 0))) if "client_name" in col_positions else ""
+            total_hours_raw = get_flamingo_sheet_cell(detail_sheet, workbook_kind, r, col_positions.get("total_hours", 0)) if "total_hours" in col_positions else ""
+            total_hours = 0
+            if total_hours_raw not in ("", None):
+                try:
+                    total_hours = parse_hours_value(total_hours_raw)
+                except (ValueError, TypeError):
+                    total_hours = 0
+            if client_name or total_hours:
+                daily_rows.append({
+                    "date": date_val,
+                    "day_name": day_name,
+                    "entry_time": entry_time,
+                    "exit_time": exit_time,
+                    "client_name": client_name,
+                    "total_hours": total_hours,
+                })
+
+    # ── Extract תנועות מיוחדות section ──
+    special_movements = {}
+    tnuot_row = find_sheet_label_row(detail_sheet, workbook_kind, "תנועות מיוחדות")
+    if tnuot_row >= 0:
+        for r in range(tnuot_row + 1, min(rows, tnuot_row + 20)):
+            for c in range(0, cols - 1):
+                label_val = stringify_excel_value(get_flamingo_sheet_cell(detail_sheet, workbook_kind, r, c))
+                if not label_val:
+                    continue
+                # Look for a numeric value to the right
+                for nc in range(c + 1, min(cols, c + 5)):
+                    val = get_flamingo_sheet_cell(detail_sheet, workbook_kind, r, nc)
+                    if val in ("", None):
+                        continue
+                    try:
+                        hours_val = parse_hours_value(val)
+                        if hours_val and hours_val > 0:
+                            special_movements[label_val] = hours_val
+                        break
+                    except (ValueError, TypeError):
+                        break
+                break  # only process the first non-empty label per row
+
     return {
         "worker_name": worker_name,
         "dept_number": dept_number,
@@ -3739,6 +3885,10 @@ def extract_dept_payroll_worker(detail_sheet, summary_sheet, workbook_kind, mapp
         "phone": phone,
         "passport": passport,
         "payable_hours": payable_hours,
+        "housing_charge": housing_charge,
+        "hourly_rate": hourly_rate,
+        "daily_rows": daily_rows,
+        "special_movements": special_movements,
         "status": status,
         "notes": " | ".join(notes),
     }
@@ -3776,6 +3926,90 @@ def parse_dept_settings_json(dept_settings_json):
             "housing": housing,
         }
     return settings_by_dept
+
+
+def parse_clients_excel(clients_path, extension):
+    """Parse a clients Excel file with client info and worker assignments.
+    Returns (clients_by_name, worker_to_client) where:
+    - clients_by_name: {normalized_client_name: {name, charge_rate, address, manager, contact, phone}}
+    - worker_to_client: {normalized_worker_name: normalized_client_name}
+    """
+    workbook_kind, workbook = open_excel_workbook(clients_path, extension)
+    sheets = iter_excel_sheets(workbook_kind, workbook)
+    if not sheets:
+        return {}, {}
+
+    sheet = sheets[0]
+    rows_count, cols_count = get_excel_dims(sheet, workbook_kind)
+
+    # Find header row by looking for known headers
+    header_row = -1
+    col_map = {}
+    target_headers = {
+        "שםהעסק": "business_name",
+        "תעריףגביה": "charge_rate",
+        "מנהלאזור": "area_manager",
+        "כתובתהעסק": "address",
+        "אישקשר": "contact",
+        "טלפון": "phone",
+        "שםהעובד": "worker_name",
+        "שכרשעתי": "hourly_rate",
+        "מספרעובדים": "worker_count",
+        "3%מיסים": "taxes",
+        "ברוטו": "gross",
+        "280ביטוח": "insurance",
+        "חיובדירה": "housing",
+        "חיובמפרעות": "advances",
+        "חיובויזה": "visa",
+        "נטולתשלום": "net_pay",
+        "מספרפספורט": "passport",
+    }
+    for r in range(min(rows_count, 10)):
+        found_count = 0
+        for c in range(cols_count):
+            val = normalize_token(get_excel_cell(sheet, workbook_kind, r, c))
+            if val in target_headers:
+                col_map[target_headers[val]] = c
+                found_count += 1
+        if found_count >= 2:
+            header_row = r
+            break
+
+    if header_row < 0:
+        return {}, {}
+
+    clients_by_name = {}
+    worker_to_client = {}
+    current_client = None
+
+    for r in range(header_row + 1, rows_count):
+        biz_name = stringify_excel_value(get_excel_cell(sheet, workbook_kind, r, col_map.get("business_name", 0))) if "business_name" in col_map else ""
+        worker_name = stringify_excel_value(get_excel_cell(sheet, workbook_kind, r, col_map.get("worker_name", 0))) if "worker_name" in col_map else ""
+
+        if biz_name:
+            current_client = biz_name
+            norm_client = normalize_token(biz_name)
+            if norm_client not in clients_by_name:
+                charge_rate = 0
+                if "charge_rate" in col_map:
+                    raw = get_excel_cell(sheet, workbook_kind, r, col_map["charge_rate"])
+                    try:
+                        charge_rate = float(str(raw or 0).replace(",", ""))
+                    except (ValueError, TypeError):
+                        charge_rate = 0
+                clients_by_name[norm_client] = {
+                    "name": biz_name,
+                    "charge_rate": charge_rate,
+                    "address": stringify_excel_value(get_excel_cell(sheet, workbook_kind, r, col_map.get("address", 0))) if "address" in col_map else "",
+                    "area_manager": stringify_excel_value(get_excel_cell(sheet, workbook_kind, r, col_map.get("area_manager", 0))) if "area_manager" in col_map else "",
+                    "contact": stringify_excel_value(get_excel_cell(sheet, workbook_kind, r, col_map.get("contact", 0))) if "contact" in col_map else "",
+                    "phone": stringify_excel_value(get_excel_cell(sheet, workbook_kind, r, col_map.get("phone", 0))) if "phone" in col_map else "",
+                }
+
+        if worker_name and current_client:
+            worker_to_client[normalize_token(worker_name)] = normalize_token(current_client)
+
+    return clients_by_name, worker_to_client
 
 
 def write_dept_payroll_output(output_path, worker_rows, dept_settings):
@@ -3996,6 +4230,421 @@ def write_dept_payroll_output(output_path, worker_rows, dept_settings):
     wb.save(output_path)
 
 
+def write_dept_payroll_output_v2(output_path, worker_rows, dept_settings, clients_info):
+    """Write 3-tab output: charge per client, pay to employee, company summary."""
+    INSURANCE = 280
+    clients_by_name, worker_to_client = clients_info or ({}, {})
+
+    wb = Workbook()
+
+    # ── Common styles ──
+    header_font = Font(bold=True, size=12, color="FFFFFF")
+    header_fill = PatternFill(start_color="1E3A8A", end_color="1E3A8A", fill_type="solid")
+    section_font = Font(bold=True, size=11, color="1E3A8A")
+    section_fill = PatternFill(start_color="DBEAFE", end_color="DBEAFE", fill_type="solid")
+    total_font = Font(bold=True, size=10, color="15803D")
+    total_fill = PatternFill(start_color="DCFCE7", end_color="DCFCE7", fill_type="solid")
+    grand_font = Font(bold=True, size=11, color="1E3A8A")
+    grand_fill = PatternFill(start_color="E0E7FF", end_color="E0E7FF", fill_type="solid")
+    attn_fill = PatternFill(start_color="FEE2E2", end_color="FEE2E2", fill_type="solid")
+    num_fmt = '#,##0.00'
+    thin_border = Border(
+        left=Side(style="thin", color="E2E8F0"),
+        right=Side(style="thin", color="E2E8F0"),
+        top=Side(style="thin", color="E2E8F0"),
+        bottom=Side(style="thin", color="E2E8F0"),
+    )
+
+    def style_header_row(ws, row, headers):
+        for col_idx, h in enumerate(headers, 1):
+            cell = ws.cell(row=row, column=col_idx, value=h)
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = Alignment(horizontal="center")
+            cell.border = thin_border
+
+    def write_cell(ws, row, col, value, font=None, fill=None, fmt=None):
+        cell = ws.cell(row=row, column=col, value=value)
+        cell.border = thin_border
+        cell.alignment = Alignment(horizontal="center")
+        if font:
+            cell.font = font
+        if fill:
+            cell.fill = fill
+        if fmt and isinstance(value, (int, float)):
+            cell.number_format = fmt
+        return cell
+
+    # ── Build client→workers mapping from daily rows ──
+    # Each worker's daily rows contain client_name (from אירוע column)
+    client_workers = {}  # {client_display_name: [{worker, daily_rows_for_client, subtotal_hours}]}
+    worker_calculations = []  # enriched worker data with calculations
+
+    for w in worker_rows:
+        hours = w.get("payable_hours") or 0
+        hourly_rate = w.get("hourly_rate") or 0
+        housing = w.get("housing_charge") or 0
+        # Use dept_settings hourly_rate/housing as fallback
+        dept_num = str(w.get("dept_number", "") or "").strip()
+        ds = dept_settings.get(dept_num, {})
+        if not hourly_rate and ds.get("hourly_rate"):
+            hourly_rate = ds["hourly_rate"]
+        if not housing and ds.get("housing"):
+            housing = ds["housing"]
+
+        gross = round(hours * hourly_rate, 2) if hourly_rate and hours else 0
+        taxes = round(gross * 0.03, 2)
+        net = round(gross - taxes - INSURANCE - housing, 2) if gross else 0
+
+        # Group daily rows by client
+        client_daily = {}
+        for dr in w.get("daily_rows", []):
+            cn = dr.get("client_name", "").strip()
+            if cn:
+                client_daily.setdefault(cn, []).append(dr)
+
+        # Build per-client subtotals from תנועות מיוחדות or daily sums
+        client_hours = {}
+        for cn, hrs in w.get("special_movements", {}).items():
+            client_hours[cn] = hrs
+        # Supplement with daily row sums for clients not in special_movements
+        for cn, drs in client_daily.items():
+            if cn not in client_hours:
+                client_hours[cn] = round(sum(dr.get("total_hours", 0) for dr in drs), 2)
+
+        w_calc = {
+            **w,
+            "hourly_rate": hourly_rate,
+            "housing_charge": housing,
+            "gross": gross,
+            "taxes": taxes,
+            "insurance": INSURANCE if gross else 0,
+            "net": net,
+            "client_daily": client_daily,
+            "client_hours": client_hours,
+        }
+        worker_calculations.append(w_calc)
+
+        # Register worker under each client they worked for
+        for cn in client_hours:
+            if cn not in client_workers:
+                client_workers[cn] = []
+            client_workers[cn].append(w_calc)
+
+    # ── TAB 1: חיוב ללקוח (Charge per Client) ──
+    ws1 = wb.active
+    ws1.sheet_view.rightToLeft = True
+    ws1.sheet_view.showGridLines = False
+    ws1.title = safe_sheet_title("חיוב ללקוח", "חיוב")
+    ws1.freeze_panes = "A2"
+
+    row = 1
+    grand_charge_total = 0
+
+    for client_name in sorted(client_workers.keys()):
+        workers_for_client = client_workers[client_name]
+        norm_cn = normalize_token(client_name)
+        client_info = clients_by_name.get(norm_cn, {})
+        charge_rate = client_info.get("charge_rate", 0)
+
+        # If no charge_rate from clients file, try dept_settings
+        if not charge_rate:
+            for wc in workers_for_client:
+                dnum = str(wc.get("dept_number", "") or "").strip()
+                ds_rate = dept_settings.get(dnum, {}).get("charge_rate", 0)
+                if ds_rate:
+                    charge_rate = ds_rate
+                    break
+
+        # Client header
+        ws1.merge_cells(start_row=row, start_column=1, end_row=row, end_column=8)
+        cell = ws1.cell(row=row, column=1, value=f"לקוח: {client_info.get('name', client_name)}")
+        cell.font = section_font
+        cell.fill = section_fill
+        cell.alignment = Alignment(horizontal="right")
+        row += 1
+
+        # Client info line
+        info_parts = []
+        if client_info.get("area_manager"):
+            info_parts.append(f"מנהל אזור: {client_info['area_manager']}")
+        if client_info.get("address"):
+            info_parts.append(f"כתובת: {client_info['address']}")
+        if client_info.get("contact"):
+            info_parts.append(f"איש קשר: {client_info['contact']}")
+        if client_info.get("phone"):
+            info_parts.append(f"טלפון: {client_info['phone']}")
+        if charge_rate:
+            info_parts.append(f"תעריף גביה: {charge_rate}")
+        if info_parts:
+            ws1.merge_cells(start_row=row, start_column=1, end_row=row, end_column=8)
+            info_cell = ws1.cell(row=row, column=1, value=" | ".join(info_parts))
+            info_cell.font = Font(size=10, color="475569")
+            info_cell.alignment = Alignment(horizontal="right")
+            row += 1
+
+        # Worker headers for this client
+        client_headers = ["שם עובד", "תאריך", "כניסה", "יציאה", "שעות", "סה\"כ שעות לעובד", "תעריף גביה", "חיוב"]
+        style_header_row(ws1, row, client_headers)
+        row += 1
+
+        client_total_hours = 0
+        client_total_charge = 0
+
+        for wc in workers_for_client:
+            worker_client_hours = wc["client_hours"].get(client_name, 0)
+            worker_daily_for_client = wc.get("client_daily", {}).get(client_name, [])
+            worker_charge = round(worker_client_hours * charge_rate, 2) if charge_rate else 0
+
+            if worker_daily_for_client:
+                # First daily row includes worker name
+                first = True
+                for dr in worker_daily_for_client:
+                    write_cell(ws1, row, 1, wc["worker_name"] if first else "", fmt=None)
+                    write_cell(ws1, row, 2, dr.get("date", ""))
+                    write_cell(ws1, row, 3, dr.get("entry_time", ""))
+                    write_cell(ws1, row, 4, dr.get("exit_time", ""))
+                    write_cell(ws1, row, 5, dr.get("total_hours", 0), fmt=num_fmt)
+                    if first:
+                        write_cell(ws1, row, 6, worker_client_hours, fmt=num_fmt)
+                        write_cell(ws1, row, 7, charge_rate, fmt=num_fmt)
+                        write_cell(ws1, row, 8, worker_charge, fmt=num_fmt)
+                    row += 1
+                    first = False
+            else:
+                # No daily breakdown, just summary line
+                write_cell(ws1, row, 1, wc["worker_name"])
+                write_cell(ws1, row, 6, worker_client_hours, fmt=num_fmt)
+                write_cell(ws1, row, 7, charge_rate, fmt=num_fmt)
+                write_cell(ws1, row, 8, worker_charge, fmt=num_fmt)
+                row += 1
+
+            client_total_hours += worker_client_hours
+            client_total_charge += worker_charge
+
+        # Client total row
+        write_cell(ws1, row, 1, f"סה\"כ {client_info.get('name', client_name)} ({len(workers_for_client)} עובדים)", font=total_font, fill=total_fill)
+        for col_idx in range(2, 9):
+            write_cell(ws1, row, col_idx, "", fill=total_fill)
+        write_cell(ws1, row, 6, round(client_total_hours, 2), font=total_font, fill=total_fill, fmt=num_fmt)
+        write_cell(ws1, row, 8, round(client_total_charge, 2), font=total_font, fill=total_fill, fmt=num_fmt)
+        row += 2
+
+        grand_charge_total += client_total_charge
+
+    # Grand total
+    if client_workers:
+        ws1.merge_cells(start_row=row, start_column=1, end_row=row, end_column=7)
+        write_cell(ws1, row, 1, f"סה\"כ חיוב כל הלקוחות", font=grand_font, fill=grand_fill)
+        for col_idx in range(2, 9):
+            write_cell(ws1, row, col_idx, "", fill=grand_fill)
+        write_cell(ws1, row, 8, round(grand_charge_total, 2), font=grand_font, fill=grand_fill, fmt=num_fmt)
+
+    for col_idx in range(1, 9):
+        ws1.column_dimensions[get_column_letter(col_idx)].width = 16
+
+    # ── TAB 2: תשלום לעובד (Pay to Employee) ──
+    ws2 = wb.create_sheet(safe_sheet_title("תשלום לעובד", "תשלום"))
+    ws2.sheet_view.rightToLeft = True
+    ws2.sheet_view.showGridLines = False
+    ws2.freeze_panes = "A2"
+
+    row = 1
+    grand_total_net = 0
+    grand_total_gross = 0
+
+    for wc in worker_calculations:
+        # Worker header
+        ws2.merge_cells(start_row=row, start_column=1, end_row=row, end_column=9)
+        worker_label = f"עובד: {wc['worker_name']}"
+        if wc.get("id_number"):
+            worker_label += f" | ת.ז: {wc['id_number']}"
+        if wc.get("passport"):
+            worker_label += f" | פספורט: {wc['passport']}"
+        if wc.get("phone"):
+            worker_label += f" | נייד: {wc['phone']}"
+        cell = ws2.cell(row=row, column=1, value=worker_label)
+        cell.font = section_font
+        cell.fill = section_fill
+        cell.alignment = Alignment(horizontal="right")
+        row += 1
+
+        # Daily breakdown headers
+        daily_headers = ["תאריך", "יום", "כניסה", "יציאה", "אירוע/לקוח", "שעות"]
+        style_header_row(ws2, row, daily_headers)
+        row += 1
+
+        for dr in wc.get("daily_rows", []):
+            write_cell(ws2, row, 1, dr.get("date", ""))
+            write_cell(ws2, row, 2, dr.get("day_name", ""))
+            write_cell(ws2, row, 3, dr.get("entry_time", ""))
+            write_cell(ws2, row, 4, dr.get("exit_time", ""))
+            write_cell(ws2, row, 5, dr.get("client_name", ""))
+            write_cell(ws2, row, 6, dr.get("total_hours", 0), fmt=num_fmt)
+            row += 1
+
+        # Per-client subtotals from תנועות מיוחדות
+        if wc.get("client_hours"):
+            row += 1
+            write_cell(ws2, row, 1, "סיכום לפי לקוח:", font=Font(bold=True, size=10, color="334155"))
+            row += 1
+            for cn, hrs in wc["client_hours"].items():
+                write_cell(ws2, row, 1, cn)
+                write_cell(ws2, row, 6, hrs, fmt=num_fmt)
+                row += 1
+
+        # Calculation block
+        row += 1
+        calc_headers = ["שעות לתשלום", "תעריף שעתי", "ברוטו", "3% מיסים", "280 ביטוח", "חיוב דירה", "נטו לתשלום"]
+        style_header_row(ws2, row, calc_headers)
+        row += 1
+
+        hours = wc.get("payable_hours") or 0
+        write_cell(ws2, row, 1, hours, fmt=num_fmt)
+        write_cell(ws2, row, 2, wc.get("hourly_rate", 0), fmt=num_fmt)
+        write_cell(ws2, row, 3, wc.get("gross", 0), fmt=num_fmt)
+        write_cell(ws2, row, 4, wc.get("taxes", 0), fmt=num_fmt)
+        write_cell(ws2, row, 5, wc.get("insurance", 0), fmt=num_fmt)
+        write_cell(ws2, row, 6, wc.get("housing_charge", 0), fmt=num_fmt)
+        write_cell(ws2, row, 7, wc.get("net", 0), fmt=num_fmt)
+
+        if wc["status"] != "OK":
+            for col_idx in range(1, 8):
+                ws2.cell(row=row, column=col_idx).fill = attn_fill
+        row += 2
+
+        grand_total_net += wc.get("net", 0)
+        grand_total_gross += wc.get("gross", 0)
+
+    # Grand total for employees
+    ws2.merge_cells(start_row=row, start_column=1, end_row=row, end_column=6)
+    write_cell(ws2, row, 1, f"סה\"כ תשלום לכל העובדים ({len(worker_calculations)} עובדים)", font=grand_font, fill=grand_fill)
+    for col_idx in range(2, 8):
+        write_cell(ws2, row, col_idx, "", fill=grand_fill)
+    write_cell(ws2, row, 3, round(grand_total_gross, 2), font=grand_font, fill=grand_fill, fmt=num_fmt)
+    write_cell(ws2, row, 7, round(grand_total_net, 2), font=grand_font, fill=grand_fill, fmt=num_fmt)
+
+    for col_idx in range(1, 10):
+        ws2.column_dimensions[get_column_letter(col_idx)].width = 16
+
+    # ── TAB 3: סיכום חברה (Company Summary) ──
+    ws3 = wb.create_sheet(safe_sheet_title("סיכום חברה", "סיכום"))
+    ws3.sheet_view.rightToLeft = True
+    ws3.sheet_view.showGridLines = False
+
+    row = 1
+    # Title
+    ws3.merge_cells(start_row=row, start_column=1, end_row=row, end_column=4)
+    cell = ws3.cell(row=row, column=1, value="סיכום חברה")
+    cell.font = Font(bold=True, size=14, color="1E3A8A")
+    cell.alignment = Alignment(horizontal="center")
+    row += 2
+
+    # Summary metrics
+    expected_profit = round(grand_charge_total - grand_total_net, 2)
+    summary_items = [
+        ("סה\"כ שולם לעובדים (נטו)", round(grand_total_net, 2)),
+        ("סה\"כ ברוטו עובדים", round(grand_total_gross, 2)),
+        ("סה\"כ חיוב ללקוחות", round(grand_charge_total, 2)),
+        ("רווח צפוי (חיוב − נטו)", expected_profit),
+    ]
+    summary_headers = ["פריט", "סכום"]
+    style_header_row(ws3, row, summary_headers)
+    row += 1
+    for label, val in summary_items:
+        write_cell(ws3, row, 1, label, font=Font(bold=True, size=11))
+        ws3.cell(row=row, column=1).alignment = Alignment(horizontal="right")
+        write_cell(ws3, row, 2, val, fmt=num_fmt, font=Font(bold=True, size=11, color="15803D" if val >= 0 else "DC2626"))
+        row += 1
+
+    # Per-client breakdown
+    row += 2
+    ws3.merge_cells(start_row=row, start_column=1, end_row=row, end_column=4)
+    cell = ws3.cell(row=row, column=1, value="פירוט לפי לקוח")
+    cell.font = Font(bold=True, size=12, color="1E3A8A")
+    cell.alignment = Alignment(horizontal="right")
+    row += 1
+    client_breakdown_headers = ["לקוח", "שעות", "תעריף גביה", "סה\"כ חיוב"]
+    style_header_row(ws3, row, client_breakdown_headers)
+    row += 1
+
+    for cn in sorted(client_workers.keys()):
+        workers_for_cn = client_workers[cn]
+        norm_cn = normalize_token(cn)
+        ci = clients_by_name.get(norm_cn, {})
+        cr = ci.get("charge_rate", 0)
+        if not cr:
+            for wc in workers_for_cn:
+                dnum = str(wc.get("dept_number", "") or "").strip()
+                ds_rate = dept_settings.get(dnum, {}).get("charge_rate", 0)
+                if ds_rate:
+                    cr = ds_rate
+                    break
+        total_hrs = round(sum(wc["client_hours"].get(cn, 0) for wc in workers_for_cn), 2)
+        total_ch = round(total_hrs * cr, 2) if cr else 0
+        write_cell(ws3, row, 1, ci.get("name", cn))
+        ws3.cell(row=row, column=1).alignment = Alignment(horizontal="right")
+        write_cell(ws3, row, 2, total_hrs, fmt=num_fmt)
+        write_cell(ws3, row, 3, cr, fmt=num_fmt)
+        write_cell(ws3, row, 4, total_ch, fmt=num_fmt)
+        row += 1
+
+    # Per-worker breakdown
+    row += 2
+    ws3.merge_cells(start_row=row, start_column=1, end_row=row, end_column=4)
+    cell = ws3.cell(row=row, column=1, value="פירוט לפי עובד")
+    cell.font = Font(bold=True, size=12, color="1E3A8A")
+    cell.alignment = Alignment(horizontal="right")
+    row += 1
+    worker_breakdown_headers = ["שם עובד", "שעות", "ברוטו", "נטו"]
+    style_header_row(ws3, row, worker_breakdown_headers)
+    row += 1
+
+    for wc in worker_calculations:
+        write_cell(ws3, row, 1, wc["worker_name"])
+        ws3.cell(row=row, column=1).alignment = Alignment(horizontal="right")
+        write_cell(ws3, row, 2, wc.get("payable_hours") or 0, fmt=num_fmt)
+        write_cell(ws3, row, 3, wc.get("gross", 0), fmt=num_fmt)
+        write_cell(ws3, row, 4, wc.get("net", 0), fmt=num_fmt)
+        row += 1
+
+    for col_idx in range(1, 5):
+        ws3.column_dimensions[get_column_letter(col_idx)].width = 20
+
+    # ── Attention sheet ──
+    attn_ws = wb.create_sheet(safe_sheet_title("שימו לב", "שימו לב"))
+    attn_ws.sheet_view.rightToLeft = True
+    attn_ws.sheet_view.showGridLines = False
+    attn_headers = ["שם עובד", "מספר מחלקה", "שם מחלקה", "בעיה", "פירוט"]
+    for col_idx, header in enumerate(attn_headers, 1):
+        cell = attn_ws.cell(row=1, column=col_idx, value=header)
+        cell.font = header_font
+        cell.fill = PatternFill(start_color="DC2626", end_color="DC2626", fill_type="solid")
+        cell.alignment = Alignment(horizontal="center")
+    attn_row = 2
+    for w in worker_rows:
+        if w["status"] != "OK":
+            attn_ws.cell(row=attn_row, column=1, value=w.get("worker_name", ""))
+            attn_ws.cell(row=attn_row, column=2, value=w.get("dept_number", ""))
+            attn_ws.cell(row=attn_row, column=3, value=w.get("department", ""))
+            attn_ws.cell(row=attn_row, column=4, value=w.get("status", ""))
+            attn_ws.cell(row=attn_row, column=5, value=w.get("notes", ""))
+            attn_row += 1
+    # Workers without any client assignment
+    for w in worker_rows:
+        if w["status"] == "OK" and not w.get("daily_rows") and not w.get("special_movements"):
+            attn_ws.cell(row=attn_row, column=1, value=w.get("worker_name", ""))
+            attn_ws.cell(row=attn_row, column=2, value=w.get("dept_number", ""))
+            attn_ws.cell(row=attn_row, column=3, value=w.get("department", ""))
+            attn_ws.cell(row=attn_row, column=4, value="לא זוהו לקוחות")
+            attn_ws.cell(row=attn_row, column=5, value="לא נמצאו ימי עבודה עם אירוע/לקוח")
+            attn_row += 1
+    for col_idx in range(1, len(attn_headers) + 1):
+        attn_ws.column_dimensions[get_column_letter(col_idx)].width = 22
+
+    wb.save(output_path)
+
+
 def run_dept_payroll(input_path, output_path, extension, options=None):
     if extension not in {"xls", "xlsx"}:
         raise ValueError("הכלי תומך בקבצי XLS ו-XLSX בלבד")
@@ -4012,15 +4661,31 @@ def run_dept_payroll(input_path, output_path, extension, options=None):
     dept_settings_json = options.get("dept_settings_json", "[]")
     dept_settings = parse_dept_settings_json(dept_settings_json)
 
-    write_dept_payroll_output(output_path, worker_rows, dept_settings)
+    # Parse clients Excel if provided
+    clients_info = ({}, {})
+    clients_file_path = options.get("clients_file_path", "")
+    if clients_file_path and os.path.exists(clients_file_path):
+        clients_ext = get_extension(clients_file_path)
+        if clients_ext in ("xls", "xlsx"):
+            try:
+                clients_info = parse_clients_excel(clients_file_path, clients_ext)
+            except Exception:
+                pass  # silently fallback if clients file is invalid
+
+    # Use v2 output if we have daily rows / client data
+    has_daily_data = any(w.get("daily_rows") or w.get("special_movements") for w in worker_rows)
+    if has_daily_data or clients_info[0]:
+        write_dept_payroll_output_v2(output_path, worker_rows, dept_settings, clients_info)
+    else:
+        write_dept_payroll_output(output_path, worker_rows, dept_settings)
 
     warnings = []
-    unmatched_count = sum(1 for w in worker_rows if str(w.get("dept_number", "") or "").strip() not in dept_settings)
-    if unmatched_count:
-        warnings.append(f"{unmatched_count} עובדים לא שויכו למחלקה — ראו גיליון 'שימו לב'.")
     problem_count = sum(1 for w in worker_rows if w["status"] != "OK")
     if problem_count:
         warnings.append(f"{problem_count} עובדים עם בעיות בנתונים — ראו גיליון 'שימו לב'.")
+    no_clients = sum(1 for w in worker_rows if w["status"] == "OK" and not w.get("daily_rows") and not w.get("special_movements"))
+    if no_clients and has_daily_data:
+        warnings.append(f"{no_clients} עובדים ללא שיוך לקוח — ראו גיליון 'שימו לב'.")
     return {"warnings": warnings}
 
 
@@ -4505,27 +5170,29 @@ SCRIPTS["rimon_home_office_summary"] = {
 
 SCRIPTS["dept_payroll"] = {
     "id": "dept_payroll",
-    "name": "סיכום שכר לפי מחלקות",
-    "desc": "הפקת סיכום שכר ותשלומים לפי מחלקות מתוך דוח נוכחות חודשי — כולל חישוב ברוטו, מיסים וניכויים",
+    "name": "חיוב לקוחות ותשלום עובדים",
+    "desc": "מערכת חיוב לקוחות ותשלום עובדים לחברות כוח אדם — מפיקה דוח חיוב ללקוח, תשלום לעובד וסיכום חברה",
     "help_label": "מה הכלי עושה",
     "help_title": "איך זה עובד?",
-    "help_intro": "יש להעלות דוח נוכחות חודשי מפורט ולהגדיר נתוני מחלקות — המערכת תחשב שכר לכל עובד לפי המחלקה שלו.",
+    "help_intro": "יש להעלות דוח נוכחות חודשי מפורט. אופציונלית — קובץ לקוחות עם תעריפי גביה ופרטי קשר.",
     "help_items": [
-        "המערכת מזהה עובדים ומספר מחלקה מתוך דוח הנוכחות",
-        "נתוני מחלקות (שכר, תעריף גביה, איש קשר) מוזנים ידנית או מקובץ",
-        "הפלט כולל סיכום מקובץ לפי מחלקות עם חישובי שכר מלאים",
+        "המערכת מזהה אוטומטית לקוחות מעמודת האירוע ותעריף שעתי מהדוח",
+        "חיוב דירה מזוהה אוטומטית מהערות העובד",
+        "ניתן להעלות קובץ לקוחות עם תעריפי גביה, כתובות ואנשי קשר",
+        "הפלט כולל 3 גיליונות: חיוב ללקוח, תשלום לעובד, סיכום חברה",
     ],
-    "help_note": "ניתן לשמור הגדרות מחלקות כתבנית לשימוש חוזר בכל חודש.",
+    "help_note": "ניתן לשמור הגדרות כתבנית לשימוש חוזר בכל חודש.",
     "rules_label": "איך המערכת מחשבת",
-    "rules_title": "חישוב השכר לפי מחלקה",
-    "rules_intro": "כל עובד משויך למחלקה לפי מספר מחלקה. השכר מחושב לפי נתוני המחלקה:",
+    "rules_title": "חישוב חיוב ותשלום",
+    "rules_intro": "כל עובד משויך ללקוחות לפי עמודת האירוע. החישוב:",
     "rules_items": [
-        "ברוטו = שעות לתשלום × שכר שעתי (לפי מחלקה)",
+        "ברוטו = שעות לתשלום × תעריף שעתי (מהדוח או מהגדרות)",
         "3% מיסים = ברוטו × 0.03",
         "ביטוח = 280 ₪ קבוע",
         "נטו = ברוטו − מיסים − ביטוח − חיוב דירה",
+        "חיוב ללקוח = שעות בלקוח × תעריף גביה",
     ],
-    "rules_note": "עובדים ללא מחלקה מתאימה יופיעו בגיליון 'שימו לב' לטיפול.",
+    "rules_note": "עובדים ללא שיוך לקוח יופיעו בגיליון 'שימו לב' לטיפול.",
     "accept": ".xls,.xlsx",
     "icon": "🏢",
 }
@@ -5438,12 +6105,18 @@ MATAN_CORRECTIONS_MAPPING_FIELDS = [
 
 DEPT_PAYROLL_MAPPING_FIELDS = [
     {"name": "worker_name_source", "label": "שם עובד", "required": True},
-    {"name": "dept_number_source", "label": "מספר מחלקה", "required": True, "critical": True},
+    {"name": "dept_number_source", "label": "מספר מחלקה", "required": False},
     {"name": "department_source", "label": "שם מחלקה", "required": False},
     {"name": "payable_hours_source", "label": "שעות לתשלום בפועל", "required": True, "critical": True},
     {"name": "id_number_source", "label": "תעודת זהות / דרכון", "required": False},
     {"name": "phone_source", "label": "מספר נייד", "required": False},
     {"name": "passport_source", "label": "מספר פספורט", "required": False},
+    {"name": "event_source", "label": "אירוע / לקוח", "required": True, "critical": True},
+    {"name": "entry_time_source", "label": "כניסה", "required": False},
+    {"name": "exit_time_source", "label": "יציאה", "required": False},
+    {"name": "date_source", "label": "תאריך", "required": False},
+    {"name": "total_hours_source", "label": 'סה"כ שעות', "required": True, "critical": True},
+    {"name": "hourly_rate_source", "label": "תעריף שעתי", "required": False},
 ]
 
 DEPT_PAYROLL_SUGGESTION_KEYWORDS = {
@@ -5454,6 +6127,12 @@ DEPT_PAYROLL_SUGGESTION_KEYWORDS = {
     "id_number_source": ["תעודתזהות", "דרכון", "זהות", "id"],
     "phone_source": ["נייד", "טלפון", "phone", "mobile"],
     "passport_source": ["פספורט", "דרכון", "passport"],
+    "event_source": ["אירוע", "event", "לקוח", "סטטוס"],
+    "entry_time_source": ["כניסה", "entry", "checkin"],
+    "exit_time_source": ["יציאה", "exit", "checkout"],
+    "date_source": ["תאריך", "date"],
+    "total_hours_source": ["סהכ", "סה\"כ", "total", "hours", "שעות"],
+    "hourly_rate_source": ["תעריףשעתי", "תעריף", "rate", "hourly"],
 }
 
 
@@ -6304,6 +6983,8 @@ def collect_dept_daily_header_candidates(detail_sheet, workbook_kind):
     relevant_tokens = {
         "מספרמחלקה", "סהכ", "סה\"כ", "סהכשעות",
         "רגילות", "נוכחות", "תקן", "חוסר",
+        "אירוע", "כניסה", "יציאה", "תאריך",
+        "תעריףשעתי", "תעריף",
     }
     for col_index in range(cols):
         label_text = str(get_flamingo_sheet_cell(detail_sheet, workbook_kind, header_row, col_index) or "").strip()
@@ -6420,11 +7101,17 @@ def build_dept_payroll_mapping_options(input_path, extension):
     for field in DEPT_PAYROLL_MAPPING_FIELDS:
         field_name = field["name"]
         options = [{"value": "", "label": "לא נבחר", "source_kind": "empty"}]
+        daily_header_fields = {"event_source", "entry_time_source", "exit_time_source", "date_source", "total_hours_source", "hourly_rate_source"}
         for option in base_options:
             token = option.get("match_token", "")
             keywords = DEPT_PAYROLL_SUGGESTION_KEYWORDS.get(field_name, [])
             if field_name == "payable_hours_source":
                 if any(keyword in token for keyword in keywords) or option.get("source_kind") == "table_exact":
+                    options.append(option)
+            elif field_name in daily_header_fields:
+                if any(keyword in token for keyword in keywords):
+                    options.append(option)
+                elif option.get("source_kind") == "meta":
                     options.append(option)
             elif field_name == "dept_number_source":
                 options.append(option)
@@ -6564,7 +7251,7 @@ def build_dept_payroll_mapping_form(script_id, temp_upload_path, temp_upload_ext
     )
 
     return (
-        '<form method="POST" id="deptPayrollMappingForm">'
+        '<form method="POST" id="deptPayrollMappingForm" enctype="multipart/form-data">'
         + '<input type="hidden" name="flow_mode" value="confirm_mapping">'
         + '<input type="hidden" name="temp_upload_path" value="' + esc(temp_upload_path) + '">'
         + '<input type="hidden" name="temp_upload_ext" value="' + esc(temp_upload_ext) + '">'
@@ -6592,8 +7279,14 @@ def build_dept_payroll_mapping_form(script_id, temp_upload_path, temp_upload_ext
         + '<span style="display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border-radius:999px;background:#ecfdf5;border:1px solid #86efac;font-size:12px;color:#166534">שדה סיכום</span>'
         + '</div>'
         + '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-bottom:12px">' + mapping_fields_html + '</div>'
-        + '<div style="font-size:12px;color:#64748b;line-height:1.7;margin-bottom:12px">שדות קריטיים: מספר מחלקה ושעות לתשלום. בלי השניים האלה לא ניתן לחשב שכר.</div>'
+        + '<div style="font-size:12px;color:#64748b;line-height:1.7;margin-bottom:12px">שדות קריטיים: אירוע/לקוח וסה"כ שעות. בלי אלה לא ניתן לבנות דוח חיוב ותשלום.</div>'
         + '</div></div>'
+        + '</div>'
+        # Clients file upload section
+        + '<div style="background:#fef3c7;border:1px solid #fbbf24;border-radius:14px;padding:1rem;margin-top:1rem">'
+        + '<div style="font-size:15px;font-weight:700;color:#92400e;margin-bottom:10px">קובץ לקוחות (אופציונלי)</div>'
+        + '<div style="font-size:13px;color:#78350f;margin-bottom:12px">ניתן להעלות קובץ אקסל עם נתוני לקוחות — תעריפי גביה, כתובות, אנשי קשר. אם לא מועלה קובץ, המערכת תשתמש בהגדרות המחלקות.</div>'
+        + '<input type="file" name="clients_file" accept=".xls,.xlsx" style="padding:8px;border:1.5px solid #e2e8f0;border-radius:8px;font-size:13px;font-family:inherit;width:100%;background:white">'
         + '</div>'
         # Department settings section
         + dept_settings_section
@@ -9201,9 +9894,9 @@ def run_script(script_id):
                             logout_label=text["logout"],
                             show_lang_switch=True,
                         )
-                    if not mapping.get("dept_number_source"):
+                    if not mapping.get("event_source") or not mapping.get("total_hours_source"):
                         inspection = build_dept_payroll_mapping_options(inp, ext)
-                        error = '<div class="flash-err">יש לבחור שדה מספר מחלקה.</div>'
+                        error = '<div class="flash-err">יש לבחור שדה אירוע/לקוח ושדה סה"כ שעות.</div>'
                         mapping_confirmation_html = build_dept_payroll_mapping_form(
                             script_id, inp, ext, inspection, mapping, mapping_templates,
                             request.form.get("template_name", "").strip() or get_next_mapping_template_name(mapping_templates),
@@ -9506,6 +10199,14 @@ def run_script(script_id):
                     options["manual_hourly_rate"] = manual_hourly_rate
                 elif script_id == "dept_payroll":
                     options["dept_settings_json"] = dept_settings_json
+                    # Handle optional clients file upload
+                    clients_file = request.files.get("clients_file")
+                    if clients_file and clients_file.filename:
+                        clients_ext = get_extension(clients_file.filename)
+                        if clients_ext in ("xls", "xlsx"):
+                            clients_temp_path = str(UPLOAD_FOLDER / f"{uid}_clients.{clients_ext}")
+                            clients_file.save(clients_temp_path)
+                            options["clients_file_path"] = clients_temp_path
                 elif script_id == "matan_missing":
                     options.update(matan_filters)
                 elif script_id == "inactive_workers":
@@ -9538,6 +10239,13 @@ def run_script(script_id):
                         os.remove(inp)
                     except OSError:
                         pass
+                    # Clean up clients file if uploaded
+                    clients_temp = options.get("clients_file_path", "")
+                    if clients_temp:
+                        try:
+                            os.remove(clients_temp)
+                        except OSError:
+                            pass
         else:
             file_obj = request.files.get("file")
             validation_error, ext = validate_upload(file_obj)
