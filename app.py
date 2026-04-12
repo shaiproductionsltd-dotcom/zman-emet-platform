@@ -4326,12 +4326,25 @@ def write_dept_payroll_output_v2(output_path, worker_rows, dept_settings, client
                 client_daily.setdefault(cn, []).append(dr)
 
         # Build per-client subtotals from תנועות מיוחדות or daily sums
+        # Filter out non-client entries (vacation, sick, holidays)
+        non_client_tokens = {"חופשה", "מחלה", "חג", "מילואים", "אבל", "היעדרות"}
         client_hours = {}
+        attendance_events = {}
         for cn, hrs in w.get("special_movements", {}).items():
-            client_hours[cn] = hrs
+            cn_token = normalize_token(cn)
+            is_non_client = any(normalize_token(kw) == cn_token or normalize_token(kw) in cn_token for kw in non_client_tokens)
+            if is_non_client:
+                attendance_events[cn] = hrs
+            else:
+                client_hours[cn] = hrs
         # Supplement with daily row sums for clients not in special_movements
         for cn, drs in client_daily.items():
-            if cn not in client_hours:
+            cn_token = normalize_token(cn)
+            is_non_client = any(normalize_token(kw) == cn_token or normalize_token(kw) in cn_token for kw in non_client_tokens)
+            if is_non_client:
+                if cn not in attendance_events:
+                    attendance_events[cn] = round(sum(dr.get("total_hours", 0) for dr in drs), 2)
+            elif cn not in client_hours:
                 client_hours[cn] = round(sum(dr.get("total_hours", 0) for dr in drs), 2)
 
         w_calc = {
@@ -4344,6 +4357,7 @@ def write_dept_payroll_output_v2(output_path, worker_rows, dept_settings, client
             "net": net,
             "client_daily": client_daily,
             "client_hours": client_hours,
+            "attendance_events": attendance_events,
         }
         worker_calculations.append(w_calc)
 
@@ -4526,6 +4540,17 @@ def write_dept_payroll_output_v2(output_path, worker_rows, dept_settings, client
             for cn, hrs in wc["client_hours"].items():
                 write_cell(ws2, row, 1, cn)
                 write_cell(ws2, row, 6, hrs, fmt=num_fmt)
+                row += 1
+
+        # Attendance events (vacation, sick leave, etc.)
+        if wc.get("attendance_events"):
+            row += 1
+            write_cell(ws2, row, 1, "נוכחות אחר:", font=Font(bold=True, size=10, color="6B21A8"))
+            row += 1
+            for ev_name, ev_hrs in wc["attendance_events"].items():
+                write_cell(ws2, row, 1, ev_name)
+                ws2.cell(row=row, column=1).font = Font(size=10, color="6B21A8")
+                write_cell(ws2, row, 6, ev_hrs, fmt=num_fmt)
                 row += 1
 
         # Calculation block
@@ -7220,28 +7245,38 @@ def build_dept_payroll_mapping_options(input_path, extension):
     worker_blocks = list(iter_flamingo_worker_blocks(workbook_kind, workbook))
     if not worker_blocks:
         raise ValueError("לא זוהו גיליונות עובדים בדוח הנוכחות")
-    # Extract all unique client names from תנועות מיוחדות across all workers
+    # Extract all unique client names from תנועות מיוחדות summary table across all workers
+    # Use the same extraction logic as extract_dept_payroll_worker for consistency
+    NON_CLIENT_KEYWORDS = {"חופשה", "מחלה", "חג", "מילואים", "אבל", "היעדרות", "סהכ", "סה\"כ"}
     detected_clients = set()
     for detail_sheet_block, summary_sheet_block in worker_blocks:
         tnuot_row = find_sheet_label_row(detail_sheet_block, workbook_kind, "תנועות מיוחדות")
-        if tnuot_row >= 0:
-            rows_count, cols_count = get_flamingo_sheet_dims(detail_sheet_block, workbook_kind)
-            for r in range(tnuot_row + 1, min(rows_count, tnuot_row + 20)):
-                for c in range(cols_count):
-                    label_val = stringify_excel_value(get_flamingo_sheet_cell(detail_sheet_block, workbook_kind, r, c))
-                    if label_val and label_val.strip():
-                        # Check if there's a numeric value nearby (confirming it's a real entry)
-                        for nc in range(c + 1, min(cols_count, c + 5)):
-                            val = get_flamingo_sheet_cell(detail_sheet_block, workbook_kind, r, nc)
-                            if val in ("", None):
-                                continue
-                            try:
-                                float(str(val).replace(",", ""))
-                                detected_clients.add(label_val.strip())
-                            except (ValueError, TypeError):
-                                pass
-                            break
+        if tnuot_row < 0:
+            continue
+        rows_count, cols_count = get_flamingo_sheet_dims(detail_sheet_block, workbook_kind)
+        for r in range(tnuot_row + 1, min(rows_count, tnuot_row + 20)):
+            for c in range(0, cols_count - 1):
+                label_val = stringify_excel_value(get_flamingo_sheet_cell(detail_sheet_block, workbook_kind, r, c))
+                if not label_val or not label_val.strip():
+                    continue
+                label_clean = label_val.strip()
+                # Skip non-client entries (vacation, sick, holidays, totals)
+                label_token = normalize_token(label_clean)
+                if any(normalize_token(kw) == label_token or normalize_token(kw) in label_token for kw in NON_CLIENT_KEYWORDS):
                     break
+                # Look for a numeric value to the right (confirming it's a real entry with hours)
+                for nc in range(c + 1, min(cols_count, c + 5)):
+                    val = get_flamingo_sheet_cell(detail_sheet_block, workbook_kind, r, nc)
+                    if val in ("", None):
+                        continue
+                    try:
+                        hours_val = parse_hours_value(val)
+                        if hours_val is not None and hours_val > 0:
+                            detected_clients.add(label_clean)
+                        break
+                    except (ValueError, TypeError):
+                        break
+                break  # only process the first non-empty label per row
     detected_clients = sorted(detected_clients)
     detail_sheet, summary_sheet = worker_blocks[0]
     meta_options = collect_flamingo_meta_candidates(detail_sheet, workbook_kind)
