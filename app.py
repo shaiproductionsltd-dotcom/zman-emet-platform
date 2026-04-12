@@ -4,7 +4,7 @@ from collections import defaultdict
 from io import BytesIO
 import calendar
 import csv
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 import html
 import json
 import os
@@ -3743,7 +3743,7 @@ def extract_dept_payroll_worker(detail_sheet, summary_sheet, workbook_kind, mapp
     housing_charge = 0
     rows, cols = get_flamingo_sheet_dims(detail_sheet, workbook_kind)
     housing_source = mapping.get("housing_source", "__auto__")
-    if housing_source and housing_source not in ("__auto__", "__manual__", ""):
+    if housing_source and housing_source not in ("__auto__", ""):
         # User selected a specific field from the report
         raw = extract_flamingo_mapping_value(detail_sheet, summary_sheet, workbook_kind, housing_source)
         if raw not in ("", None):
@@ -3837,11 +3837,57 @@ def extract_dept_payroll_worker(detail_sheet, summary_sheet, workbook_kind, mapp
                 except (ValueError, TypeError):
                     pass
 
+    # ── Helper: format date/time cell values ──
+    def format_date_cell(raw):
+        """Convert raw cell value to a readable date string (dd/mm/yyyy)."""
+        if raw in ("", None):
+            return ""
+        if isinstance(raw, datetime):
+            return raw.strftime("%d/%m/%Y")
+        if isinstance(raw, date):
+            return raw.strftime("%d/%m/%Y")
+        if isinstance(raw, (int, float)):
+            try:
+                if workbook_kind == "xls":
+                    dt = xlrd.xldate_as_datetime(float(raw), workbook.datemode)
+                else:
+                    # openpyxl serial date
+                    from openpyxl.utils.datetime import from_excel
+                    dt = from_excel(raw)
+                return dt.strftime("%d/%m/%Y")
+            except (ValueError, OverflowError, TypeError):
+                pass
+        return str(raw).strip()
+
+    def format_time_cell(raw):
+        """Convert raw cell value to HH:MM time string."""
+        if raw in ("", None):
+            return ""
+        if isinstance(raw, datetime):
+            return raw.strftime("%H:%M")
+        if isinstance(raw, time):
+            return raw.strftime("%H:%M")
+        if isinstance(raw, (int, float)):
+            # Excel stores times as fraction of day
+            try:
+                total_seconds = round(float(raw) * 86400)
+                hours = total_seconds // 3600
+                minutes = (total_seconds % 3600) // 60
+                if 0 <= hours <= 23:
+                    return f"{hours:02d}:{minutes:02d}"
+            except (ValueError, OverflowError):
+                pass
+        s = str(raw).strip()
+        if s.startswith("*"):
+            s = s.lstrip("*")
+        return s
+
     # ── Extract daily rows ──
     daily_rows = []
     if daily_header_row >= 0:
         for r in range(daily_header_row + 1, min(rows, daily_header_row + 35)):
-            date_val = stringify_excel_value(get_flamingo_sheet_cell(detail_sheet, workbook_kind, r, col_positions.get("date", 0))) if "date" in col_positions else ""
+            date_raw = get_flamingo_sheet_cell(detail_sheet, workbook_kind, r, col_positions.get("date", 0)) if "date" in col_positions else ""
+            date_val = format_date_cell(date_raw)
             if not date_val:
                 # Check if there's any data in event/hours columns
                 event_val = stringify_excel_value(get_flamingo_sheet_cell(detail_sheet, workbook_kind, r, col_positions.get("client_name", 0))) if "client_name" in col_positions else ""
@@ -3849,8 +3895,10 @@ def extract_dept_payroll_worker(detail_sheet, summary_sheet, workbook_kind, mapp
                 if not event_val and not hours_val:
                     continue
             day_name = stringify_excel_value(get_flamingo_sheet_cell(detail_sheet, workbook_kind, r, col_positions.get("day_name", 0))) if "day_name" in col_positions else ""
-            entry_time = stringify_excel_value(get_flamingo_sheet_cell(detail_sheet, workbook_kind, r, col_positions.get("entry_time", 0))) if "entry_time" in col_positions else ""
-            exit_time = stringify_excel_value(get_flamingo_sheet_cell(detail_sheet, workbook_kind, r, col_positions.get("exit_time", 0))) if "exit_time" in col_positions else ""
+            entry_time_raw = get_flamingo_sheet_cell(detail_sheet, workbook_kind, r, col_positions.get("entry_time", 0)) if "entry_time" in col_positions else ""
+            entry_time = format_time_cell(entry_time_raw)
+            exit_time_raw = get_flamingo_sheet_cell(detail_sheet, workbook_kind, r, col_positions.get("exit_time", 0)) if "exit_time" in col_positions else ""
+            exit_time = format_time_cell(exit_time_raw)
             client_name = stringify_excel_value(get_flamingo_sheet_cell(detail_sheet, workbook_kind, r, col_positions.get("client_name", 0))) if "client_name" in col_positions else ""
             total_hours_raw = get_flamingo_sheet_cell(detail_sheet, workbook_kind, r, col_positions.get("total_hours", 0)) if "total_hours" in col_positions else ""
             total_hours = 0
@@ -3910,37 +3958,27 @@ def extract_dept_payroll_worker(detail_sheet, summary_sheet, workbook_kind, mapp
 
 
 def parse_dept_settings_json(dept_settings_json):
+    """Parse client settings JSON. Key is customer_name (matches תנועה מיוחדת in report)."""
     if isinstance(dept_settings_json, str):
         dept_settings_json = json.loads(dept_settings_json)
-    settings_by_dept = {}
+    settings_by_client = {}
     for entry in dept_settings_json:
-        key = str(entry.get("dept_number", "")).strip()
+        key = str(entry.get("customer_name", "")).strip()
         if not key:
             continue
-        try:
-            hourly_rate = float(str(entry.get("hourly_rate", 0) or 0).replace(",", ""))
-        except (ValueError, TypeError):
-            hourly_rate = 0
         try:
             charge_rate = float(str(entry.get("charge_rate", 0) or 0).replace(",", ""))
         except (ValueError, TypeError):
             charge_rate = 0
-        try:
-            housing = float(str(entry.get("housing", 0) or 0).replace(",", ""))
-        except (ValueError, TypeError):
-            housing = 0
-        settings_by_dept[key] = {
-            "dept_number": key,
-            "customer_name": str(entry.get("customer_name", "") or "").strip(),
+        settings_by_client[key] = {
+            "customer_name": key,
             "region_manager": str(entry.get("region_manager", "") or "").strip(),
             "address": str(entry.get("address", "") or "").strip(),
             "charge_rate": charge_rate,
             "contact_person": str(entry.get("contact_person", "") or "").strip(),
             "contact_phone": str(entry.get("contact_phone", "") or "").strip(),
-            "hourly_rate": hourly_rate,
-            "housing": housing,
         }
-    return settings_by_dept
+    return settings_by_client
 
 
 def parse_clients_excel(clients_path, extension):
@@ -4065,10 +4103,7 @@ def write_dept_payroll_output(output_path, worker_rows, dept_settings):
     unmatched = []
     for w in worker_rows:
         dnum = str(w.get("dept_number", "") or "").strip()
-        if dnum and dnum in dept_settings:
-            dept_groups.setdefault(dnum, []).append(w)
-        elif dnum:
-            # Department number exists but no settings match
+        if dnum:
             dept_groups.setdefault(dnum, []).append(w)
         else:
             unmatched.append(w)
@@ -4082,35 +4117,15 @@ def write_dept_payroll_output(output_path, worker_rows, dept_settings):
 
     for dept_num in sorted(dept_groups.keys()):
         workers = dept_groups[dept_num]
-        ds = dept_settings.get(dept_num, {})
 
         # Department header row
         dept_label = f"מחלקה: {dept_num}"
-        if ds.get("customer_name"):
-            dept_label += f" — {ds['customer_name']}"
         ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=len(worker_headers))
         cell = ws.cell(row=row, column=1, value=dept_label)
         cell.font = dept_font
         cell.fill = dept_fill
         cell.alignment = Alignment(horizontal="right")
         row += 1
-
-        # Department info row
-        info_parts = []
-        if ds.get("region_manager"):
-            info_parts.append(f"מנהל אזור: {ds['region_manager']}")
-        if ds.get("address"):
-            info_parts.append(f"כתובת: {ds['address']}")
-        if ds.get("contact_person"):
-            info_parts.append(f"איש קשר: {ds['contact_person']}")
-        if ds.get("contact_phone"):
-            info_parts.append(f"טלפון: {ds['contact_phone']}")
-        if info_parts:
-            ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=len(worker_headers))
-            info_cell = ws.cell(row=row, column=1, value=" | ".join(info_parts))
-            info_cell.font = Font(size=10, color="475569")
-            info_cell.alignment = Alignment(horizontal="right")
-            row += 1
 
         # Column headers for workers
         for col_idx, header in enumerate(worker_headers, 1):
@@ -4121,9 +4136,6 @@ def write_dept_payroll_output(output_path, worker_rows, dept_settings):
             cell.border = thin_border
         row += 1
 
-        hourly_rate = ds.get("hourly_rate", 0)
-        charge_rate = ds.get("charge_rate", 0)
-        housing = ds.get("housing", 0)
         dept_total_hours = 0
         dept_total_gross = 0
         dept_total_net = 0
@@ -4133,10 +4145,12 @@ def write_dept_payroll_output(output_path, worker_rows, dept_settings):
             hours = w.get("payable_hours") or 0
             if w["status"] != "OK":
                 hours = 0
+            hourly_rate = w.get("hourly_rate") or 0
+            housing = w.get("housing_charge") or 0
             gross = round(hours * hourly_rate, 2) if hourly_rate else 0
             taxes = round(gross * 0.03, 2)
             net = round(gross - taxes - INSURANCE - housing, 2) if gross else 0
-            charge_total = round(hours * charge_rate, 2) if charge_rate else 0
+            charge_total = 0
 
             values = [
                 w.get("worker_name", ""),
@@ -4150,7 +4164,7 @@ def write_dept_payroll_output(output_path, worker_rows, dept_settings):
                 INSURANCE if gross else 0,
                 housing if gross else 0,
                 net,
-                charge_rate,
+                0,
                 charge_total,
             ]
             for col_idx, val in enumerate(values, 1):
@@ -4299,13 +4313,6 @@ def write_dept_payroll_output_v2(output_path, worker_rows, dept_settings, client
         hours = w.get("payable_hours") or 0
         hourly_rate = w.get("hourly_rate") or 0
         housing = w.get("housing_charge") or 0
-        # Use dept_settings hourly_rate/housing as fallback
-        dept_num = str(w.get("dept_number", "") or "").strip()
-        ds = dept_settings.get(dept_num, {})
-        if not hourly_rate and ds.get("hourly_rate"):
-            hourly_rate = ds["hourly_rate"]
-        if not housing and ds.get("housing"):
-            housing = ds["housing"]
 
         gross = round(hours * hourly_rate, 2) if hourly_rate and hours else 0
         taxes = round(gross * 0.03, 2)
@@ -4362,14 +4369,27 @@ def write_dept_payroll_output_v2(output_path, worker_rows, dept_settings, client
         client_info = clients_by_name.get(norm_cn, {})
         charge_rate = client_info.get("charge_rate", 0)
 
-        # If no charge_rate from clients file, try dept_settings
+        # If no charge_rate from clients file, try dept_settings (keyed by customer_name)
         if not charge_rate:
-            for wc in workers_for_client:
-                dnum = str(wc.get("dept_number", "") or "").strip()
-                ds_rate = dept_settings.get(dnum, {}).get("charge_rate", 0)
-                if ds_rate:
-                    charge_rate = ds_rate
-                    break
+            ds = dept_settings.get(client_name, {})
+            if not ds:
+                # Try normalized match
+                for ds_key, ds_val in dept_settings.items():
+                    if normalize_token(ds_key) == norm_cn:
+                        ds = ds_val
+                        break
+            if ds.get("charge_rate"):
+                charge_rate = ds["charge_rate"]
+            # Also pull client info from dept_settings if not from clients file
+            if not client_info and ds:
+                client_info = {
+                    "name": ds.get("customer_name", client_name),
+                    "area_manager": ds.get("region_manager", ""),
+                    "address": ds.get("address", ""),
+                    "contact": ds.get("contact_person", ""),
+                    "phone": ds.get("contact_phone", ""),
+                    "charge_rate": ds.get("charge_rate", 0),
+                }
 
         # Client header
         ws1.merge_cells(start_row=row, start_column=1, end_row=row, end_column=8)
@@ -4590,12 +4610,14 @@ def write_dept_payroll_output_v2(output_path, worker_rows, dept_settings, client
         ci = clients_by_name.get(norm_cn, {})
         cr = ci.get("charge_rate", 0)
         if not cr:
-            for wc in workers_for_cn:
-                dnum = str(wc.get("dept_number", "") or "").strip()
-                ds_rate = dept_settings.get(dnum, {}).get("charge_rate", 0)
-                if ds_rate:
-                    cr = ds_rate
-                    break
+            ds = dept_settings.get(cn, {})
+            if not ds:
+                for ds_key, ds_val in dept_settings.items():
+                    if normalize_token(ds_key) == norm_cn:
+                        ds = ds_val
+                        break
+            if ds.get("charge_rate"):
+                cr = ds["charge_rate"]
         total_hrs = round(sum(wc["client_hours"].get(cn, 0) for wc in workers_for_cn), 2)
         total_ch = round(total_hrs * cr, 2) if cr else 0
         write_cell(ws3, row, 1, ci.get("name", cn))
@@ -4627,36 +4649,100 @@ def write_dept_payroll_output_v2(output_path, worker_rows, dept_settings, client
     for col_idx in range(1, 5):
         ws3.column_dimensions[get_column_letter(col_idx)].width = 20
 
-    # ── Attention sheet ──
+    # ── Attention sheet (heatmap: critical → warning → info) ──
     attn_ws = wb.create_sheet(safe_sheet_title("שימו לב", "שימו לב"))
     attn_ws.sheet_view.rightToLeft = True
     attn_ws.sheet_view.showGridLines = False
-    attn_headers = ["שם עובד", "מספר מחלקה", "שם מחלקה", "בעיה", "פירוט"]
+    attn_headers = ["סוג", "שם", "בעיה", "פירוט"]
     for col_idx, header in enumerate(attn_headers, 1):
         cell = attn_ws.cell(row=1, column=col_idx, value=header)
-        cell.font = header_font
-        cell.fill = PatternFill(start_color="DC2626", end_color="DC2626", fill_type="solid")
+        cell.font = Font(bold=True, size=11, color="FFFFFF")
+        cell.fill = PatternFill(start_color="1E3A8A", end_color="1E3A8A", fill_type="solid")
         cell.alignment = Alignment(horizontal="center")
-    attn_row = 2
+
+    # Priority levels: 1=critical (red), 2=warning (orange), 3=info (yellow)
+    critical_fill = PatternFill(start_color="FEE2E2", end_color="FEE2E2", fill_type="solid")
+    critical_font = Font(color="991B1B")
+    warning_fill = PatternFill(start_color="FEF3C7", end_color="FEF3C7", fill_type="solid")
+    warning_font = Font(color="92400E")
+    info_fill = PatternFill(start_color="EFF6FF", end_color="EFF6FF", fill_type="solid")
+    info_font = Font(color="1E40AF")
+
+    alerts = []  # (priority, type_label, name, problem, detail)
+
+    # 1. Clients missing required fields (charge_rate is critical)
+    for cn in sorted(client_workers.keys()):
+        norm_cn = normalize_token(cn)
+        ci = clients_by_name.get(norm_cn, {})
+        ds = dept_settings.get(cn, {})
+        if not ds:
+            for ds_key, ds_val in dept_settings.items():
+                if normalize_token(ds_key) == norm_cn:
+                    ds = ds_val
+                    break
+        cr = ci.get("charge_rate", 0) or ds.get("charge_rate", 0)
+        if not cr:
+            alerts.append((1, "לקוח", cn, "חסר תעריף גביה", "לא ניתן לחשב חיוב ללקוח ללא תעריף. הוסף את הלקוח בטבלת הגדרת פרטי לקוחות."))
+        # Optional missing fields
+        has_info = bool(ci) or bool(ds)
+        if has_info:
+            missing_optional = []
+            if not (ci.get("area_manager") or ds.get("region_manager")):
+                missing_optional.append("מנהל אזור")
+            if not (ci.get("address") or ds.get("address")):
+                missing_optional.append("כתובת")
+            if not (ci.get("contact") or ds.get("contact_person")):
+                missing_optional.append("איש קשר")
+            if not (ci.get("phone") or ds.get("contact_phone")):
+                missing_optional.append("טלפון")
+            if missing_optional:
+                alerts.append((3, "לקוח", cn, "פרטים חסרים", "חסרים: " + ", ".join(missing_optional)))
+        else:
+            alerts.append((2, "לקוח", cn, "לקוח לא מוגדר", "הלקוח לא נמצא בהגדרות. הוסף אותו בטבלת הגדרת פרטי לקוחות."))
+
+    # 2. Worker-level issues (critical)
     for w in worker_rows:
         if w["status"] != "OK":
-            attn_ws.cell(row=attn_row, column=1, value=w.get("worker_name", ""))
-            attn_ws.cell(row=attn_row, column=2, value=w.get("dept_number", ""))
-            attn_ws.cell(row=attn_row, column=3, value=w.get("department", ""))
-            attn_ws.cell(row=attn_row, column=4, value=w.get("status", ""))
-            attn_ws.cell(row=attn_row, column=5, value=w.get("notes", ""))
-            attn_row += 1
-    # Workers without any client assignment
+            alerts.append((1, "עובד", w.get("worker_name", ""), w["status"], w.get("notes", "")))
+
+    # 3. Workers without client assignment (warning)
     for w in worker_rows:
         if w["status"] == "OK" and not w.get("daily_rows") and not w.get("special_movements"):
-            attn_ws.cell(row=attn_row, column=1, value=w.get("worker_name", ""))
-            attn_ws.cell(row=attn_row, column=2, value=w.get("dept_number", ""))
-            attn_ws.cell(row=attn_row, column=3, value=w.get("department", ""))
-            attn_ws.cell(row=attn_row, column=4, value="לא זוהו לקוחות")
-            attn_ws.cell(row=attn_row, column=5, value="לא נמצאו ימי עבודה עם אירוע/לקוח")
-            attn_row += 1
-    for col_idx in range(1, len(attn_headers) + 1):
-        attn_ws.column_dimensions[get_column_letter(col_idx)].width = 22
+            alerts.append((2, "עובד", w.get("worker_name", ""), "לא זוהו לקוחות", "לא נמצאו ימי עבודה עם אירוע/לקוח"))
+
+    # 4. Workers without hourly rate (warning)
+    for wc in worker_calculations:
+        if not wc.get("hourly_rate"):
+            alerts.append((2, "עובד", wc["worker_name"], "חסר תעריף שעתי", "לא ניתן לחשב ברוטו ונטו ללא תעריף שעתי."))
+
+    # Sort by priority (1=critical first, 3=info last)
+    alerts.sort(key=lambda a: a[0])
+
+    attn_row = 2
+    for priority, type_label, name, problem, detail in alerts:
+        if priority == 1:
+            row_fill, row_font = critical_fill, critical_font
+        elif priority == 2:
+            row_fill, row_font = warning_fill, warning_font
+        else:
+            row_fill, row_font = info_fill, info_font
+        for col_idx, val in enumerate([type_label, name, problem, detail], 1):
+            cell = attn_ws.cell(row=attn_row, column=col_idx, value=val)
+            cell.fill = row_fill
+            cell.font = row_font
+            cell.alignment = Alignment(horizontal="right")
+        attn_row += 1
+
+    if attn_row == 2:
+        # No alerts — write a green "all good" message
+        attn_ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=4)
+        ok_cell = attn_ws.cell(row=2, column=1, value="הכל תקין — לא נמצאו בעיות")
+        ok_cell.font = Font(bold=True, size=12, color="166534")
+        ok_cell.fill = PatternFill(start_color="DCFCE7", end_color="DCFCE7", fill_type="solid")
+        ok_cell.alignment = Alignment(horizontal="center")
+
+    for col_idx, width in enumerate([10, 22, 22, 40], 1):
+        attn_ws.column_dimensions[get_column_letter(col_idx)].width = width
 
     wb.save(output_path)
 
@@ -4678,24 +4764,29 @@ def run_dept_payroll(input_path, output_path, extension, options=None):
     dept_settings = parse_dept_settings_json(dept_settings_json)
 
     # Apply manual overrides for hourly rate and housing
-    manual_hourly_rate = 0
-    if mapping.get("hourly_rate_source") == "__manual__":
+    # Empty dropdown = manual mode (user entered a fixed value)
+    # Non-empty dropdown = report field (value extracted per worker)
+    hourly_rate_source = mapping.get("hourly_rate_source", "")
+    if not hourly_rate_source:
+        # Manual mode — apply fixed rate to all workers
         try:
             manual_hourly_rate = float(str(options.get("manual_hourly_rate", 0) or 0).replace(",", ""))
         except (ValueError, TypeError):
             manual_hourly_rate = 0
-        for w in worker_rows:
-            w["hourly_rate"] = manual_hourly_rate
+        if manual_hourly_rate:
+            for w in worker_rows:
+                w["hourly_rate"] = manual_hourly_rate
 
-    manual_housing = 0
-    housing_mode = mapping.get("housing_source", "__auto__")
-    if housing_mode == "__manual__":
+    housing_source = mapping.get("housing_source", "__auto__")
+    if not housing_source:
+        # Manual mode — apply fixed housing to all workers
         try:
             manual_housing = float(str(options.get("manual_housing", 0) or 0).replace(",", ""))
         except (ValueError, TypeError):
             manual_housing = 0
-        for w in worker_rows:
-            w["housing_charge"] = manual_housing
+        if manual_housing:
+            for w in worker_rows:
+                w["housing_charge"] = manual_housing
 
     # Parse clients Excel if provided
     clients_info = ({}, {})
@@ -7138,12 +7229,9 @@ def build_dept_payroll_mapping_options(input_path, extension):
     suggestions = {}
     for field in DEPT_PAYROLL_MAPPING_FIELDS:
         field_name = field["name"]
-        options = [{"value": "", "label": "לא נבחר", "source_kind": "empty"}]
-        if field_name == "hourly_rate_source":
-            options.append({"value": "__manual__", "label": "הזנה ידנית של תעריף שעתי", "source_kind": "critical"})
+        options = [{"value": "", "label": "ללא — הזנה ידנית" if field.get("has_manual") else "לא נבחר", "source_kind": "empty"}]
         if field_name == "housing_source":
             options.append({"value": "__auto__", "label": "זיהוי אוטומטי מהערות הדוח", "source_kind": "meta"})
-            options.append({"value": "__manual__", "label": "הזנה ידנית של חיוב דירה", "source_kind": "critical"})
         daily_header_fields = {"event_source", "entry_time_source", "exit_time_source", "date_source", "total_hours_source", "hourly_rate_source", "housing_source"}
         for option in base_options:
             token = option.get("match_token", "")
@@ -7208,7 +7296,7 @@ def build_dept_payroll_mapping_options(input_path, extension):
     return {
         "options_by_field": options_by_field,
         "suggestions": suggestions,
-        "suggested_template_name": "תבנית מחלקות",
+        "suggested_template_name": "תבנית לקוחות",
     }
 
 
@@ -7235,7 +7323,6 @@ def build_dept_payroll_mapping_form(script_id, temp_upload_path, temp_upload_ext
         blank_options = [option for option in options if not option.get("value")]
         meta_options = [option for option in options if option.get("source_kind") == "meta"]
         summary_options = [option for option in options if option.get("source_kind") == "table_exact"]
-        special_options = [option for option in options if option.get("source_kind") == "critical"]
 
         def render_option(option):
             selected = ' selected' if option["value"] == current_value else ""
@@ -7244,9 +7331,6 @@ def build_dept_payroll_mapping_form(script_id, temp_upload_path, temp_upload_ext
         select_options = ""
         for option in blank_options:
             select_options += render_option(option)
-        if special_options:
-            for option in special_options:
-                select_options += render_option(option)
         if meta_options:
             select_options += '<optgroup label="שדות עליונים">'
             for option in meta_options:
@@ -7262,22 +7346,26 @@ def build_dept_payroll_mapping_form(script_id, temp_upload_path, temp_upload_ext
         wrapper_style = ""
         if field.get("critical"):
             wrapper_style = 'background:#fff7ed;border:1px solid #fdba74;border-radius:12px;padding:10px 10px 12px'
-        # Manual input for hourly_rate_source
+        # Manual input for hourly_rate_source and housing_source
+        # Show manual input when dropdown is "ללא" (empty) — means user wants to enter manually
+        # Hide when a report field is selected — value comes from report
         manual_input_html = ""
         if field_name == "hourly_rate_source":
+            show_manual = not current_value  # empty = manual mode
             manual_input_html = (
-                '<div data-manual-wrap="hourly_rate" style="' + ('display:block' if current_value == "__manual__" else 'display:none') + ';margin-top:8px">'
-                + '<label class="field-label" style="margin-bottom:4px;font-size:12px">תעריף שעתי ידני</label>'
+                '<div data-manual-wrap="hourly_rate" style="' + ('display:block' if show_manual else 'display:none') + ';margin-top:8px">'
+                + '<label class="field-label" style="margin-bottom:4px;font-size:12px">תעריף שעתי (ידני)</label>'
                 + '<input type="text" name="manual_hourly_rate" value="' + esc(manual_hourly_rate_value) + '" placeholder="לדוגמה 45.5" style="margin-bottom:0;padding:7px 10px;font-size:13px">'
-                + '<div style="font-size:11px;color:#9a3412;line-height:1.5;margin-top:4px">תעריף אחיד לכל העובדים. אם תבחר שדה מהדוח — כל עובד יחושב לפי התעריף שלו.</div>'
+                + '<div style="font-size:11px;color:#9a3412;line-height:1.5;margin-top:4px">תעריף אחיד לכל העובדים. לחישוב לפי הדוח — בחר שדה מהרשימה למעלה.</div>'
                 + '</div>'
             )
         elif field_name == "housing_source":
+            show_manual = not current_value  # empty = manual mode
             manual_input_html = (
-                '<div data-manual-wrap="housing" style="' + ('display:block' if current_value == "__manual__" else 'display:none') + ';margin-top:8px">'
-                + '<label class="field-label" style="margin-bottom:4px;font-size:12px">חיוב דירה ידני</label>'
+                '<div data-manual-wrap="housing" style="' + ('display:block' if show_manual else 'display:none') + ';margin-top:8px">'
+                + '<label class="field-label" style="margin-bottom:4px;font-size:12px">חיוב דירה (ידני)</label>'
                 + '<input type="text" name="manual_housing" value="' + esc(manual_housing_value) + '" placeholder="לדוגמה 800" style="margin-bottom:0;padding:7px 10px;font-size:13px">'
-                + '<div style="font-size:11px;color:#9a3412;line-height:1.5;margin-top:4px">סכום אחיד לכל העובדים. בחירת &laquo;זיהוי אוטומטי&raquo; תחפש את הסכום בהערות כל עובד.</div>'
+                + '<div style="font-size:11px;color:#9a3412;line-height:1.5;margin-top:4px">סכום אחיד לכל העובדים. לזיהוי אוטומטי — בחר &laquo;זיהוי אוטומטי מהערות&raquo; למעלה.</div>'
                 + '</div>'
             )
         mapping_fields_html += (
@@ -7295,26 +7383,23 @@ def build_dept_payroll_mapping_form(script_id, temp_upload_path, temp_upload_ext
 
     dept_settings_section = (
         '<div style="background:#f0fdf4;border:1px solid #86efac;border-radius:14px;padding:1rem;margin-top:1rem">'
-        + '<div style="font-size:15px;font-weight:700;color:#166534;margin-bottom:10px">הגדרות מחלקות</div>'
-        + '<div style="font-size:13px;color:#475569;margin-bottom:12px">הגדר לכל מספר מחלקה את נתוני השכר, הגביה ואנשי הקשר. ניתן להוסיף שורות או לטעון תבנית שמורה.</div>'
+        + '<div style="font-size:15px;font-weight:700;color:#166534;margin-bottom:10px">הגדרת פרטי לקוחות</div>'
+        + '<div style="font-size:13px;color:#475569;margin-bottom:12px">הגדר לכל לקוח (לפי שם התנועה המיוחדת בדוח) את תעריף הגביה ופרטי הקשר. שדות עם <span style="color:#dc2626">*</span> הם חובה.</div>'
         + '<div id="deptSettingsTable">'
         + '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px" id="deptTable">'
         + '<thead><tr style="background:#166534;color:white">'
-        + '<th style="padding:8px 6px;white-space:nowrap">מספר מחלקה</th>'
-        + '<th style="padding:8px 6px;white-space:nowrap">שם לקוח</th>'
+        + '<th style="padding:8px 6px;white-space:nowrap">שם לקוח (תנועה מיוחדת) <span style="color:#fca5a5">*</span></th>'
         + '<th style="padding:8px 6px;white-space:nowrap">מנהל אזור</th>'
         + '<th style="padding:8px 6px;white-space:nowrap">כתובת</th>'
-        + '<th style="padding:8px 6px;white-space:nowrap">תעריף גביה</th>'
+        + '<th style="padding:8px 6px;white-space:nowrap">תעריף גביה <span style="color:#fca5a5">*</span></th>'
         + '<th style="padding:8px 6px;white-space:nowrap">איש קשר</th>'
         + '<th style="padding:8px 6px;white-space:nowrap">טלפון</th>'
-        + '<th style="padding:8px 6px;white-space:nowrap">שכר שעתי</th>'
-        + '<th style="padding:8px 6px;white-space:nowrap">חיוב דירה</th>'
         + '<th style="padding:8px 6px"></th>'
         + '</tr></thead>'
         + '<tbody id="deptTableBody"></tbody>'
         + '</table></div>'
         + '<div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">'
-        + '<button type="button" id="addDeptRow" class="btn btn-blue" style="padding:6px 16px;font-size:13px">+ הוסף מחלקה</button>'
+        + '<button type="button" id="addDeptRow" class="btn btn-blue" style="padding:6px 16px;font-size:13px">+ הוסף לקוח</button>'
         + '<label for="deptFileInput" class="btn btn-gray" style="padding:6px 16px;font-size:13px;cursor:pointer;display:inline-flex;align-items:center">טען מקובץ אקסל</label>'
         + '<input type="file" id="deptFileInput" accept=".xls,.xlsx,.csv" style="display:none">'
         + '</div>'
@@ -7342,7 +7427,7 @@ def build_dept_payroll_mapping_form(script_id, temp_upload_path, temp_upload_ext
         + '<label style="display:flex;align-items:center;gap:6px;font-size:13px;color:#334155;margin-bottom:10px"><input type="checkbox" name="save_template" value="1"> שמור כתבנית חדשה</label>'
         + '<label class="field-label">שם תבנית חדשה</label>'
         + '<input type="text" name="template_name" value="' + esc(template_name_value) + '" placeholder="שם תבנית" style="margin-bottom:0">'
-        + '<div style="font-size:12px;color:#64748b;line-height:1.7;margin-top:10px">התבנית שומרת את מיפוי השדות וגם את הגדרות המחלקות, כך שלא צריך להזין אותן מחדש בכל חודש.</div>'
+        + '<div style="font-size:12px;color:#64748b;line-height:1.7;margin-top:10px">התבנית שומרת את מיפוי השדות וגם את הגדרת פרטי הלקוחות, כך שלא צריך להזין אותם מחדש בכל חודש.</div>'
         + '</div>'
         # Mapping fields
         + '<div>'
@@ -7358,7 +7443,7 @@ def build_dept_payroll_mapping_form(script_id, temp_upload_path, temp_upload_ext
         # Clients file upload section
         + '<div style="background:#fef3c7;border:1px solid #fbbf24;border-radius:14px;padding:1rem;margin-top:1rem">'
         + '<div style="font-size:15px;font-weight:700;color:#92400e;margin-bottom:10px">קובץ לקוחות (אופציונלי)</div>'
-        + '<div style="font-size:13px;color:#78350f;margin-bottom:12px">ניתן להעלות קובץ אקסל עם נתוני לקוחות — תעריפי גביה, כתובות, אנשי קשר. אם לא מועלה קובץ, המערכת תשתמש בהגדרות המחלקות.</div>'
+        + '<div style="font-size:13px;color:#78350f;margin-bottom:12px">ניתן להעלות קובץ אקסל עם נתוני לקוחות — תעריפי גביה, כתובות, אנשי קשר. אם לא מועלה קובץ, המערכת תשתמש בהגדרת פרטי הלקוחות.</div>'
         + '<input type="file" name="clients_file" accept=".xls,.xlsx" style="padding:8px;border:1.5px solid #e2e8f0;border-radius:8px;font-size:13px;font-family:inherit;width:100%;background:white">'
         + '</div>'
         # Department settings section
@@ -7388,14 +7473,14 @@ def build_dept_payroll_mapping_form(script_id, temp_upload_path, temp_upload_ext
         + 'var deptJsonInput=document.getElementById("deptSettingsJsonInput");'
         + 'var deptTableBody=document.getElementById("deptTableBody");'
         + 'var selectStyles={critical:{bg:"#fff7ed",border:"#fb923c",shadow:"rgba(249,115,22,.14)"},meta:{bg:"#eff6ff",border:"#60a5fa",shadow:"rgba(59,130,246,.12)"},table_exact:{bg:"#ecfdf5",border:"#4ade80",shadow:"rgba(34,197,94,.14)"},empty:{bg:"#ffffff",border:"#e2e8f0",shadow:"rgba(148,163,184,.08)"}};'
-        + 'function toggleManualInputs(sel){if(sel.name==="hourly_rate_source"){var w=document.querySelector("[data-manual-wrap=\'hourly_rate\']");if(w)w.style.display=(sel.value==="__manual__")?"block":"none";}if(sel.name==="housing_source"){var w2=document.querySelector("[data-manual-wrap=\'housing\']");if(w2)w2.style.display=(sel.value==="__manual__")?"block":"none";}}'
+        + 'function toggleManualInputs(sel){if(sel.name==="hourly_rate_source"){var w=document.querySelector("[data-manual-wrap=\'hourly_rate\']");if(w)w.style.display=(!sel.value)?"block":"none";}if(sel.name==="housing_source"){var w2=document.querySelector("[data-manual-wrap=\'housing\']");if(w2)w2.style.display=(!sel.value)?"block":"none";}}'
         + 'function applySelectVisual(sel){var opt=sel.options[sel.selectedIndex];var kind=(opt&&opt.getAttribute("data-source-kind"))||"empty";var style=selectStyles[kind]||selectStyles.empty;sel.style.backgroundColor=style.bg;sel.style.borderColor=style.border;sel.style.boxShadow="0 0 0 3px "+style.shadow;toggleManualInputs(sel);}'
-        + 'function refreshOptionLabels(){var assignments={};fieldSelects.forEach(function(sel){if(sel.value){assignments[sel.value]=sel.name;}});fieldSelects.forEach(function(sel){Array.prototype.forEach.call(sel.options,function(opt){var base=opt.getAttribute("data-base-label")||opt.text;var assigned=assignments[opt.value];var suffix="";if(opt.value && assigned && assigned!==sel.name && opt.value!=="__manual__" && opt.value!=="__auto__"){suffix=" [נבחר עבור "+(fieldLabels[assigned]||assigned)+"]";}opt.text=base+suffix;});applySelectVisual(sel);});}'
-        + 'function clearDuplicateSelections(changedSelect){if(!changedSelect.value || changedSelect.value==="__manual__" || changedSelect.value==="__auto__"){refreshOptionLabels();return;}fieldSelects.forEach(function(sel){if(sel!==changedSelect && sel.value===changedSelect.value){sel.value="";}});refreshOptionLabels();}'
+        + 'function refreshOptionLabels(){var assignments={};fieldSelects.forEach(function(sel){if(sel.value){assignments[sel.value]=sel.name;}});fieldSelects.forEach(function(sel){Array.prototype.forEach.call(sel.options,function(opt){var base=opt.getAttribute("data-base-label")||opt.text;var assigned=assignments[opt.value];var suffix="";if(opt.value && assigned && assigned!==sel.name && opt.value!=="__auto__"){suffix=" [נבחר עבור "+(fieldLabels[assigned]||assigned)+"]";}opt.text=base+suffix;});applySelectVisual(sel);});}'
+        + 'function clearDuplicateSelections(changedSelect){if(!changedSelect.value || changedSelect.value==="__auto__"){refreshOptionLabels();return;}fieldSelects.forEach(function(sel){if(sel!==changedSelect && sel.value===changedSelect.value){sel.value="";}});refreshOptionLabels();}'
         # Department table functions
-        + 'var deptFields=["dept_number","customer_name","region_manager","address","charge_rate","contact_person","contact_phone","hourly_rate","housing"];'
+        + 'var deptFields=["customer_name","region_manager","address","charge_rate","contact_person","contact_phone"];'
         + 'function createDeptRow(data){data=data||{};var tr=document.createElement("tr");tr.style.borderBottom="1px solid #e2e8f0";deptFields.forEach(function(f){var td=document.createElement("td");td.style.padding="4px 3px";var inp=document.createElement("input");inp.type="text";inp.setAttribute("data-dept-field",f);inp.value=data[f]||"";inp.style.cssText="width:100%;padding:6px 8px;border:1.5px solid #e2e8f0;border-radius:6px;font-size:12px;font-family:inherit;outline:none;min-width:80px";inp.addEventListener("input",syncDeptJson);td.appendChild(inp);tr.appendChild(td);});var tdDel=document.createElement("td");tdDel.style.padding="4px 3px";var btn=document.createElement("button");btn.type="button";btn.textContent="✕";btn.style.cssText="background:#fee2e2;color:#dc2626;border:none;border-radius:6px;padding:4px 10px;cursor:pointer;font-size:13px";btn.addEventListener("click",function(){tr.remove();syncDeptJson();});tdDel.appendChild(btn);tr.appendChild(tdDel);deptTableBody.appendChild(tr);return tr;}'
-        + 'function syncDeptJson(){var rows=deptTableBody.querySelectorAll("tr");var data=[];rows.forEach(function(tr){var entry={};var inputs=tr.querySelectorAll("input[data-dept-field]");inputs.forEach(function(inp){entry[inp.getAttribute("data-dept-field")]=inp.value;});if(entry.dept_number){data.push(entry);}});deptJsonInput.value=JSON.stringify(data);}'
+        + 'function syncDeptJson(){var rows=deptTableBody.querySelectorAll("tr");var data=[];rows.forEach(function(tr){var entry={};var inputs=tr.querySelectorAll("input[data-dept-field]");inputs.forEach(function(inp){entry[inp.getAttribute("data-dept-field")]=inp.value;});if(entry.customer_name){data.push(entry);}});deptJsonInput.value=JSON.stringify(data);}'
         + 'function loadDeptRows(arr){deptTableBody.innerHTML="";(arr||[]).forEach(function(d){createDeptRow(d);});if(!arr||arr.length===0){createDeptRow();}syncDeptJson();}'
         # Load initial data
         + 'try{var initData=JSON.parse(deptJsonInput.value||"[]");loadDeptRows(initData);}catch(e){createDeptRow();}'
@@ -7410,7 +7495,7 @@ def build_dept_payroll_mapping_form(script_id, temp_upload_path, temp_upload_ext
         + 'var headers=lines[0].split(",");var data=[];'
         + 'for(var i=1;i<lines.length;i++){var vals=lines[i].split(",");var entry={};'
         + 'for(var j=0;j<deptFields.length&&j<vals.length;j++){entry[deptFields[j]]=(vals[j]||"").replace(/^"|"$/g,"").trim();}'
-        + 'if(entry.dept_number)data.push(entry);}'
+        + 'if(entry.customer_name)data.push(entry);}'
         + 'loadDeptRows(data);'
         + '}catch(err){alert("שגיאה בקריאת הקובץ: "+err.message);}'
         + '};'
@@ -9998,9 +10083,9 @@ def run_script(script_id):
                             show_lang_switch=True,
                         )
                     dept_manual_missing = []
-                    if mapping.get("hourly_rate_source") == "__manual__" and not dept_manual_values.get("manual_hourly_rate"):
+                    if not mapping.get("hourly_rate_source") and not dept_manual_values.get("manual_hourly_rate"):
                         dept_manual_missing.append("תעריף שעתי")
-                    if mapping.get("housing_source") == "__manual__" and not dept_manual_values.get("manual_housing"):
+                    if not mapping.get("housing_source") and not dept_manual_values.get("manual_housing"):
                         dept_manual_missing.append("חיוב דירה")
                     if dept_manual_missing:
                         inspection = build_dept_payroll_mapping_options(inp, ext)
