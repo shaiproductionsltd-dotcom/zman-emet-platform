@@ -7452,7 +7452,7 @@ def build_dept_payroll_mapping_options(input_path, extension):
         suggested = ""
         keywords = DEPT_PAYROLL_SUGGESTION_KEYWORDS.get(field_name, [])
         if field_name == "payable_hours_source":
-            for preferred in ["שלתשלום", "שעותלתשלום", "שעותמשולמות", "נוכחות", "סהכ", "רגילות"]:
+            for preferred in ["נוכחות", "שלתשלום", "שעותלתשלום", "שעותמשולמות", "סהכ", "רגילות"]:
                 for option in deduped:
                     token = option.get("match_token", "")
                     if preferred in token:
