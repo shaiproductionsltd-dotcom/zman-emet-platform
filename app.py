@@ -7220,6 +7220,29 @@ def build_dept_payroll_mapping_options(input_path, extension):
     worker_blocks = list(iter_flamingo_worker_blocks(workbook_kind, workbook))
     if not worker_blocks:
         raise ValueError("לא זוהו גיליונות עובדים בדוח הנוכחות")
+    # Extract all unique client names from תנועות מיוחדות across all workers
+    detected_clients = set()
+    for detail_sheet_block, summary_sheet_block in worker_blocks:
+        tnuot_row = find_sheet_label_row(detail_sheet_block, workbook_kind, "תנועות מיוחדות")
+        if tnuot_row >= 0:
+            rows_count, cols_count = get_flamingo_sheet_dims(detail_sheet_block, workbook_kind)
+            for r in range(tnuot_row + 1, min(rows_count, tnuot_row + 20)):
+                for c in range(cols_count):
+                    label_val = stringify_excel_value(get_flamingo_sheet_cell(detail_sheet_block, workbook_kind, r, c))
+                    if label_val and label_val.strip():
+                        # Check if there's a numeric value nearby (confirming it's a real entry)
+                        for nc in range(c + 1, min(cols_count, c + 5)):
+                            val = get_flamingo_sheet_cell(detail_sheet_block, workbook_kind, r, nc)
+                            if val in ("", None):
+                                continue
+                            try:
+                                float(str(val).replace(",", ""))
+                                detected_clients.add(label_val.strip())
+                            except (ValueError, TypeError):
+                                pass
+                            break
+                    break
+    detected_clients = sorted(detected_clients)
     detail_sheet, summary_sheet = worker_blocks[0]
     meta_options = collect_flamingo_meta_candidates(detail_sheet, workbook_kind)
     header_options = collect_dept_daily_header_candidates(detail_sheet, workbook_kind)
@@ -7297,6 +7320,7 @@ def build_dept_payroll_mapping_options(input_path, extension):
         "options_by_field": options_by_field,
         "suggestions": suggestions,
         "suggested_template_name": "תבנית לקוחות",
+        "detected_clients": detected_clients,
     }
 
 
@@ -7483,11 +7507,14 @@ def build_dept_payroll_mapping_form(script_id, temp_upload_path, temp_upload_ext
         + 'function clearDuplicateSelections(changedSelect){if(!changedSelect.value || changedSelect.value==="__auto__"){refreshOptionLabels();return;}fieldSelects.forEach(function(sel){if(sel!==changedSelect && sel.value===changedSelect.value){sel.value="";}});refreshOptionLabels();}'
         # Department table functions
         + 'var deptFields=["customer_name","region_manager","address","charge_rate","contact_person","contact_phone"];'
-        + 'function createDeptRow(data){data=data||{};var tr=document.createElement("tr");tr.style.borderBottom="1px solid #e2e8f0";deptFields.forEach(function(f){var td=document.createElement("td");td.style.padding="4px 3px";var inp=document.createElement("input");inp.type="text";inp.setAttribute("data-dept-field",f);inp.value=data[f]||"";inp.style.cssText="width:100%;padding:6px 8px;border:1.5px solid #e2e8f0;border-radius:6px;font-size:12px;font-family:inherit;outline:none;min-width:80px";inp.addEventListener("input",syncDeptJson);td.appendChild(inp);tr.appendChild(td);});var tdDel=document.createElement("td");tdDel.style.padding="4px 3px";var btn=document.createElement("button");btn.type="button";btn.textContent="✕";btn.style.cssText="background:#fee2e2;color:#dc2626;border:none;border-radius:6px;padding:4px 10px;cursor:pointer;font-size:13px";btn.addEventListener("click",function(){tr.remove();syncDeptJson();});tdDel.appendChild(btn);tr.appendChild(tdDel);deptTableBody.appendChild(tr);return tr;}'
+        + 'var detectedClients=' + json.dumps(inspection.get("detected_clients", []), ensure_ascii=False) + ';'
+        + 'function createDeptRow(data){data=data||{};var tr=document.createElement("tr");tr.style.borderBottom="1px solid #e2e8f0";deptFields.forEach(function(f){var td=document.createElement("td");td.style.padding="4px 3px";if(f==="customer_name"){var wrapper=document.createElement("div");wrapper.style.cssText="position:relative";var inp=document.createElement("input");inp.type="text";inp.setAttribute("data-dept-field",f);inp.setAttribute("list","detectedClientsList");inp.value=data[f]||"";inp.placeholder="בחר מהרשימה...";inp.style.cssText="width:100%;padding:6px 8px;border:1.5px solid #86efac;border-radius:6px;font-size:12px;font-family:inherit;outline:none;min-width:120px;background:#f0fdf4";inp.addEventListener("input",syncDeptJson);wrapper.appendChild(inp);td.appendChild(wrapper);}else{var inp=document.createElement("input");inp.type="text";inp.setAttribute("data-dept-field",f);inp.value=data[f]||"";inp.style.cssText="width:100%;padding:6px 8px;border:1.5px solid #e2e8f0;border-radius:6px;font-size:12px;font-family:inherit;outline:none;min-width:80px";inp.addEventListener("input",syncDeptJson);td.appendChild(inp);}tr.appendChild(td);});var tdDel=document.createElement("td");tdDel.style.padding="4px 3px";var btn=document.createElement("button");btn.type="button";btn.textContent="✕";btn.style.cssText="background:#fee2e2;color:#dc2626;border:none;border-radius:6px;padding:4px 10px;cursor:pointer;font-size:13px";btn.addEventListener("click",function(){tr.remove();syncDeptJson();});tdDel.appendChild(btn);tr.appendChild(tdDel);deptTableBody.appendChild(tr);return tr;}'
         + 'function syncDeptJson(){var rows=deptTableBody.querySelectorAll("tr");var data=[];rows.forEach(function(tr){var entry={};var inputs=tr.querySelectorAll("input[data-dept-field]");inputs.forEach(function(inp){entry[inp.getAttribute("data-dept-field")]=inp.value;});if(entry.customer_name){data.push(entry);}});deptJsonInput.value=JSON.stringify(data);}'
         + 'function loadDeptRows(arr){deptTableBody.innerHTML="";(arr||[]).forEach(function(d){createDeptRow(d);});if(!arr||arr.length===0){createDeptRow();}syncDeptJson();}'
-        # Load initial data
-        + 'try{var initData=JSON.parse(deptJsonInput.value||"[]");loadDeptRows(initData);}catch(e){createDeptRow();}'
+        # Build datalist for detected clients
+        + '(function(){var dl=document.createElement("datalist");dl.id="detectedClientsList";detectedClients.forEach(function(c){var opt=document.createElement("option");opt.value=c;dl.appendChild(opt);});document.body.appendChild(dl);})();'
+        # Load initial data — if empty, seed rows from detected clients
+        + 'try{var initData=JSON.parse(deptJsonInput.value||"[]");if(initData.length>0){loadDeptRows(initData);}else if(detectedClients.length>0){var seeded=detectedClients.map(function(c){return{customer_name:c};});loadDeptRows(seeded);}else{createDeptRow();}}catch(e){createDeptRow();}'
         + 'document.getElementById("addDeptRow").addEventListener("click",function(){createDeptRow();syncDeptJson();});'
         # File upload for dept settings
         + 'document.getElementById("deptFileInput").addEventListener("change",function(e){'
