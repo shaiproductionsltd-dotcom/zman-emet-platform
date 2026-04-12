@@ -11009,6 +11009,77 @@ category חייב להיות: general, payroll, attendance, hr, finance, reports
 ## פרטיות
 - אל תבקש ואל תכלול שמות עובדים, תעודות זהות, או מידע אישי.
 - השתמש רק בשמות עמודות ומבנה — אף פעם לא בנתונים אמיתיים.
+
+═══════════════════════════════════
+התנהגות כשלקוח בוחר דוגמה מהרשימה
+═══════════════════════════════════
+1. אל תשאל יותר מדי שאלות — נסה לענות מיד עם הקובץ שהוא העלה.
+2. אם חסר לך קובץ — בקש רק את מה שחסר, בצורה ממוקדת.
+3. אחרי שענית — שאל: "רוצה שאבנה לך כלי שיעשה את זה אוטומטית בכל פעם?"
+
+כשלקוח שואל משהו שלא ברשימה:
+- נסה לעזור — הרשימה היא רק השראה, לא מגבלה.
+- אם זה מעבר ליכולת שלך — הסבר בכנות ואפיין יחד איתו.
+
+═══════════════════════════════════
+ידע בחוקי עבודה ושכר ישראליים
+═══════════════════════════════════
+
+### שעות נוספות
+- שעות נוספות = מעל 8.6 שעות ביום או 45 שעות בשבוע
+- תוספת לשעות נוספות: 125% לשעתיים הראשונות, 150% לאחר מכן
+- עבודת לילה: מקסימום 58 שעות שבועיות
+- מנוחה שבועית: 36 שעות רצופות לפחות
+
+### מדרגות מס הכנסה (2025, חודשי)
+| מדרגה | הכנסה חודשית (ש"ח) | שיעור מס |
+|--------|---------------------|----------|
+| 1 | 0 – 7,010 | 10% |
+| 2 | 7,011 – 10,060 | 14% |
+| 3 | 10,061 – 16,150 | 20% |
+| 4 | 16,151 – 22,440 | 31% |
+| 5 | 22,441 – 46,690 | 35% |
+| 6 | 46,691 – 60,130 | 47% |
+| 7 | 60,131+ | 50% |
+- מס יסף: 3% נוסף על הכנסה מעל 721,560 ש"ח/שנה
+
+### נקודות זיכוי ממס
+- ערך נקודה (2025): 242 ש"ח/חודש (2,904 ש"ח/שנה)
+- תושב ישראלי (בסיס): 2.25 נקודות
+- אישה: +0.5 נקודות
+- עולה חדש: עד +3.0 נקודות (18 חודשים ראשונים)
+- ילד מתחת ל-18: +1.0 נקודה
+- הורה יחיד: +1.0 נקודה
+
+### ביטוח לאומי ומס בריאות — עובד
+- מדרגה מופחתת (עד 7,522 ש"ח): 0.4% ביטוח לאומי + 3.1% מס בריאות = 3.5%
+- מדרגה מלאה (7,523–50,695 ש"ח): 7.0% ביטוח לאומי + 5.0% מס בריאות = 12.0%
+- תקרת הכנסה מבוטחת: 50,695 ש"ח/חודש
+
+### ביטוח לאומי ומס בריאות — מעסיק
+- מדרגה מופחתת: 3.8% ביטוח לאומי + 3.4% מס בריאות = 7.2%
+- מדרגה מלאה: 7.6% ביטוח לאומי + 3.45% מס בריאות = 11.05%
+
+### פנסיה (חובה מ-2017)
+- עובד: 6% מהשכר
+- מעסיק: 6.5% פנסיה + 6% פיצויים
+
+### חישוב שכר נטו
+נטו = ברוטו − מס הכנסה − ביטוח לאומי (עובד) − מס בריאות (עובד) − פנסיה (עובד) − ניכויים אחרים
+
+### עלות מעסיק
+עלות = ברוטו + ביטוח לאומי (מעסיק) + מס בריאות (מעסיק) + פנסיה (מעסיק) + פיצויים + צבירת חופשה + צבירת מחלה
+
+חשוב: כשלקוח שואל על ציות, חישובי שכר, או חוקי עבודה — ציין תמיד: "מדובר בהערכה. מומלץ לאמת מול יועץ משפטי או רואה חשבון."
+
+═══════════════════════════════════
+טון ושפה
+═══════════════════════════════════
+- דבר בעברית תמיד, גם אם הלקוח כתב באנגלית
+- טון חברותי ומקצועי — לא רובוטי
+- תשובות קצרות וממוקדות — אל תסביר יותר ממה שנשאל
+- כשמציג נתונים — השתמש בטבלה ברורה
+- הוסף אימוג'י בצורה מינימלית ומקצועית
 """
 
 
@@ -12110,6 +12181,16 @@ def tools_create():
         '.typing-dots span:nth-child(2){animation-delay:.2s}'
         '.typing-dots span:nth-child(3){animation-delay:.4s}'
         '.typing-label{font-size:13px;color:#2563eb;font-weight:600}'
+        # Suggestion categories
+        '#suggestionsPanel{padding:4px 16px 12px;display:flex;flex-direction:column;gap:6px}'
+        '.suggest-cat{border:1px solid #e2e8f0;border-radius:12px;overflow:hidden;transition:all .2s}'
+        '.suggest-cat:hover{border-color:#93c5fd}'
+        '.suggest-cat-header{padding:10px 14px;font-size:14px;font-weight:700;cursor:pointer;background:#f8fafc;color:#1e3a8a;display:flex;align-items:center;gap:6px;user-select:none}'
+        '.suggest-cat-header:hover{background:#eff6ff}'
+        '.suggest-cat-items{display:none;padding:6px 10px 10px;flex-wrap:wrap;gap:6px}'
+        '.suggest-cat.open .suggest-cat-items{display:flex}'
+        '.suggest-btn{border:1px solid #dbeafe;background:white;color:#1e3a8a;border-radius:20px;padding:7px 14px;font-size:12.5px;cursor:pointer;transition:all .15s;font-family:inherit;white-space:nowrap;line-height:1.4}'
+        '.suggest-btn:hover{background:#dbeafe;border-color:#93c5fd;transform:translateY(-1px);box-shadow:0 2px 6px rgba(37,99,235,0.12)}'
         # Input area
         '.chat-input-area{border-top:1px solid #e2e8f0;background:white;padding:12px 16px;flex-shrink:0}'
         '.chat-input-row{display:flex;gap:8px;align-items:flex-end}'
@@ -12200,13 +12281,71 @@ def tools_create():
         # Welcome message
         '<div class="chat-bubble chat-ai">'
         '<div class="chat-bubble-inner chat-ai-inner">'
-        'שלום! &#128075; אני העוזר החכם של Scriptly.<br><br>'
-        '<b>מה אני יכול לעשות בשבילך?</b><br>'
-        '&#128269; <b>לנתח קובץ</b> — העלה קובץ ושאל שאלה, אני אנתח ואענה<br>'
-        '&#128736; <b>לבנות כלי חדש</b> — אני אשאל אותך שאלות ואבנה אפיון מדויק<br>'
-        '&#9998; <b>לשפר כלי קיים</b> — לחץ על הכפתור למטה<br><br>'
-        'אפשר להעלות קבצים (Excel, CSV, Word, PDF, תמונות) ואני אזהה את המבנה בשבילך.'
+        '&#128075; שלום! אני העוזר החכם של Scriptly.<br><br>'
+        'אני יכול לעזור לך ב-3 דרכים:<br><br>'
+        '&#128269; <b>נתח קובץ עכשיו</b><br>'
+        '<span style="color:#475569;font-size:13px">פשוט תעלה קובץ ותשאל אותי כל שאלה — אענה מיד.</span><br><br>'
+        '&#128295; <b>שפר כלי קיים</b><br>'
+        '<span style="color:#475569;font-size:13px">רוצה לשנות כלי שכבר יש לך? אני אעשה שינויים פשוטים מיד, או אאפיין יחד איתך שינויים מורכבים.</span><br><br>'
+        '&#10024; <b>בנה כלי חדש</b><br>'
+        '<span style="color:#475569;font-size:13px">ספר לי מה אתה צריך — אשאל אותך שאלות מדויקות ואכין בריף מלא שהמפתח יוכל לבנות בשבילך.</span><br><br>'
+        '&#128161; <b>לא יודע מאיפה להתחיל? הנה מה שאחרים מבקשים:</b>'
         '</div></div>'
+        # Suggestion categories
+        '<div id="suggestionsPanel">'
+        '<div class="suggest-cat" onclick="toggleCat(this)">'
+        '<div class="suggest-cat-header">&#128336; נוכחות ושעות</div>'
+        '<div class="suggest-cat-items">'
+        '<button class="suggest-btn" onclick="pickSuggestion(this)">מי לא הגיע היום?</button>'
+        '<button class="suggest-btn" onclick="pickSuggestion(this)">מי קרוב לחריגת שעות נוספות החודש?</button>'
+        '<button class="suggest-btn" onclick="pickSuggestion(this)">כמה שעות עבד כל עובד השבוע?</button>'
+        '<button class="suggest-btn" onclick="pickSuggestion(this)">מי עבד בשבת או בחג?</button>'
+        '<button class="suggest-btn" onclick="pickSuggestion(this)">הצג לי עובדים עם יותר מ-X שעות נוספות החודש</button>'
+        '</div></div>'
+        '<div class="suggest-cat" onclick="toggleCat(this)">'
+        '<div class="suggest-cat-header">&#128176; שכר וחישובים</div>'
+        '<div class="suggest-cat-items">'
+        '<button class="suggest-btn" onclick="pickSuggestion(this)">כמה שעות נוספות צריך לשלם החודש?</button>'
+        '<button class="suggest-btn" onclick="pickSuggestion(this)">מי זכאי לבונוס לפי הביצועים שלו?</button>'
+        '<button class="suggest-btn" onclick="pickSuggestion(this)">חשב לי את עלות כוח האדם לפי מחלקה</button>'
+        '<button class="suggest-btn" onclick="pickSuggestion(this)">מי קיבל העלאת שכר השנה ומי לא?</button>'
+        '<button class="suggest-btn" onclick="pickSuggestion(this)">מה ההפרש בין שכר גברים לנשים באותה רמה?</button>'
+        '</div></div>'
+        '<div class="suggest-cat" onclick="toggleCat(this)">'
+        '<div class="suggest-cat-header">&#128197; היעדרויות וחופשות</div>'
+        '<div class="suggest-cat-items">'
+        '<button class="suggest-btn" onclick="pickSuggestion(this)">מי ניצל יותר מ-X ימי מחלה השנה?</button>'
+        '<button class="suggest-btn" onclick="pickSuggestion(this)">מי מסיים את ימי החופשה שלו בסוף השנה?</button>'
+        '<button class="suggest-btn" onclick="pickSuggestion(this)">הצג לי תמונת היעדרויות לפי מחלקה</button>'
+        '<button class="suggest-btn" onclick="pickSuggestion(this)">מי בחל&quot;ת או בחופשת לידה כרגע?</button>'
+        '<button class="suggest-btn" onclick="pickSuggestion(this)">כמה ימי מחלה נוצלו לעומת אשתקד?</button>'
+        '</div></div>'
+        '<div class="suggest-cat" onclick="toggleCat(this)">'
+        '<div class="suggest-cat-header">&#128101; כוח אדם וניהול</div>'
+        '<div class="suggest-cat-items">'
+        '<button class="suggest-btn" onclick="pickSuggestion(this)">מי מסיים חוזה בחודשיים הקרובים?</button>'
+        '<button class="suggest-btn" onclick="pickSuggestion(this)">כמה עובדים יש לי בכל מחלקה?</button>'
+        '<button class="suggest-btn" onclick="pickSuggestion(this)">מי עובד אצלנו יותר מ-5 שנים?</button>'
+        '<button class="suggest-btn" onclick="pickSuggestion(this)">הצג לי עובדים חדשים מהחצי שנה האחרונה</button>'
+        '<button class="suggest-btn" onclick="pickSuggestion(this)">מי הגיע לגיל פרישה השנה?</button>'
+        '</div></div>'
+        '<div class="suggest-cat" onclick="toggleCat(this)">'
+        '<div class="suggest-cat-header">&#9878;&#65039; ציות וחוקי עבודה</div>'
+        '<div class="suggest-cat-items">'
+        '<button class="suggest-btn" onclick="pickSuggestion(this)">מי חרג ממכסת שעות נוספות חוקית?</button>'
+        '<button class="suggest-btn" onclick="pickSuggestion(this)">מי לא קיבל מנוחה שבועית כחוק?</button>'
+        '<button class="suggest-btn" onclick="pickSuggestion(this)">הצג לי עובדי לילה שחרגו מ-58 שעות שבועיות</button>'
+        '<button class="suggest-btn" onclick="pickSuggestion(this)">מי לא קיבל תלוש שכר החודש?</button>'
+        '</div></div>'
+        '<div class="suggest-cat" onclick="toggleCat(this)">'
+        '<div class="suggest-cat-header">&#128202; ניתוח וטרנדים</div>'
+        '<div class="suggest-cat-items">'
+        '<button class="suggest-btn" onclick="pickSuggestion(this)">השווה נוכחות החודש לעומת החודש שעבר</button>'
+        '<button class="suggest-btn" onclick="pickSuggestion(this)">מאיזו מחלקה יש הכי הרבה תחלופת עובדים?</button>'
+        '<button class="suggest-btn" onclick="pickSuggestion(this)">הצג לי גרף עלויות כוח אדם לאורך השנה</button>'
+        '<button class="suggest-btn" onclick="pickSuggestion(this)">מי השתפר/הידרדר בביצועים לאורך זמן?</button>'
+        '</div></div>'
+        '</div>'
         + msgs_html
         + '</div>'
         # Input area
@@ -12242,6 +12381,22 @@ def tools_create():
         'function scrollToBottom(){'
         '  var el = document.getElementById("chatMessages");'
         '  if(el) el.scrollTop = el.scrollHeight;'
+        '}'
+        ''
+        'function toggleCat(el){'
+        '  if(event.target.classList.contains("suggest-btn")) return;'
+        '  el.classList.toggle("open");'
+        '}'
+        ''
+        'function pickSuggestion(btn){'
+        '  event.stopPropagation();'
+        '  var text = btn.innerText.trim();'
+        '  var inp = document.getElementById("chatInput");'
+        '  inp.value = text;'
+        '  /* Hide suggestions panel */'
+        '  var panel = document.getElementById("suggestionsPanel");'
+        '  if(panel) panel.style.display = "none";'
+        '  sendChatMessage();'
         '}'
         ''
         'function escapeHtml(t){'
@@ -12430,6 +12585,9 @@ def tools_create():
         '  var inp = document.getElementById("chatInput");'
         '  var msg = inp.value.trim();'
         '  if(!msg) return;'
+        '  /* Hide suggestions on first message */'
+        '  var sp = document.getElementById("suggestionsPanel");'
+        '  if(sp) sp.style.display = "none";'
         '  inp.value = "";'
         '  inp.style.height = "42px";'
         '  /* Build bubble with file chips if any */'
