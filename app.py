@@ -3919,7 +3919,20 @@ def extract_dept_payroll_worker(detail_sheet, summary_sheet, workbook_kind, mapp
                     total_hours = parse_hours_value(total_hours_raw)
                 except (ValueError, TypeError):
                     total_hours = 0
-            if client_name or total_hours:
+            # Include any row that has meaningful data
+            # A real daily row must have a date — rows without dates are summary/total rows
+            has_any_data = client_name or total_hours or entry_time or exit_time
+            if has_any_data and date_val:
+                # Track what's missing for red-highlighting in output
+                missing = []
+                if not entry_time:
+                    missing.append("חסרה כניסה")
+                if not exit_time:
+                    missing.append("חסרה יציאה")
+                if not client_name:
+                    missing.append("חסר אירוע/לקוח")
+                if not total_hours:
+                    missing.append("חסר סה\"כ שעות")
                 daily_rows.append({
                     "date": date_val,
                     "day_name": day_name,
@@ -3927,6 +3940,7 @@ def extract_dept_payroll_worker(detail_sheet, summary_sheet, workbook_kind, mapp
                     "exit_time": exit_time,
                     "client_name": client_name,
                     "total_hours": total_hours,
+                    "missing": missing,
                 })
 
     # ── Extract תנועות מיוחדות section ──
@@ -4335,10 +4349,13 @@ def write_dept_payroll_output_v2(output_path, worker_rows, dept_settings, client
 
         # Group daily rows by client
         client_daily = {}
+        unassigned_daily = []
         for dr in w.get("daily_rows", []):
             cn = dr.get("client_name", "").strip()
             if cn:
                 client_daily.setdefault(cn, []).append(dr)
+            else:
+                unassigned_daily.append(dr)
 
         # Build per-client subtotals from תנועות מיוחדות or daily sums
         # Filter out non-client entries (vacation, sick, holidays)
@@ -4362,6 +4379,8 @@ def write_dept_payroll_output_v2(output_path, worker_rows, dept_settings, client
             elif cn not in client_hours:
                 client_hours[cn] = round(sum(dr.get("total_hours", 0) for dr in drs), 2)
 
+        unassigned_hours = round(sum(dr.get("total_hours", 0) for dr in unassigned_daily), 2)
+
         w_calc = {
             **w,
             "hourly_rate": hourly_rate,
@@ -4371,6 +4390,8 @@ def write_dept_payroll_output_v2(output_path, worker_rows, dept_settings, client
             "insurance": INSURANCE if gross else 0,
             "net": net,
             "client_daily": client_daily,
+            "unassigned_daily": unassigned_daily,
+            "unassigned_hours": unassigned_hours,
             "client_hours": client_hours,
             "attendance_events": attendance_events,
         }
@@ -4496,6 +4517,68 @@ def write_dept_payroll_output_v2(output_path, worker_rows, dept_settings, client
 
         grand_charge_total += client_total_charge
 
+    # ── Unassigned hours section (workers with hours not tied to any client) ──
+    unassigned_error_fill = PatternFill(start_color="FEE2E2", end_color="FEE2E2", fill_type="solid")
+    unassigned_error_font = Font(color="991B1B")
+    unassigned_header_font = Font(bold=True, size=11, color="991B1B")
+    unassigned_header_fill = PatternFill(start_color="FECACA", end_color="FECACA", fill_type="solid")
+
+    workers_with_unassigned = [wc for wc in worker_calculations if wc.get("unassigned_daily")]
+    if workers_with_unassigned:
+        ws1.merge_cells(start_row=row, start_column=1, end_row=row, end_column=8)
+        cell = ws1.cell(row=row, column=1, value="שעות ללא שיוך לקוח")
+        cell.font = unassigned_header_font
+        cell.fill = unassigned_header_fill
+        cell.alignment = Alignment(horizontal="right")
+        row += 1
+
+        unassigned_headers = ["שם עובד", "תאריך", "כניסה", "יציאה", "שעות", "הערה", "", ""]
+        style_header_row(ws1, row, unassigned_headers)
+        row += 1
+
+        total_unassigned = 0
+        for wc in workers_with_unassigned:
+            first = True
+            for dr in wc["unassigned_daily"]:
+                c1 = write_cell(ws1, row, 1, wc["worker_name"] if first else "")
+                c2 = write_cell(ws1, row, 2, dr.get("date", ""))
+                c3 = write_cell(ws1, row, 3, dr.get("entry_time", ""))
+                c4 = write_cell(ws1, row, 4, dr.get("exit_time", ""))
+                c5 = write_cell(ws1, row, 5, dr.get("total_hours", 0), fmt=num_fmt)
+                missing = dr.get("missing", [])
+                note = " | ".join(missing) if missing else "חסר אירוע/לקוח"
+                c6 = write_cell(ws1, row, 6, note)
+                for c in [c1, c2, c3, c4, c5, c6]:
+                    c.fill = unassigned_error_fill
+                    c.font = unassigned_error_font
+                row += 1
+                first = False
+            total_unassigned += wc.get("unassigned_hours", 0)
+
+        write_cell(ws1, row, 1, f"סה\"כ שעות ללא שיוך ({len(workers_with_unassigned)} עובדים)", font=Font(bold=True, color="991B1B"), fill=unassigned_error_fill)
+        for col_idx in range(2, 9):
+            write_cell(ws1, row, col_idx, "", fill=unassigned_error_fill)
+        write_cell(ws1, row, 5, round(total_unassigned, 2), font=Font(bold=True, color="991B1B"), fill=unassigned_error_fill, fmt=num_fmt)
+        row += 2
+
+    # ── Workers with NO data at all ──
+    workers_no_data = [wc for wc in worker_calculations if not wc.get("daily_rows") and not wc.get("special_movements")]
+    if workers_no_data:
+        ws1.merge_cells(start_row=row, start_column=1, end_row=row, end_column=8)
+        cell = ws1.cell(row=row, column=1, value="עובדים ללא נתוני נוכחות")
+        cell.font = unassigned_header_font
+        cell.fill = unassigned_header_fill
+        cell.alignment = Alignment(horizontal="right")
+        row += 1
+        for wc in workers_no_data:
+            c1 = write_cell(ws1, row, 1, wc["worker_name"])
+            c2 = write_cell(ws1, row, 2, "לא נמצאו נתוני עבודה בדוח")
+            for c in [c1, c2]:
+                c.fill = unassigned_error_fill
+                c.font = unassigned_error_font
+            row += 1
+        row += 1
+
     # Grand total
     if client_workers:
         write_cell(ws1, row, 1, "סה\"כ חיוב כל הלקוחות", font=grand_font, fill=grand_fill)
@@ -4534,18 +4617,34 @@ def write_dept_payroll_output_v2(output_path, worker_rows, dept_settings, client
         row += 1
 
         # Daily breakdown headers
-        daily_headers = ["תאריך", "יום", "כניסה", "יציאה", "אירוע/לקוח", "שעות"]
+        daily_headers = ["תאריך", "יום", "כניסה", "יציאה", "אירוע/לקוח", "שעות", "הערות"]
         style_header_row(ws2, row, daily_headers)
         row += 1
 
-        for dr in wc.get("daily_rows", []):
-            write_cell(ws2, row, 1, dr.get("date", ""))
-            write_cell(ws2, row, 2, dr.get("day_name", ""))
-            write_cell(ws2, row, 3, dr.get("entry_time", ""))
-            write_cell(ws2, row, 4, dr.get("exit_time", ""))
-            write_cell(ws2, row, 5, dr.get("client_name", ""))
-            write_cell(ws2, row, 6, dr.get("total_hours", 0), fmt=num_fmt)
+        daily_rows_list = wc.get("daily_rows", [])
+        if not daily_rows_list:
+            # No daily data at all — show a red warning row
+            c1 = write_cell(ws2, row, 1, "לא נמצאו נתוני נוכחות לעובד זה")
+            for col_idx in range(2, 8):
+                write_cell(ws2, row, col_idx, "", fill=attn_fill)
+            c1.fill = attn_fill
+            c1.font = Font(bold=True, color="991B1B")
             row += 1
+        else:
+            for dr in daily_rows_list:
+                missing = dr.get("missing", [])
+                row_has_error = bool(missing)
+                err_fill = attn_fill if row_has_error else None
+                err_font = Font(color="991B1B") if row_has_error else None
+                write_cell(ws2, row, 1, dr.get("date", ""), fill=err_fill, font=err_font)
+                write_cell(ws2, row, 2, dr.get("day_name", ""), fill=err_fill, font=err_font)
+                write_cell(ws2, row, 3, dr.get("entry_time", "") or ("—" if row_has_error else ""), fill=err_fill, font=err_font)
+                write_cell(ws2, row, 4, dr.get("exit_time", "") or ("—" if row_has_error else ""), fill=err_fill, font=err_font)
+                write_cell(ws2, row, 5, dr.get("client_name", "") or ("—" if row_has_error else ""), fill=err_fill, font=err_font)
+                write_cell(ws2, row, 6, dr.get("total_hours", 0), fmt=num_fmt, fill=err_fill, font=err_font)
+                if missing:
+                    write_cell(ws2, row, 7, " | ".join(missing), fill=err_fill, font=Font(size=9, color="991B1B"))
+                row += 1
 
         # Per-client subtotals from תנועות מיוחדות
         if wc.get("client_hours"):
@@ -4567,6 +4666,14 @@ def write_dept_payroll_output_v2(output_path, worker_rows, dept_settings, client
                 ws2.cell(row=row, column=1).font = Font(size=10, color="6B21A8")
                 write_cell(ws2, row, 6, ev_hrs, fmt=num_fmt)
                 row += 1
+
+        # Unassigned hours summary
+        if wc.get("unassigned_hours"):
+            row += 1
+            c = write_cell(ws2, row, 1, f"שעות ללא שיוך לקוח: {wc['unassigned_hours']}", font=Font(bold=True, size=10, color="991B1B"))
+            c.fill = attn_fill
+            write_cell(ws2, row, 6, wc["unassigned_hours"], fmt=num_fmt, fill=attn_fill, font=Font(color="991B1B"))
+            row += 1
 
         # Calculation block
         row += 1
@@ -4617,12 +4724,16 @@ def write_dept_payroll_output_v2(output_path, worker_rows, dept_settings, client
     row += 2
 
     # Summary metrics
+    total_unassigned_hours = round(sum(wc.get("unassigned_hours", 0) for wc in worker_calculations), 2)
+    total_assigned_hours = round(sum(sum(wc.get("client_hours", {}).values()) for wc in worker_calculations), 2)
     expected_profit = round(grand_charge_total - grand_total_net, 2)
     summary_items = [
         ("סה\"כ שולם לעובדים (נטו)", round(grand_total_net, 2)),
         ("סה\"כ ברוטו עובדים", round(grand_total_gross, 2)),
         ("סה\"כ חיוב ללקוחות", round(grand_charge_total, 2)),
         ("רווח צפוי (חיוב − נטו)", expected_profit),
+        ("סה\"כ שעות משויכות ללקוחות", total_assigned_hours),
+        ("סה\"כ שעות ללא שיוך לקוח", total_unassigned_hours),
     ]
     summary_headers = ["פריט", "סכום"]
     style_header_row(ws3, row, summary_headers)
@@ -4754,6 +4865,11 @@ def write_dept_payroll_output_v2(output_path, worker_rows, dept_settings, client
     for wc in worker_calculations:
         if not wc.get("hourly_rate"):
             alerts.append((2, "עובד", wc["worker_name"], "חסר תעריף שעתי", "לא ניתן לחשב ברוטו ונטו ללא תעריף שעתי."))
+
+    # 5. Workers with unassigned hours (warning)
+    for wc in worker_calculations:
+        if wc.get("unassigned_hours"):
+            alerts.append((2, "עובד", wc["worker_name"], f"שעות ללא שיוך לקוח ({wc['unassigned_hours']})", "ימי עבודה ללא אירוע/לקוח — השעות לא ייחשבו בחיוב ללקוח."))
 
     # Sort by priority (1=critical first, 3=info last)
     alerts.sort(key=lambda a: a[0])
@@ -7503,9 +7619,8 @@ def build_dept_payroll_mapping_form(script_id, temp_upload_path, temp_upload_ext
         + '<select id="selectedDeptTemplateId" name="selected_template_id" style="padding:9px 12px;border:1.5px solid #e2e8f0;border-radius:8px;font-size:13px;font-family:inherit;outline:none;width:100%;background:white">' + template_options + '</select>'
         + '<button type="submit" name="mapping_action" value="delete_template" class="btn btn-gray" style="min-width:104px;padding-inline:14px;white-space:nowrap">מחיקה</button>'
         + '</div>'
-        + '<label style="display:flex;align-items:center;gap:6px;font-size:13px;color:#334155;margin-bottom:10px"><input type="checkbox" name="save_template" value="1"> שמור כתבנית חדשה</label>'
-        + '<label class="field-label">שם תבנית חדשה</label>'
-        + '<input type="text" name="template_name" value="' + esc(template_name_value) + '" placeholder="שם תבנית" style="margin-bottom:0">'
+        + '<input type="hidden" name="save_template" id="deptSaveTemplateFlag" value="0">'
+        + '<input type="hidden" name="template_name" id="deptTemplateNameInput" value="">'
         + '<div style="font-size:12px;color:#64748b;line-height:1.7;margin-top:10px">התבנית שומרת את מיפוי השדות וגם את הגדרת פרטי הלקוחות, כך שלא צריך להזין אותם מחדש בכל חודש.</div>'
         + '</div>'
         # Mapping fields
@@ -7536,6 +7651,16 @@ def build_dept_payroll_mapping_form(script_id, temp_upload_path, temp_upload_ext
         + '<button type="submit" id="deptPayrollConfirmButton" name="mapping_action" value="confirm" class="btn btn-blue" style="min-width:220px">אשר הכל והפעל חישוב</button>'
         + '<a href="/run/' + script_id + '" class="btn btn-gray" style="text-decoration:none;display:inline-flex;align-items:center;justify-content:center;min-width:150px">העלאת קובץ חדש</a>'
         + '</div>'
+        # Save template prompt modal
+        + '<div id="deptSaveTemplateModal" style="display:none;position:fixed;inset:0;background:rgba(15,23,42,.45);backdrop-filter:blur(3px);z-index:90;align-items:center;justify-content:center;padding:20px">'
+        + '<div style="width:100%;max-width:380px;background:#ffffff;border:1px solid #dbeafe;border-radius:18px;box-shadow:0 20px 50px rgba(15,23,42,.18);padding:28px 24px;text-align:center">'
+        + '<div style="font-size:28px;margin-bottom:10px">💾</div>'
+        + '<div style="font-size:17px;font-weight:800;color:#1e3a8a;margin-bottom:8px">שמירת תבנית</div>'
+        + '<div style="font-size:13px;line-height:1.7;color:#475569;margin-bottom:18px">האם לשמור את ההגדרות הנוכחיות כתבנית?<br>בפעם הבאה תוכל לטעון אותן בלחיצה אחת.</div>'
+        + '<div style="display:flex;gap:10px;justify-content:center">'
+        + '<button type="button" id="deptSaveYes" class="btn btn-blue" style="min-width:120px;font-size:14px">כן, שמור</button>'
+        + '<button type="button" id="deptSaveNo" class="btn btn-gray" style="min-width:120px;font-size:14px">לא, המשך</button>'
+        + '</div></div></div>'
         # Processing overlay
         + '<div id="deptPayrollProcessingOverlay" style="display:none;position:fixed;inset:0;background:rgba(248,250,252,.78);backdrop-filter:blur(2px);z-index:80;align-items:center;justify-content:center;padding:20px">'
         + '<div style="width:100%;max-width:320px;background:#ffffff;border:1px solid #dbeafe;border-radius:18px;box-shadow:0 20px 50px rgba(15,23,42,.14);padding:24px 20px;text-align:center">'
@@ -7632,8 +7757,15 @@ def build_dept_payroll_mapping_form(script_id, temp_upload_path, temp_upload_ext
         + 'function applyTemplate(templateId){var mapping=templateMappings[templateId]||{};if(!templateId){refreshOptionLabels();return;}fieldSelects.forEach(function(sel){sel.value=mapping[sel.name]||"";});var seen={};fieldSelects.forEach(function(sel){if(sel.value && seen[sel.value]){sel.value="";}else if(sel.value){seen[sel.value]=true;}});refreshOptionLabels();if(mapping.dept_settings_json){try{loadDeptRows(JSON.parse(mapping.dept_settings_json));}catch(e){}}}'
         + 'fieldSelects.forEach(function(sel){sel.addEventListener("change",function(){clearDuplicateSelections(sel);});});'
         + 'if(templateSelect){templateSelect.addEventListener("change",function(){applyTemplate(this.value);});}'
-        # Submit handler
-        + 'if(form){form.addEventListener("submit",function(event){var submitter=event.submitter||document.activeElement;if(!submitter||submitter.value!=="confirm"){return;}syncDeptJson();if(confirmButton){confirmButton.disabled=true;confirmButton.textContent="החישוב התחיל...";}if(overlay){overlay.style.display="flex";}document.body.style.overflow="hidden";});}'
+        # Submit handler — show save-template prompt before processing
+        + 'var saveModal=document.getElementById("deptSaveTemplateModal");'
+        + 'var saveFlag=document.getElementById("deptSaveTemplateFlag");'
+        + 'var saveNameInput=document.getElementById("deptTemplateNameInput");'
+        + 'var pendingSubmit=false;'
+        + 'function doActualSubmit(){syncDeptJson();if(confirmButton){confirmButton.disabled=true;confirmButton.textContent="החישוב התחיל...";}if(overlay){overlay.style.display="flex";}document.body.style.overflow="hidden";pendingSubmit=true;var h=document.createElement("input");h.type="hidden";h.name="mapping_action";h.value="confirm";form.appendChild(h);form.submit();}'
+        + 'document.getElementById("deptSaveYes").addEventListener("click",function(){saveFlag.value="1";var now=new Date();var pad=function(n){return n<10?"0"+n:n;};saveNameInput.value="תבנית "+pad(now.getDate())+"/"+pad(now.getMonth()+1)+"/"+now.getFullYear()+" "+pad(now.getHours())+":"+pad(now.getMinutes());saveModal.style.display="none";doActualSubmit();});'
+        + 'document.getElementById("deptSaveNo").addEventListener("click",function(){saveFlag.value="0";saveNameInput.value="";saveModal.style.display="none";doActualSubmit();});'
+        + 'if(form){form.addEventListener("submit",function(event){var submitter=event.submitter||document.activeElement;if(!submitter||submitter.value!=="confirm"){return;}if(pendingSubmit){return;}event.preventDefault();syncDeptJson();saveModal.style.display="flex";});}'
         + 'refreshOptionLabels();'
         + '})();'
         + '</script>'
