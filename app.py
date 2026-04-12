@@ -7412,13 +7412,15 @@ def build_dept_payroll_mapping_form(script_id, temp_upload_path, temp_upload_ext
         + '<div id="deptSettingsTable">'
         + '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:13px" id="deptTable">'
         + '<thead><tr style="background:#166534;color:white">'
+        + '<th style="padding:8px 4px;width:30px;text-align:center">#</th>'
         + '<th style="padding:8px 6px;white-space:nowrap">שם לקוח (תנועה מיוחדת) <span style="color:#fca5a5">*</span></th>'
         + '<th style="padding:8px 6px;white-space:nowrap">מנהל אזור</th>'
         + '<th style="padding:8px 6px;white-space:nowrap">כתובת</th>'
         + '<th style="padding:8px 6px;white-space:nowrap">תעריף גביה <span style="color:#fca5a5">*</span></th>'
         + '<th style="padding:8px 6px;white-space:nowrap">איש קשר</th>'
         + '<th style="padding:8px 6px;white-space:nowrap">טלפון</th>'
-        + '<th style="padding:8px 6px"></th>'
+        + '<th style="padding:8px 6px;white-space:nowrap">העתקה</th>'
+        + '<th style="padding:8px 4px"></th>'
         + '</tr></thead>'
         + '<tbody id="deptTableBody"></tbody>'
         + '</table></div>'
@@ -7507,15 +7509,56 @@ def build_dept_payroll_mapping_form(script_id, temp_upload_path, temp_upload_ext
         + 'function clearDuplicateSelections(changedSelect){if(!changedSelect.value || changedSelect.value==="__auto__"){refreshOptionLabels();return;}fieldSelects.forEach(function(sel){if(sel!==changedSelect && sel.value===changedSelect.value){sel.value="";}});refreshOptionLabels();}'
         # Department table functions
         + 'var deptFields=["customer_name","region_manager","address","charge_rate","contact_person","contact_phone"];'
+        + 'var copyableFields=["region_manager","address","charge_rate","contact_person","contact_phone"];'
         + 'var detectedClients=' + json.dumps(inspection.get("detected_clients", []), ensure_ascii=False) + ';'
-        + 'function createDeptRow(data){data=data||{};var tr=document.createElement("tr");tr.style.borderBottom="1px solid #e2e8f0";deptFields.forEach(function(f){var td=document.createElement("td");td.style.padding="4px 3px";if(f==="customer_name"){var wrapper=document.createElement("div");wrapper.style.cssText="position:relative";var inp=document.createElement("input");inp.type="text";inp.setAttribute("data-dept-field",f);inp.setAttribute("list","detectedClientsList");inp.value=data[f]||"";inp.placeholder="בחר מהרשימה...";inp.style.cssText="width:100%;padding:6px 8px;border:1.5px solid #86efac;border-radius:6px;font-size:12px;font-family:inherit;outline:none;min-width:120px;background:#f0fdf4";inp.addEventListener("input",syncDeptJson);wrapper.appendChild(inp);td.appendChild(wrapper);}else{var inp=document.createElement("input");inp.type="text";inp.setAttribute("data-dept-field",f);inp.value=data[f]||"";inp.style.cssText="width:100%;padding:6px 8px;border:1.5px solid #e2e8f0;border-radius:6px;font-size:12px;font-family:inherit;outline:none;min-width:80px";inp.addEventListener("input",syncDeptJson);td.appendChild(inp);}tr.appendChild(td);});var tdDel=document.createElement("td");tdDel.style.padding="4px 3px";var btn=document.createElement("button");btn.type="button";btn.textContent="✕";btn.style.cssText="background:#fee2e2;color:#dc2626;border:none;border-radius:6px;padding:4px 10px;cursor:pointer;font-size:13px";btn.addEventListener("click",function(){tr.remove();syncDeptJson();});tdDel.appendChild(btn);tr.appendChild(tdDel);deptTableBody.appendChild(tr);return tr;}'
+        # renumberRows: update row numbers and copy-dropdown options
+        + 'function renumberRows(){var trs=deptTableBody.querySelectorAll("tr");trs.forEach(function(tr,i){var numCell=tr.querySelector("[data-row-num]");if(numCell)numCell.textContent=(i+1);});}'
+        # getRowData: read all field values from a <tr>
+        + 'function getRowData(tr){var d={};tr.querySelectorAll("input[data-dept-field]").forEach(function(inp){d[inp.getAttribute("data-dept-field")]=inp.value;});return d;}'
+        # buildCopyMenu: create the copy dropdown for a row
+        + 'function buildCopyMenu(tr){var td=document.createElement("td");td.style.padding="4px 3px";td.style.whiteSpace="nowrap";'
+        + 'var sel=document.createElement("select");sel.style.cssText="padding:4px 6px;border:1.5px solid #e2e8f0;border-radius:6px;font-size:11px;font-family:inherit;background:white;cursor:pointer;min-width:90px";'
+        + 'sel.innerHTML=\'<option value="">העתק מ...</option>\';'
+        + 'sel.addEventListener("change",function(){if(!sel.value)return;var parts=sel.value.split(":");var mode=parts[0];var srcIdx=parseInt(parts[1]);'
+        + 'var allTrs=Array.prototype.slice.call(deptTableBody.querySelectorAll("tr"));if(srcIdx<0||srcIdx>=allTrs.length){sel.value="";return;}'
+        + 'var srcData=getRowData(allTrs[srcIdx]);var targetInputs=tr.querySelectorAll("input[data-dept-field]");'
+        + 'if(mode==="all"){targetInputs.forEach(function(inp){var f=inp.getAttribute("data-dept-field");if(f!=="customer_name"&&srcData[f]){inp.value=srcData[f];}});}'
+        + 'else{targetInputs.forEach(function(inp){if(inp.getAttribute("data-dept-field")===mode&&srcData[mode]){inp.value=srcData[mode];}});}'
+        + 'sel.value="";syncDeptJson();});'
+        + 'td.appendChild(sel);return td;}'
+        # refreshCopyMenus: rebuild all copy dropdown options based on current rows
+        + 'function refreshCopyMenus(){var trs=Array.prototype.slice.call(deptTableBody.querySelectorAll("tr"));'
+        + 'trs.forEach(function(tr,myIdx){var sel=tr.querySelector("select");if(!sel)return;'
+        + 'var prev=sel.value;sel.innerHTML=\'<option value="">העתק מ...</option>\';'
+        + 'trs.forEach(function(otherTr,otherIdx){if(otherIdx===myIdx)return;'
+        + 'var od=getRowData(otherTr);var label=od.customer_name||(\"שורה \"+(otherIdx+1));'
+        + 'var hasData=copyableFields.some(function(f){return od[f];});if(!hasData)return;'
+        + 'sel.innerHTML+=\'<option value="all:\'+otherIdx+\'">כל הפרטים מ\'+label+\'</option>\';'
+        + 'copyableFields.forEach(function(f){if(!od[f])return;'
+        + 'var fLabel={region_manager:"מנהל אזור",address:"כתובת",charge_rate:"תעריף גביה",contact_person:"איש קשר",contact_phone:"טלפון"}[f]||f;'
+        + 'sel.innerHTML+=\'<option value="\'+f+\':\'+otherIdx+\'">\'+fLabel+\' מ\'+label+\'</option>\';});'
+        + '});sel.value=prev;});}'
+        # createDeptRow: build a single table row
+        + 'function createDeptRow(data){data=data||{};var tr=document.createElement("tr");tr.style.borderBottom="1px solid #e2e8f0";'
+        # Row number cell
+        + 'var tdNum=document.createElement("td");tdNum.style.cssText="padding:4px 3px;text-align:center;font-weight:700;color:#64748b;font-size:13px";tdNum.setAttribute("data-row-num","1");tr.appendChild(tdNum);'
+        # Field cells
+        + 'deptFields.forEach(function(f){var td=document.createElement("td");td.style.padding="4px 3px";'
+        + 'if(f==="customer_name"){var inp=document.createElement("input");inp.type="text";inp.setAttribute("data-dept-field",f);inp.setAttribute("list","detectedClientsList");inp.value=data[f]||"";inp.placeholder="בחר מהרשימה...";inp.style.cssText="width:100%;padding:6px 8px;border:1.5px solid #86efac;border-radius:6px;font-size:12px;font-family:inherit;outline:none;min-width:120px;background:#f0fdf4";inp.addEventListener("input",function(){syncDeptJson();refreshCopyMenus();});td.appendChild(inp);}'
+        + 'else{var inp=document.createElement("input");inp.type="text";inp.setAttribute("data-dept-field",f);inp.value=data[f]||"";inp.style.cssText="width:100%;padding:6px 8px;border:1.5px solid #e2e8f0;border-radius:6px;font-size:12px;font-family:inherit;outline:none;min-width:80px";inp.addEventListener("input",function(){syncDeptJson();refreshCopyMenus();});td.appendChild(inp);}'
+        + 'tr.appendChild(td);});'
+        # Copy menu cell
+        + 'var copyTd=buildCopyMenu(tr);tr.appendChild(copyTd);'
+        # Delete button cell
+        + 'var tdDel=document.createElement("td");tdDel.style.padding="4px 3px";var btn=document.createElement("button");btn.type="button";btn.textContent="✕";btn.style.cssText="background:#fee2e2;color:#dc2626;border:none;border-radius:6px;padding:4px 10px;cursor:pointer;font-size:13px";btn.addEventListener("click",function(){tr.remove();syncDeptJson();renumberRows();refreshCopyMenus();});tdDel.appendChild(btn);tr.appendChild(tdDel);'
+        + 'deptTableBody.appendChild(tr);renumberRows();return tr;}'
         + 'function syncDeptJson(){var rows=deptTableBody.querySelectorAll("tr");var data=[];rows.forEach(function(tr){var entry={};var inputs=tr.querySelectorAll("input[data-dept-field]");inputs.forEach(function(inp){entry[inp.getAttribute("data-dept-field")]=inp.value;});if(entry.customer_name){data.push(entry);}});deptJsonInput.value=JSON.stringify(data);}'
-        + 'function loadDeptRows(arr){deptTableBody.innerHTML="";(arr||[]).forEach(function(d){createDeptRow(d);});if(!arr||arr.length===0){createDeptRow();}syncDeptJson();}'
+        + 'function loadDeptRows(arr){deptTableBody.innerHTML="";(arr||[]).forEach(function(d){createDeptRow(d);});if(!arr||arr.length===0){createDeptRow();}syncDeptJson();refreshCopyMenus();}'
         # Build datalist for detected clients
         + '(function(){var dl=document.createElement("datalist");dl.id="detectedClientsList";detectedClients.forEach(function(c){var opt=document.createElement("option");opt.value=c;dl.appendChild(opt);});document.body.appendChild(dl);})();'
         # Load initial data — if empty, seed rows from detected clients
         + 'try{var initData=JSON.parse(deptJsonInput.value||"[]");if(initData.length>0){loadDeptRows(initData);}else if(detectedClients.length>0){var seeded=detectedClients.map(function(c){return{customer_name:c};});loadDeptRows(seeded);}else{createDeptRow();}}catch(e){createDeptRow();}'
-        + 'document.getElementById("addDeptRow").addEventListener("click",function(){createDeptRow();syncDeptJson();});'
+        + 'document.getElementById("addDeptRow").addEventListener("click",function(){createDeptRow();syncDeptJson();refreshCopyMenus();});'
         # File upload for dept settings
         + 'document.getElementById("deptFileInput").addEventListener("change",function(e){'
         + 'var file=e.target.files[0];if(!file)return;'
