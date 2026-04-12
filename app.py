@@ -3861,7 +3861,7 @@ def extract_dept_payroll_worker(detail_sheet, summary_sheet, workbook_kind, mapp
         if isinstance(raw, (int, float)):
             try:
                 if workbook_kind == "xls":
-                    dt = xlrd.xldate_as_datetime(float(raw), workbook.datemode)
+                    dt = xlrd.xldate_as_datetime(float(raw), detail_sheet.book.datemode)
                 else:
                     # openpyxl serial date
                     from openpyxl.utils.datetime import from_excel
