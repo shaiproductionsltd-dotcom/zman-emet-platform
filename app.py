@@ -4728,46 +4728,58 @@ def execute_script(script, input_path, output_path, extension, options=None):
 
 CSS = """
 * { box-sizing: border-box; margin: 0; padding: 0; }
-body { font-family: 'Segoe UI', Arial, sans-serif; background: #f0f4ff; min-height: 100vh; direction: inherit; }
-.topbar { background: #1e3a8a; color: white; padding: 0 2rem; height: 58px; display: flex; align-items: center; justify-content: space-between; }
-.topbar h1 { font-size: 17px; font-weight: 700; }
-.topbar a { color: #93c5fd; font-size: 13px; text-decoration: none; }
-.wrap { max-width: 900px; margin: 2rem auto; padding: 0 1rem; }
-.login-wrap { max-width: 400px; margin: 5rem auto; padding: 0 1rem; }
-.card { background: white; border-radius: 16px; box-shadow: 0 4px 24px rgba(37,99,235,.1); padding: 2rem; margin-bottom: 1.5rem; }
-.card h2 { font-size: 16px; font-weight: 700; color: #1e3a8a; margin-bottom: 1rem; padding-bottom: .75rem; border-bottom: 1.5px solid #e0e7ff; }
+body { font-family: 'Segoe UI', Arial, sans-serif; background: #f0f4ff; min-height: 100vh; direction: inherit; position: relative; }
+body::before { content: ''; position: fixed; inset: 0; background-image: radial-gradient(rgba(37,99,235,.03) 1px, transparent 1px); background-size: 32px 32px; pointer-events: none; z-index: 0; }
+.topbar { background: linear-gradient(135deg, #0f1b3d 0%, #1e3a8a 100%); color: white; padding: 0 2rem; height: 62px; display: flex; align-items: center; justify-content: space-between; position: sticky; top: 0; z-index: 50; box-shadow: 0 2px 20px rgba(15,23,42,.15); }
+.topbar h1 { font-size: 18px; font-weight: 800; letter-spacing: -0.3px; }
+.topbar a { color: #93c5fd; font-size: 13px; text-decoration: none; transition: color .2s; }
+.topbar a:hover { color: #ffffff; }
+.wrap { max-width: 900px; margin: 2rem auto; padding: 0 1rem; position: relative; z-index: 1; animation: panelFadeIn .5s ease-out; }
+.login-wrap { max-width: 420px; margin: 5rem auto; padding: 0 1rem; position: relative; z-index: 1; animation: panelFadeIn .5s ease-out; }
+.card { background: white; border: 1px solid #e2e8f0; border-radius: 18px; box-shadow: 0 4px 24px rgba(37,99,235,.07); padding: 2rem; margin-bottom: 1.5rem; transition: box-shadow .3s cubic-bezier(.4,0,.2,1), border-color .3s, transform .3s cubic-bezier(.4,0,.2,1); }
+.card:hover { box-shadow: 0 8px 32px rgba(37,99,235,.1); border-color: #bfdbfe; }
+.card h2 { font-size: 17px; font-weight: 800; color: #1e3a8a; margin-bottom: 1rem; padding-bottom: .75rem; border-bottom: 1.5px solid #e0e7ff; }
 label.field-label { font-size: 13px; font-weight: 600; color: #374151; margin-bottom: 5px; display: block; }
-input[type=text], input[type=password] { padding: 9px 12px; border: 1.5px solid #e2e8f0; border-radius: 8px; font-size: 13px; font-family: inherit; outline: none; width: 100%; margin-bottom: .75rem; }
-input:focus { border-color: #2563eb; }
-.btn { padding: 10px 20px; border: none; border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer; font-family: inherit; }
-.btn-blue { background: #2563eb; color: white; }
-.btn-blue:hover { background: #1d4ed8; }
-.btn-red { background: #fee2e2; color: #dc2626; }
-.btn-gray { background: #f1f5f9; color: #475569; }
-.flash { background: #f0fdf4; border: 1px solid #86efac; color: #15803d; border-radius: 8px; padding: 10px 14px; font-size: 13px; margin-bottom: 1rem; }
-.flash-err { background: #fef2f2; border: 1px solid #fecaca; color: #dc2626; border-radius: 8px; padding: 10px 14px; font-size: 13px; margin-bottom: 1rem; }
+input[type=text], input[type=password], input[type=email] { padding: 11px 14px; border: 1.5px solid #e2e8f0; border-radius: 12px; font-size: 14px; font-family: inherit; outline: none; width: 100%; margin-bottom: .75rem; transition: border-color .2s, box-shadow .2s; background: #fafcff; }
+input[type=text]:focus, input[type=password]:focus, input[type=email]:focus { border-color: #2563eb; box-shadow: 0 0 0 3px rgba(37,99,235,.1); background: #ffffff; }
+select { padding: 11px 14px; border: 1.5px solid #e2e8f0; border-radius: 12px; font-size: 14px; font-family: inherit; outline: none; width: 100%; background: #fafcff; transition: border-color .2s, box-shadow .2s; }
+select:focus { border-color: #2563eb; box-shadow: 0 0 0 3px rgba(37,99,235,.1); }
+textarea { padding: 11px 14px; border: 1.5px solid #e2e8f0; border-radius: 12px; font-size: 14px; font-family: inherit; outline: none; width: 100%; background: #fafcff; transition: border-color .2s, box-shadow .2s; resize: vertical; }
+textarea:focus { border-color: #2563eb; box-shadow: 0 0 0 3px rgba(37,99,235,.1); background: #ffffff; }
+.btn { padding: 11px 22px; border: none; border-radius: 12px; font-size: 14px; font-weight: 700; cursor: pointer; font-family: inherit; transition: all .25s cubic-bezier(.4,0,.2,1); display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
+.btn:active { transform: scale(.97); }
+.btn-blue { background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%); color: white; box-shadow: 0 2px 8px rgba(37,99,235,.25); }
+.btn-blue:hover { background: linear-gradient(135deg, #1d4ed8 0%, #1e40af 100%); box-shadow: 0 4px 16px rgba(37,99,235,.3); transform: translateY(-1px); }
+.btn-red { background: #fee2e2; color: #dc2626; border: 1px solid #fecaca; }
+.btn-red:hover { background: #fecaca; transform: translateY(-1px); }
+.btn-gray { background: #f1f5f9; color: #475569; border: 1px solid #e2e8f0; }
+.btn-gray:hover { background: #e2e8f0; transform: translateY(-1px); }
+.flash { background: #f0fdf4; border: 1px solid #86efac; color: #15803d; border-radius: 12px; padding: 12px 16px; font-size: 13px; margin-bottom: 1rem; }
+.flash-err { background: #fef2f2; border: 1px solid #fecaca; color: #dc2626; border-radius: 12px; padding: 12px 16px; font-size: 13px; margin-bottom: 1rem; }
 .flash-stack { position: fixed; top: 92px; right: max(14px, calc((100vw - 900px)/2 - 110px)); z-index: 120; display: flex; flex-direction: column; gap: 10px; width: min(340px, calc(100vw - 28px)); }
-.flash-toast { background: #f0fdf4; border: 1px solid #86efac; color: #15803d; border-radius: 14px; padding: 12px 16px; font-size: 13px; line-height: 1.7; box-shadow: 0 14px 34px rgba(15,23,42,.14); opacity: 0; transform: translateY(-8px); animation: flashToastIn .22s ease-out forwards; }
+.flash-toast { background: #f0fdf4; border: 1px solid #86efac; color: #15803d; border-radius: 14px; padding: 12px 16px; font-size: 13px; line-height: 1.7; box-shadow: 0 14px 34px rgba(15,23,42,.14); opacity: 0; transform: translateY(-8px); animation: flashToastIn .22s ease-out forwards; backdrop-filter: blur(8px); }
 .flash-toast.dismiss { animation: flashToastOut .22s ease-in forwards; }
-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-th { text-align: start; padding: 10px 12px; background: #f8fafc; color: #64748b; font-weight: 600; border-bottom: 1.5px solid #e2e8f0; }
-td { padding: 12px; border-bottom: 1px solid #f1f5f9; vertical-align: middle; }
-.badge { display: inline-block; padding: 3px 10px; border-radius: 99px; font-size: 11px; font-weight: 600; background: #f1f5f9; color: #64748b; }
-.form-row { display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-end; }
+table { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 13px; }
+th { text-align: start; padding: 12px 14px; background: linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%); color: #475569; font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: .5px; border-bottom: 1.5px solid #e2e8f0; }
+td { padding: 13px 14px; border-bottom: 1px solid #f1f5f9; vertical-align: middle; transition: background .15s; }
+tr:hover td { background: #f8fafc; }
+.badge { display: inline-block; padding: 4px 12px; border-radius: 99px; font-size: 11px; font-weight: 700; background: #f1f5f9; color: #64748b; }
+.form-row { display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end; }
 .form-group { flex: 1; min-width: 130px; }
-.drop-zone { border: 2px dashed #c7d7f5; border-radius: 14px; padding: 2rem; text-align: center; cursor: pointer; background: #fafcff; margin-bottom: 1rem; }
-.drop-zone:hover { border-color: #2563eb; background: #eff6ff; }
-.success-box { padding: 1.25rem; background: #f0fdf4; border: 1.5px solid #86efac; border-radius: 13px; text-align: center; margin-top: 1rem; }
-.dl-btn { display: inline-block; padding: 11px 28px; background: #16a34a; color: white; border-radius: 9px; font-size: 14px; font-weight: 700; text-decoration: none; }
-.processing-box { display: none; margin-top: 1rem; padding: 1.1rem 1.25rem; background: #eff6ff; border: 1.5px solid #bfdbfe; border-radius: 13px; }
-.processing-box.show { display: block; }
-.progress-track { width: 100%; height: 12px; border-radius: 999px; background: #dbeafe; overflow: hidden; margin: .9rem 0 .7rem; }
-.progress-bar { width: 45%; height: 100%; border-radius: 999px; background: linear-gradient(90deg, #2563eb 0%, #60a5fa 100%); animation: loadingSlide 1.6s ease-in-out infinite; }
-.processing-note { font-size: 13px; color: #1d4ed8; font-weight: 600; }
+.drop-zone { border: 2px dashed #bfdbfe; border-radius: 16px; padding: 2.5rem 2rem; text-align: center; cursor: pointer; background: linear-gradient(180deg, #fafcff 0%, #eff6ff 100%); margin-bottom: 1rem; transition: all .3s cubic-bezier(.4,0,.2,1); }
+.drop-zone:hover { border-color: #2563eb; background: linear-gradient(180deg, #eff6ff 0%, #dbeafe 100%); transform: translateY(-2px); box-shadow: 0 8px 24px rgba(37,99,235,.1); }
+.success-box { padding: 1.5rem; background: linear-gradient(180deg, #f0fdf4 0%, #ecfdf5 100%); border: 1.5px solid #86efac; border-radius: 16px; text-align: center; margin-top: 1rem; }
+.dl-btn { display: inline-block; padding: 13px 32px; background: linear-gradient(135deg, #16a34a 0%, #15803d 100%); color: white; border-radius: 12px; font-size: 15px; font-weight: 700; text-decoration: none; box-shadow: 0 2px 8px rgba(22,163,74,.3); transition: all .25s cubic-bezier(.4,0,.2,1); }
+.dl-btn:hover { transform: translateY(-2px); box-shadow: 0 6px 20px rgba(22,163,74,.35); }
+.processing-box { display: none; margin-top: 1rem; padding: 1.25rem 1.5rem; background: linear-gradient(180deg, #eff6ff 0%, #dbeafe 100%); border: 1.5px solid #bfdbfe; border-radius: 16px; }
+.processing-box.show { display: block; animation: panelFadeIn .3s ease-out; }
+.progress-track { width: 100%; height: 10px; border-radius: 999px; background: #dbeafe; overflow: hidden; margin: .9rem 0 .7rem; }
+.progress-bar { width: 45%; height: 100%; border-radius: 999px; background: linear-gradient(90deg, #2563eb 0%, #60a5fa 50%, #93c5fd 100%); animation: loadingSlide 1.6s ease-in-out infinite; }
+.processing-note { font-size: 14px; color: #1d4ed8; font-weight: 700; }
 .processing-subnote { font-size: 12px; color: #64748b; line-height: 1.6; }
 .lang-switch { display: inline-flex; align-items: center; gap: 6px; background: rgba(255,255,255,.14); border: 1px solid rgba(255,255,255,.2); border-radius: 999px; padding: 4px; }
 .lang-switch.standalone { background: #ffffff; border-color: #dbeafe; box-shadow: 0 4px 16px rgba(37,99,235,.08); margin-bottom: 1rem; }
-.lang-btn { display: inline-block; min-width: 38px; padding: 6px 10px; border-radius: 999px; font-size: 12px; font-weight: 700; text-align: center; text-decoration: none; color: #cbd5e1; }
+.lang-btn { display: inline-block; min-width: 38px; padding: 6px 10px; border-radius: 999px; font-size: 12px; font-weight: 700; text-align: center; text-decoration: none; color: #cbd5e1; transition: all .2s; }
 .lang-switch.standalone .lang-btn { color: #64748b; }
 .lang-btn.active { background: #ffffff; color: #1e3a8a; }
 .lang-switch.standalone .lang-btn.active { background: #2563eb; color: #ffffff; }
@@ -4775,6 +4787,10 @@ td { padding: 12px; border-bottom: 1px solid #f1f5f9; vertical-align: middle; }
   0% { transform: translateX(0); }
   50% { transform: translateX(120%); }
   100% { transform: translateX(0); }
+}
+@keyframes panelFadeIn {
+  from { opacity: 0; transform: translateY(16px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 @keyframes flashToastIn {
   from { opacity: 0; transform: translateY(-8px); }
@@ -4784,8 +4800,8 @@ td { padding: 12px; border-bottom: 1px solid #f1f5f9; vertical-align: middle; }
   from { opacity: 1; transform: translateY(0); }
   to { opacity: 0; transform: translateY(-8px); }
 }
-.modal-bg { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.4); z-index: 100; align-items: center; justify-content: center; }
-.modal-box { background: white; border-radius: 16px; padding: 1.75rem; width: 320px; }
+.modal-bg { display: none; position: fixed; inset: 0; background: rgba(15,23,42,.5); backdrop-filter: blur(4px); z-index: 100; align-items: center; justify-content: center; }
+.modal-box { background: white; border-radius: 20px; padding: 2rem; width: 340px; box-shadow: 0 24px 48px rgba(15,23,42,.2); }
 .admin-user-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(320px,1fr)); gap:16px; }
 .admin-user-card { background:linear-gradient(180deg,#ffffff 0%,#f8fbff 100%); border:1px solid #dbeafe; border-radius:18px; padding:18px; box-shadow:0 8px 28px rgba(37,99,235,.08); }
 .admin-user-head { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; margin-bottom:14px; }
@@ -7824,11 +7840,11 @@ def render(title, body, nav=True, lang="en", topbar_greeting="Hello, ", logout_l
         lang_switch = build_lang_switch(lang) if show_lang_switch else ""
         topbar = (
             '<div class="topbar">'
-            '<a href="/dashboard" style="text-decoration:none;color:inherit"><h1>&#9201; Scriptly</h1></a>'
+            '<a href="/dashboard" style="text-decoration:none;color:inherit;display:flex;align-items:center;gap:8px"><h1>&#9201; Scriptly</h1></a>'
             '<div style="display:flex;gap:16px;align-items:center">'
             + lang_switch
-            + '<span style="font-size:13px;color:#93c5fd">' + topbar_greeting + name + "</span>"
-            + '<a href="/logout">' + logout_label + '</a>'
+            + '<span style="font-size:13px;color:#93c5fd;font-weight:500">' + topbar_greeting + name + "</span>"
+            + '<a href="/logout" style="padding:6px 14px;border:1px solid rgba(255,255,255,.2);border-radius:999px;font-size:12px;font-weight:600;transition:all .2s">' + logout_label + '</a>'
             "</div></div>"
         )
     wrap_cls = "wrap" if nav else "login-wrap"
@@ -8289,11 +8305,11 @@ def register():
     t = lbl.get(lang, lbl["he"])
 
     body = (
-        '<div class="card" style="padding:2rem">'
-        '<div style="text-align:center;margin-bottom:1.5rem">'
-        '<div style="font-size:40px">&#9201;</div>'
-        '<h1 style="font-size:20px;font-weight:700;color:#1e3a8a;margin-top:8px">Scriptly</h1>'
-        '<p style="font-size:13px;color:#64748b;margin-top:4px">' + t["title"] + '</p>'
+        '<div class="card" style="padding:2.5rem;border-radius:20px;box-shadow:0 8px 32px rgba(37,99,235,.1);border:1px solid #dbeafe">'
+        '<div style="text-align:center;margin-bottom:2rem">'
+        '<div style="font-size:44px;margin-bottom:4px">&#9201;</div>'
+        '<h1 style="font-size:22px;font-weight:800;color:#0f172a;margin-top:8px;letter-spacing:-0.3px">Scriptly</h1>'
+        '<p style="font-size:13px;color:#64748b;margin-top:6px;line-height:1.6">' + t["title"] + '</p>'
         '</div>'
         + error
         + '<form method="POST">'
@@ -8311,16 +8327,16 @@ def register():
         '<input type="text" name="username" required value="' + esc(request.form.get("username", "")) + '">'
         + '<label class="field-label">' + t["password"] + '</label>'
         '<input type="password" name="password" required>'
-        + '<button type="submit" class="btn btn-blue" style="width:100%;padding:12px;font-size:15px;margin-top:.5rem">' + t["submit"] + '</button>'
+        + '<button type="submit" class="btn btn-blue" style="width:100%;padding:14px;font-size:15px;margin-top:.75rem;border-radius:14px">' + t["submit"] + '</button>'
         '</form>'
-        '<p style="text-align:center;margin-top:1rem;font-size:13px;color:#64748b">'
+        '<p style="text-align:center;margin-top:1.25rem;font-size:13px;color:#64748b">'
         + t["login_link"] + ' '
-        '<a href="/login" style="color:#2563eb;font-weight:600;text-decoration:none">' + t["login_text"] + '</a>'
+        '<a href="/login" style="color:#2563eb;font-weight:700;text-decoration:none">' + t["login_text"] + '</a>'
         '</p>'
-        '<p style="text-align:center;margin-top:1rem"><a href="/" style="font-size:13px;color:#2563eb;text-decoration:none">'
+        '<p style="text-align:center;margin-top:1rem"><a href="/" style="font-size:13px;color:#2563eb;text-decoration:none;font-weight:600">'
         + ("&#8592; חזרה לדף הבית" if lang == "he" else "&#8592; Back to homepage")
         + '</a></p>'
-        '<p style="text-align:center;margin-top:.5rem;font-size:11px;color:#bbb">&#169; Scriptly</p>'
+        '<p style="text-align:center;margin-top:.75rem;font-size:11px;color:#94a3b8">&#169; Scriptly</p>'
         '</div>'
     )
     return render(t["title"], body, nav=False, lang=lang)
@@ -8353,11 +8369,11 @@ def login():
 
     body = (
         build_lang_switch(lang).replace('class="lang-switch"', 'class="lang-switch standalone"')
-        + '<div class="card" style="padding:2rem">'
-        '<div style="text-align:center;margin-bottom:1.5rem">'
-        '<div style="font-size:40px">&#9201;</div>'
-        '<h1 style="font-size:20px;font-weight:700;color:#1e3a8a;margin-top:8px">Scriptly</h1>'
-        + '<p style="font-size:12px;color:#888;margin-top:3px">' + text["login_subtitle"] + '</p>'
+        + '<div class="card" style="padding:2.5rem;border-radius:20px;box-shadow:0 8px 32px rgba(37,99,235,.1);border:1px solid #dbeafe">'
+        '<div style="text-align:center;margin-bottom:2rem">'
+        '<div style="font-size:44px;margin-bottom:4px">&#9201;</div>'
+        '<h1 style="font-size:22px;font-weight:800;color:#0f172a;margin-top:8px;letter-spacing:-0.3px">Scriptly</h1>'
+        + '<p style="font-size:13px;color:#64748b;margin-top:6px;line-height:1.6">' + text["login_subtitle"] + '</p>'
         "</div>"
         + error
         + '<form method="POST">'
@@ -8365,17 +8381,17 @@ def login():
         '<input type="text" name="username" required autofocus>'
         + '<label class="field-label">' + text["login_password"] + '</label>'
         '<input type="password" name="password" required>'
-        + '<button type="submit" class="btn btn-blue" style="width:100%;padding:12px;font-size:15px;margin-top:.5rem">' + text["login_submit"] + '</button>'
+        + '<button type="submit" class="btn btn-blue" style="width:100%;padding:14px;font-size:15px;margin-top:.75rem;border-radius:14px">' + text["login_submit"] + '</button>'
         "</form>"
-        '<p style="text-align:center;margin-top:1rem;font-size:13px;color:#64748b">'
+        '<p style="text-align:center;margin-top:1.25rem;font-size:13px;color:#64748b">'
         + ("אין לך חשבון? " if lang == "he" else "Don't have an account? ")
-        + '<a href="/register" style="color:#2563eb;font-weight:600;text-decoration:none">'
+        + '<a href="/register" style="color:#2563eb;font-weight:700;text-decoration:none">'
         + ("הרשמה בחינם" if lang == "he" else "Register free")
         + "</a></p>"
-        '<p style="text-align:center;margin-top:1rem"><a href="/" style="font-size:13px;color:#2563eb;text-decoration:none">'
+        '<p style="text-align:center;margin-top:1rem"><a href="/" style="font-size:13px;color:#2563eb;text-decoration:none;font-weight:600">'
         + ("&#8592; חזרה לדף הבית" if lang == "he" else "&#8592; Back to homepage")
         + '</a></p>'
-        '<p style="text-align:center;margin-top:.5rem;font-size:11px;color:#bbb">&#169; Scriptly</p>'
+        '<p style="text-align:center;margin-top:.75rem;font-size:11px;color:#94a3b8">&#169; Scriptly</p>'
         "</div>"
     )
     return render(text["login_page_title"], body, nav=False, lang=lang)
@@ -8436,19 +8452,23 @@ def dashboard():
     cards = ""
     for script in allowed:
         cards += (
-            '<a href="/run/' + script["id"] + '" style="background:white;border-radius:16px;box-shadow:0 2px 16px rgba(0,0,0,.06);padding:1.5rem;text-decoration:none;display:block">'
-            '<div style="font-size:36px;margin-bottom:.75rem">' + script["icon"] + "</div>"
-            '<div style="font-size:15px;font-weight:700;color:#1e3a8a;margin-bottom:4px">' + script["name"] + "</div>"
-            '<div style="font-size:12px;color:#64748b">' + script["desc"] + "</div>"
+            '<a href="/run/' + script["id"] + '" style="background:white;border:1px solid #e2e8f0;border-radius:18px;box-shadow:0 2px 12px rgba(37,99,235,.06);padding:1.5rem;text-decoration:none;display:block;transition:all .3s cubic-bezier(.4,0,.2,1)"'
+            ' onmouseenter="this.style.transform=\'translateY(-3px)\';this.style.boxShadow=\'0 8px 28px rgba(37,99,235,.12)\';this.style.borderColor=\'#bfdbfe\'"'
+            ' onmouseleave="this.style.transform=\'none\';this.style.boxShadow=\'0 2px 12px rgba(37,99,235,.06)\';this.style.borderColor=\'#e2e8f0\'">'
+            '<div style="width:48px;height:48px;border-radius:14px;background:linear-gradient(135deg,#eff6ff,#dbeafe);display:flex;align-items:center;justify-content:center;font-size:24px;margin-bottom:.75rem">' + script["icon"] + "</div>"
+            '<div style="font-size:15px;font-weight:800;color:#0f172a;margin-bottom:4px">' + script["name"] + "</div>"
+            '<div style="font-size:12px;color:#64748b;line-height:1.6">' + script["desc"] + "</div>"
             "</a>"
         )
     # Add installed marketplace tools
     for mt in installed_tools:
         cards += (
-            '<a href="/marketplace/tool/' + str(mt["id"]) + '/run" style="background:linear-gradient(135deg,#ffffff 0%,#f0fdf4 100%);border:1px solid #86efac;border-radius:16px;box-shadow:0 2px 16px rgba(0,0,0,.06);padding:1.5rem;text-decoration:none;display:block">'
-            '<div style="font-size:36px;margin-bottom:.75rem">' + esc(mt["icon"] or "🔧") + "</div>"
-            '<div style="font-size:15px;font-weight:700;color:#047857;margin-bottom:4px">' + esc(mt["name"]) + '</div>'
-            '<div style="font-size:12px;color:#64748b">' + esc((mt["description"] or "")[:80]) + '</div>'
+            '<a href="/marketplace/tool/' + str(mt["id"]) + '/run" style="background:linear-gradient(135deg,#ffffff 0%,#f0fdf4 100%);border:1px solid #86efac;border-radius:18px;box-shadow:0 2px 12px rgba(22,163,74,.06);padding:1.5rem;text-decoration:none;display:block;transition:all .3s cubic-bezier(.4,0,.2,1)"'
+            ' onmouseenter="this.style.transform=\'translateY(-3px)\';this.style.boxShadow=\'0 8px 28px rgba(22,163,74,.12)\'"'
+            ' onmouseleave="this.style.transform=\'none\';this.style.boxShadow=\'0 2px 12px rgba(22,163,74,.06)\'">'
+            '<div style="width:48px;height:48px;border-radius:14px;background:linear-gradient(135deg,#ecfdf5,#d1fae5);display:flex;align-items:center;justify-content:center;font-size:24px;margin-bottom:.75rem">' + esc(mt["icon"] or "🔧") + "</div>"
+            '<div style="font-size:15px;font-weight:800;color:#047857;margin-bottom:4px">' + esc(mt["name"]) + '</div>'
+            '<div style="font-size:12px;color:#64748b;line-height:1.6">' + esc((mt["description"] or "")[:80]) + '</div>'
             '<div style="font-size:10px;color:#94a3b8;margin-top:6px">🛒 מתוך שוק הכלים</div>'
             "</a>"
         )
@@ -8468,8 +8488,8 @@ def dashboard():
         ("תאריך הצטרפות" if lang == "he" else "Join date", format_ui_date(user["join_date"], lang)),
     ]
     info_grid = "".join(
-        '<div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:14px;padding:14px">'
-        '<div style="font-size:12px;color:#64748b;margin-bottom:6px">' + esc(label) + '</div>'
+        '<div style="background:linear-gradient(180deg,#f8fafc 0%,#f1f5f9 100%);border:1px solid #e2e8f0;border-radius:14px;padding:14px;transition:border-color .2s">'
+        '<div style="font-size:11px;color:#64748b;margin-bottom:6px;text-transform:uppercase;letter-spacing:.5px;font-weight:600">' + esc(label) + '</div>'
         '<div style="font-size:15px;font-weight:700;color:#0f172a">' + esc(value or not_set) + "</div>"
         "</div>"
         for label, value in info_items
@@ -8491,7 +8511,7 @@ def dashboard():
             else ""
         )
         report_job_rows += (
-            '<div style="border:1px solid #e2e8f0;border-radius:14px;padding:14px 16px;background:#ffffff">'
+            '<div style="border:1px solid #e2e8f0;border-radius:16px;padding:16px 18px;background:#ffffff;transition:border-color .2s,box-shadow .2s" onmouseenter="this.style.borderColor=\'#bfdbfe\';this.style.boxShadow=\'0 4px 16px rgba(37,99,235,.06)\'" onmouseleave="this.style.borderColor=\'#e2e8f0\';this.style.boxShadow=\'none\'">'
             '<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:14px;flex-wrap:wrap">'
             '<div>'
             '<div style="font-size:15px;font-weight:800;color:#0f172a;margin-bottom:6px">' + esc(job["script_name"]) + '</div>'
@@ -8506,65 +8526,69 @@ def dashboard():
             '</div></div>'
         )
     report_jobs_html = (
-        '<div class="card" style="margin-top:1rem;background:linear-gradient(135deg,#ffffff 0%,#f8fbff 100%);border:1px solid #dbeafe">'
-        '<div style="display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap;margin-bottom:12px">'
-        '<div><div style="font-size:18px;font-weight:800;color:#1e3a8a;margin-bottom:6px">דוחות בעיבוד והורדה</div>'
+        '<div class="card" style="margin-top:1rem;background:linear-gradient(135deg,#ffffff 0%,#f8fbff 100%);border:1px solid #dbeafe;border-radius:18px">'
+        '<div style="display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap;margin-bottom:14px">'
+        '<div><div style="font-size:18px;font-weight:800;color:#1e3a8a;margin-bottom:6px">📋 דוחות בעיבוד והורדה</div>'
         '<div style="font-size:14px;color:#475569;line-height:1.7">דוחות שנשלחו לעיבוד ברקע יופיעו כאן. הדוח נשמר עד להורדה או עד 3 ימים, המוקדם מביניהם.</div></div>'
         '</div>'
         + (report_job_rows if report_job_rows else '<div style="text-align:center;padding:1rem 0;color:#94a3b8">עדיין אין דוחות בעיבוד או דוחות מוכנים להורדה</div>')
         + '</div>'
     )
     body = (
-        '<h2 style="font-size:24px;font-weight:800;color:#1e3a8a;margin-bottom:.4rem">' + text["dashboard_greeting"]
+        '<h2 style="font-size:clamp(22px,3.5vw,28px);font-weight:800;color:#0f172a;margin-bottom:.4rem;letter-spacing:-0.3px">' + text["dashboard_greeting"]
         + esc(session["name"])
         + ' &#128075;</h2>'
-        + ('<p style="font-size:14px;color:#64748b;margin-bottom:1.5rem">' + text["dashboard_intro"] + "</p>" if text["dashboard_intro"] else "")
+        + ('<p style="font-size:15px;color:#64748b;margin-bottom:1.5rem;line-height:1.7">' + text["dashboard_intro"] + "</p>" if text["dashboard_intro"] else "")
         + '<div style="display:grid;grid-template-columns:1.15fr .85fr;gap:1rem;margin-bottom:1rem">'
-        + '<details class="card" style="margin:0;padding:0;overflow:hidden" id="accountDetailsCard">'
-        + '<summary style="list-style:none;cursor:pointer;padding:18px 20px;display:flex;align-items:center;justify-content:space-between;gap:12px">'
-        + '<div><div style="font-size:18px;font-weight:800;color:#0f172a;margin-bottom:6px">' + ("פרטי חשבון ולקוח" if lang == "he" else "Account and company details") + '</div>'
-        + '<div style="font-size:14px;color:#334155;font-weight:700">' + esc(collapsed_company_name) + '</div></div>'
-        + '<span style="font-size:18px;color:#64748b">+</span>'
+        + '<details class="card" style="margin:0;padding:0;overflow:hidden;border:1px solid #e2e8f0" id="accountDetailsCard">'
+        + '<summary style="list-style:none;cursor:pointer;padding:20px 22px;display:flex;align-items:center;justify-content:space-between;gap:12px;transition:background .2s"'
+        + ' onmouseenter="this.style.background=\'#f8fafc\'" onmouseleave="this.style.background=\'transparent\'">'
+        + '<div><div style="font-size:17px;font-weight:800;color:#0f172a;margin-bottom:6px">' + ("פרטי חשבון ולקוח" if lang == "he" else "Account and company details") + '</div>'
+        + '<div style="font-size:14px;color:#475569;font-weight:600">' + esc(collapsed_company_name) + '</div></div>'
+        + '<span style="font-size:16px;color:#94a3b8;transition:transform .2s">▼</span>'
         + '</summary>'
         + '<div style="padding:0 20px 20px"><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px">'
         + info_grid
         + '</div></div></details>'
-        + '<details class="card" style="margin:0;padding:0;overflow:hidden;background:linear-gradient(180deg,#ffffff 0%,#f8fbff 100%)" id="serviceStatusCard">'
-        + '<summary style="list-style:none;cursor:pointer;padding:18px 20px;display:flex;align-items:center;justify-content:space-between;gap:12px">'
-        + '<div><div style="font-size:18px;font-weight:800;color:#0f172a;margin-bottom:6px">' + ("סטטוס שירות" if lang == "he" else "Service status") + '</div>'
+        + '<details class="card" style="margin:0;padding:0;overflow:hidden;background:linear-gradient(180deg,#ffffff 0%,#f8fbff 100%);border:1px solid #dbeafe" id="serviceStatusCard">'
+        + '<summary style="list-style:none;cursor:pointer;padding:20px 22px;display:flex;align-items:center;justify-content:space-between;gap:12px;transition:background .2s"'
+        + ' onmouseenter="this.style.background=\'#f8fafc\'" onmouseleave="this.style.background=\'transparent\'">'
+        + '<div><div style="font-size:17px;font-weight:800;color:#0f172a;margin-bottom:6px">' + ("סטטוס שירות" if lang == "he" else "Service status") + '</div>'
         + '<div style="display:inline-flex;align-items:center;padding:8px 12px;border-radius:999px;background:' + status_bg + ';color:' + status_fg + ';font-size:14px;font-weight:800;margin-bottom:8px">' + esc(status_label) + '</div>'
         + '<div style="font-size:13px;color:#475569">' + esc(service_compact) + '</div></div>'
-        + '<span style="font-size:18px;color:#64748b">+</span>'
+        + '<span style="font-size:16px;color:#94a3b8;transition:transform .2s">▼</span>'
         + '</summary>'
-        + '<div style="padding:0 20px 20px">'
-        + '<div style="font-size:14px;color:#334155;margin-bottom:8px">' + esc(service_note) + '</div>'
+        + '<div style="padding:0 22px 22px">'
+        + '<div style="font-size:14px;color:#334155;margin-bottom:10px;line-height:1.7">' + esc(service_note) + '</div>'
         + '<div style="font-size:12px;color:#64748b;margin-bottom:4px">' + ("מסלול חיוב" if lang == "he" else "Billing mode") + '</div>'
         + '<div style="font-size:15px;font-weight:700;color:#0f172a">' + esc(billing_mode_label(user["billing_mode"], lang)) + '</div>'
         + '</div></details>'
         + '</div>'
-        + '<div class="card" style="margin:0"><div style="font-size:18px;font-weight:800;color:#0f172a;margin-bottom:14px">'
+        + '<div class="card" style="margin:0;border:1px solid #e2e8f0"><div style="font-size:18px;font-weight:800;color:#0f172a;margin-bottom:4px">'
         + ("הכלים הזמינים לך" if lang == "he" else "Your available tools")
-        + '</div><div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:1rem">'
+        + '</div><div style="font-size:13px;color:#64748b;margin-bottom:16px">'
+        + ("לחץ על כלי כדי להתחיל לעבוד" if lang == "he" else "Click a tool to get started")
+        + '</div><div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:1rem">'
         + cards
         + '</div></div>'
-        + '<div class="card" style="margin-top:1rem;background:linear-gradient(135deg,#f0fdf4 0%,#ecfdf5 100%);border:1px solid #86efac">'
-        + '<div style="display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap">'
+        + '<div class="card" style="margin-top:1rem;background:linear-gradient(135deg,#f0fdf4 0%,#ecfdf5 100%);border:1px solid #86efac;border-radius:18px">'
+        + '<div style="display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap">'
         + '<div><div style="font-size:18px;font-weight:800;color:#047857;margin-bottom:6px">' + ("🛒 שוק הכלים" if lang == "he" else "🛒 Tool Marketplace") + '</div>'
         + '<div style="font-size:14px;color:#475569;line-height:1.7">' + ("גלה כלים שנבנו על ידי משתמשים אחרים או צור כלי משלך עם AI" if lang == "he" else "Discover tools built by other users or create your own with AI") + '</div></div>'
-        + '<div style="display:flex;gap:8px;flex-wrap:wrap">'
-        + '<a href="/tools/my-tools" class="btn btn-gray" style="text-decoration:none;display:inline-flex;align-items:center;justify-content:center;min-width:120px">' + ("&#128188; הכלים שלי" if lang == "he" else "&#128188; My tools") + '</a>'
-        + '<a href="/marketplace" class="btn btn-blue" style="text-decoration:none;display:inline-flex;align-items:center;justify-content:center;min-width:120px;background:#047857">' + ("גלה כלים" if lang == "he" else "Browse tools") + '</a>'
-        + '<a href="/tools/create" class="btn btn-blue" style="text-decoration:none;display:inline-flex;align-items:center;justify-content:center;min-width:120px">' + ("&#129302; צור כלי" if lang == "he" else "&#129302; Create tool") + '</a>'
+        + '<div style="display:flex;gap:10px;flex-wrap:wrap">'
+        + '<a href="/tools/my-tools" class="btn btn-gray" style="text-decoration:none;min-width:120px">' + ("&#128188; הכלים שלי" if lang == "he" else "&#128188; My tools") + '</a>'
+        + '<a href="/marketplace" class="btn" style="text-decoration:none;min-width:120px;background:linear-gradient(135deg,#047857,#059669);color:white;box-shadow:0 2px 8px rgba(4,120,87,.25)">' + ("גלה כלים" if lang == "he" else "Browse tools") + '</a>'
+        + '<a href="/tools/create" class="btn btn-blue" style="text-decoration:none;min-width:120px">' + ("&#129302; צור כלי" if lang == "he" else "&#129302; Create tool") + '</a>'
         + '</div></div></div>'
         + report_jobs_html
-        + '<div class="card" style="margin-top:1rem;background:linear-gradient(135deg,#ffffff 0%,#f8fbff 100%);border:1px solid #dbeafe">'
-        + '<div style="display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap">'
-        + '<div><div style="font-size:18px;font-weight:800;color:#1e3a8a;margin-bottom:6px">' + ("שירות לקוחות" if lang == "he" else "Customer support") + '</div>'
+        + '<div class="card" style="margin-top:1rem;background:linear-gradient(135deg,#ffffff 0%,#f8fbff 100%);border:1px solid #dbeafe;border-radius:18px">'
+        + '<div style="display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap">'
+        + '<div><div style="font-size:18px;font-weight:800;color:#1e3a8a;margin-bottom:6px">' + ("💬 שירות לקוחות" if lang == "he" else "💬 Customer support") + '</div>'
         + '<div style="font-size:14px;color:#475569;line-height:1.7">' + ("לדיווח על תקלה או לכל שאלה" if lang == "he" else "Report an issue or ask a question") + '</div></div>'
-        + '<a href="/support" class="btn btn-blue" style="text-decoration:none;display:inline-flex;align-items:center;justify-content:center;min-width:180px">' + ("פתיחת פנייה" if lang == "he" else "Open request") + '</a>'
+        + '<a href="/support" class="btn btn-blue" style="text-decoration:none;min-width:180px">' + ("פתיחת פנייה" if lang == "he" else "Open request") + '</a>'
         + '</div></div>'
-        + '<div class="card" style="margin-top:1rem;background:linear-gradient(135deg,#eff6ff 0%,#f8fafc 100%);border:1px solid #bfdbfe">'
-        + '<div style="font-size:18px;font-weight:800;color:#1e3a8a;margin-bottom:8px">' + ("אבטחת מידע ופרטיות" if lang == "he" else "Security and privacy") + '</div>'
+        + '<div class="card" style="margin-top:1rem;background:linear-gradient(135deg,#eff6ff 0%,#f8fafc 100%);border:1px solid #bfdbfe;border-radius:18px">'
+        + '<div style="font-size:18px;font-weight:800;color:#1e3a8a;margin-bottom:8px">' + ("🔒 אבטחת מידע ופרטיות" if lang == "he" else "🔒 Security and privacy") + '</div>'
         + '<div style="font-size:14px;line-height:1.8;color:#334155">'
         + (
             "הדוחות שאתם מעלים משמשים לעיבוד בלבד ואינם נשמרים כחלק ממאגר קבוע. ברוב הכלים קבצי העבודה ותוצרי העיבוד נמחקים אוטומטית מיד לאחר ההורדה. בכלי ניקוי דוח נוכחות, אם הדוח נשלח לעיבוד ברקע, הוא נשמר עד להורדה או עד 3 ימים, המוקדם מביניהם, ולאחר מכן נמחק אוטומטית."
@@ -8572,10 +8596,11 @@ def dashboard():
             else "Uploaded reports are used only for processing and are not kept as part of a permanent data store. In most tools, working files and outputs are deleted immediately after download. For the attendance cleanup tool, when a report is sent to background processing it is kept until download or for up to 3 days, whichever comes first."
         )
         + '</div></div>'
-        + '<details id="serviceTerms" style="margin-top:1rem;background:#ffffff;border:1px solid #e2e8f0;border-radius:16px;box-shadow:0 2px 16px rgba(0,0,0,.04);overflow:hidden">'
-        + '<summary style="list-style:none;cursor:pointer;padding:16px 18px;font-size:15px;font-weight:800;color:#0f172a;display:flex;align-items:center;justify-content:space-between;background:linear-gradient(180deg,#ffffff 0%,#f8fafc 100%);direction:rtl;text-align:right">'
-        + '<span>אודות השירות</span><span style="font-size:18px;color:#64748b">+</span></summary>'
-        + '<div style="padding:0 18px 18px;font-size:14px;line-height:1.9;color:#334155;direction:rtl;text-align:right">'
+        + '<details id="serviceTerms" style="margin-top:1rem;background:#ffffff;border:1px solid #e2e8f0;border-radius:18px;box-shadow:0 2px 16px rgba(0,0,0,.04);overflow:hidden">'
+        + '<summary style="list-style:none;cursor:pointer;padding:18px 22px;font-size:15px;font-weight:800;color:#0f172a;display:flex;align-items:center;justify-content:space-between;background:linear-gradient(180deg,#ffffff 0%,#f8fafc 100%);direction:rtl;text-align:right;transition:background .2s"'
+        + ' onmouseenter="this.style.background=\'#f8fafc\'" onmouseleave="this.style.background=\'linear-gradient(180deg,#ffffff 0%,#f8fafc 100%)\'">'
+        + '<span>ℹ️ אודות השירות</span><span style="font-size:16px;color:#94a3b8">▼</span></summary>'
+        + '<div style="padding:0 22px 22px;font-size:14px;line-height:1.9;color:#334155;direction:rtl;text-align:right">'
         + 'הפלטפורמה מרכזת כלים ודוחות שפותחו מתוך צרכים אמיתיים שעלו מהשטח.<br>'
         + 'לקוחות מנויים נהנים מגישה לכלל הכלים הזמינים במערכת.'
         + '</div></details>'
@@ -8670,15 +8695,15 @@ def support():
         meta = support_status_meta(entry["status"])
         request_type_label = "בקשה לכלי חדש" if entry["request_type"] == "new_tool" else "תמיכה בכלי קיים"
         request_rows += (
-            '<details style="border:1px solid #e2e8f0;border-radius:14px;padding:14px;background:#f8fafc;margin-bottom:10px">'
+            '<details style="border:1px solid #e2e8f0;border-radius:16px;padding:16px;background:linear-gradient(180deg,#ffffff 0%,#f8fafc 100%);margin-bottom:10px;transition:border-color .2s">'
             '<summary style="list-style:none;cursor:pointer;display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap">'
             '<div>'
             '<div style="font-size:14px;font-weight:800;color:#0f172a">' + esc(request_type_label) + '</div>'
-            '<div style="font-size:12px;color:#64748b">' + esc(format_ui_datetime(entry["created_at"])) + (' • ' + esc(entry["script_name"]) if entry["script_name"] else '') + '</div>'
+            '<div style="font-size:12px;color:#64748b;margin-top:4px">' + esc(format_ui_datetime(entry["created_at"])) + (' • ' + esc(entry["script_name"]) if entry["script_name"] else '') + '</div>'
             '</div>'
-            '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap"><span style="display:inline-flex;align-items:center;padding:7px 12px;border-radius:999px;background:' + meta["bg"] + ';color:' + meta["fg"] + ';font-size:12px;font-weight:800">' + esc(meta["label"]) + '</span><span style="font-size:18px;color:#64748b">+</span></div>'
+            '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap"><span style="display:inline-flex;align-items:center;padding:7px 12px;border-radius:999px;background:' + meta["bg"] + ';color:' + meta["fg"] + ';font-size:12px;font-weight:800">' + esc(meta["label"]) + '</span><span style="font-size:16px;color:#94a3b8">▼</span></div>'
             '</summary>'
-            '<div style="font-size:13px;color:#334155;line-height:1.8;white-space:pre-wrap;margin-top:12px">' + esc(entry["message"] or "") + '</div>'
+            '<div style="font-size:13px;color:#334155;line-height:1.8;white-space:pre-wrap;margin-top:14px;padding-top:12px;border-top:1px solid #e2e8f0">' + esc(entry["message"] or "") + '</div>'
             '</details>'
         )
     requests_html = (
@@ -8689,10 +8714,10 @@ def support():
     ) if existing_requests else ""
 
     body = (
-        '<a href="/dashboard" style="color:#2563eb;font-size:13px;text-decoration:none;display:block;margin-bottom:1rem">' + text["back_arrow"] + ' ' + ("חזרה לכלים" if lang == "he" else "Back to tools") + '</a>'
-        + '<div class="card">'
-        + '<div style="font-size:18px;font-weight:800;color:#1e3a8a;margin-bottom:8px">שירות לקוחות</div>'
-        + '<div style="font-size:14px;color:#475569;line-height:1.7;margin-bottom:1rem">אפשר לפתוח פנייה לבקשה לכלי חדש או לקבלת תמיכה בכלי קיים.</div>'
+        '<a href="/dashboard" style="color:#2563eb;font-size:13px;font-weight:600;text-decoration:none;display:inline-flex;align-items:center;gap:4px;margin-bottom:1rem">' + text["back_arrow"] + ' ' + ("חזרה לכלים" if lang == "he" else "Back to tools") + '</a>'
+        + '<div class="card" style="border-radius:18px">'
+        + '<div style="font-size:20px;font-weight:800;color:#0f172a;margin-bottom:8px">💬 שירות לקוחות</div>'
+        + '<div style="font-size:14px;color:#64748b;line-height:1.7;margin-bottom:1.25rem">אפשר לפתוח פנייה לבקשה לכלי חדש או לקבלת תמיכה בכלי קיים.</div>'
         + success
         + error
         + '<form method="POST" id="supportRequestForm">'
@@ -8703,10 +8728,10 @@ def support():
         + '<div id="existingToolFields" style="display:' + ('block' if support_type == 'existing_tool' else 'none') + ';margin-bottom:12px">'
         + inactive_support_note
         + '<label class="field-label">בחירת כלי קיים</label>'
-        + '<select name="support_script_id" style="padding:9px 12px;border:1.5px solid #e2e8f0;border-radius:8px;font-size:13px;font-family:inherit;outline:none;width:100%;margin-bottom:0;background:white">' + script_options + '</select>'
+        + '<select name="support_script_id">' + script_options + '</select>'
         + '</div>'
         + '<label class="field-label">תיאור הפנייה</label>'
-        + '<textarea name="support_message" rows="7" style="width:100%;padding:12px;border:1.5px solid #e2e8f0;border-radius:12px;font-size:13px;font-family:inherit;outline:none;resize:vertical;margin-bottom:14px" placeholder="אפשר לכתוב כאן חופשי את הבקשה או את תיאור התקלה">' + esc(message_text) + '</textarea>'
+        + '<textarea name="support_message" rows="7" style="margin-bottom:14px" placeholder="אפשר לכתוב כאן חופשי את הבקשה או את תיאור התקלה">' + esc(message_text) + '</textarea>'
         + '<div style="display:flex;gap:10px;justify-content:flex-end;flex-wrap:wrap"><a href="/dashboard" class="btn btn-gray" style="text-decoration:none;display:inline-flex;align-items:center;justify-content:center">חזרה</a><button type="submit" class="btn btn-blue">שליחת פנייה</button></div>'
         + '</form>'
         + requests_html
@@ -9109,7 +9134,7 @@ def run_script(script_id):
                         )
                         return render(
                             scr["name"],
-                            '<a href="/dashboard" style="color:#2563eb;font-size:13px;text-decoration:none;display:block;margin-bottom:1rem">' + text["back_arrow"] + ' ' + scr["back_label"] + '</a>'
+                            '<a href="/dashboard" style="color:#2563eb;font-size:13px;font-weight:600;text-decoration:none;display:inline-flex;align-items:center;gap:4px;margin-bottom:1rem">' + text["back_arrow"] + ' ' + scr["back_label"] + '</a>'
                             + '<div class="card"><div style="font-size:40px;margin-bottom:.5rem">' + scr["icon"] + '</div><div style="font-size:20px;font-weight:700;color:#1e3a8a;margin-bottom:4px">' + scr["name"] + '</div>'
                             + error + mapping_confirmation_html + '</div>',
                             lang=lang,
@@ -9132,7 +9157,7 @@ def run_script(script_id):
                         )
                         return render(
                             scr["name"],
-                            '<a href="/dashboard" style="color:#2563eb;font-size:13px;text-decoration:none;display:block;margin-bottom:1rem">' + text["back_arrow"] + ' ' + scr["back_label"] + '</a>'
+                            '<a href="/dashboard" style="color:#2563eb;font-size:13px;font-weight:600;text-decoration:none;display:inline-flex;align-items:center;gap:4px;margin-bottom:1rem">' + text["back_arrow"] + ' ' + scr["back_label"] + '</a>'
                             + '<div class="card"><div style="font-size:40px;margin-bottom:.5rem">' + scr["icon"] + '</div><div style="font-size:20px;font-weight:700;color:#1e3a8a;margin-bottom:4px">' + scr["name"] + '</div>'
                             + error + mapping_confirmation_html + '</div>',
                             lang=lang,
@@ -9151,7 +9176,7 @@ def run_script(script_id):
                         )
                         return render(
                             scr["name"],
-                            '<a href="/dashboard" style="color:#2563eb;font-size:13px;text-decoration:none;display:block;margin-bottom:1rem">' + text["back_arrow"] + ' ' + scr["back_label"] + '</a>'
+                            '<a href="/dashboard" style="color:#2563eb;font-size:13px;font-weight:600;text-decoration:none;display:inline-flex;align-items:center;gap:4px;margin-bottom:1rem">' + text["back_arrow"] + ' ' + scr["back_label"] + '</a>'
                             + '<div class="card"><div style="font-size:40px;margin-bottom:.5rem">' + scr["icon"] + '</div><div style="font-size:20px;font-weight:700;color:#1e3a8a;margin-bottom:4px">' + scr["name"] + '</div>'
                             + error + mapping_confirmation_html + '</div>',
                             lang=lang,
@@ -9169,7 +9194,7 @@ def run_script(script_id):
                         )
                         return render(
                             scr["name"],
-                            '<a href="/dashboard" style="color:#2563eb;font-size:13px;text-decoration:none;display:block;margin-bottom:1rem">' + text["back_arrow"] + ' ' + scr["back_label"] + '</a>'
+                            '<a href="/dashboard" style="color:#2563eb;font-size:13px;font-weight:600;text-decoration:none;display:inline-flex;align-items:center;gap:4px;margin-bottom:1rem">' + text["back_arrow"] + ' ' + scr["back_label"] + '</a>'
                             + '<div class="card"><div style="font-size:40px;margin-bottom:.5rem">' + scr["icon"] + '</div><div style="font-size:20px;font-weight:700;color:#1e3a8a;margin-bottom:4px">' + scr["name"] + '</div>'
                             + error + mapping_confirmation_html + '</div>',
                             lang=lang,
@@ -9199,7 +9224,7 @@ def run_script(script_id):
                         )
                         return render(
                             scr["name"],
-                            '<a href="/dashboard" style="color:#2563eb;font-size:13px;text-decoration:none;display:block;margin-bottom:1rem">' + text["back_arrow"] + ' ' + scr["back_label"] + '</a>'
+                            '<a href="/dashboard" style="color:#2563eb;font-size:13px;font-weight:600;text-decoration:none;display:inline-flex;align-items:center;gap:4px;margin-bottom:1rem">' + text["back_arrow"] + ' ' + scr["back_label"] + '</a>'
                             + '<div class="card"><div style="font-size:40px;margin-bottom:.5rem">' + scr["icon"] + '</div><div style="font-size:20px;font-weight:700;color:#1e3a8a;margin-bottom:4px">' + scr["name"] + '</div>'
                             + error + mapping_confirmation_html + '</div>',
                             lang=lang,
@@ -9222,7 +9247,7 @@ def run_script(script_id):
                         )
                         return render(
                             scr["name"],
-                            '<a href="/dashboard" style="color:#2563eb;font-size:13px;text-decoration:none;display:block;margin-bottom:1rem">' + text["back_arrow"] + ' ' + scr["back_label"] + '</a>'
+                            '<a href="/dashboard" style="color:#2563eb;font-size:13px;font-weight:600;text-decoration:none;display:inline-flex;align-items:center;gap:4px;margin-bottom:1rem">' + text["back_arrow"] + ' ' + scr["back_label"] + '</a>'
                             + '<div class="card"><div style="font-size:40px;margin-bottom:.5rem">' + scr["icon"] + '</div><div style="font-size:20px;font-weight:700;color:#1e3a8a;margin-bottom:4px">' + scr["name"] + '</div>'
                             + error + mapping_confirmation_html + '</div>',
                             lang=lang,
@@ -9245,7 +9270,7 @@ def run_script(script_id):
                         )
                         return render(
                             scr["name"],
-                            '<a href="/dashboard" style="color:#2563eb;font-size:13px;text-decoration:none;display:block;margin-bottom:1rem">' + text["back_arrow"] + ' ' + scr["back_label"] + '</a>'
+                            '<a href="/dashboard" style="color:#2563eb;font-size:13px;font-weight:600;text-decoration:none;display:inline-flex;align-items:center;gap:4px;margin-bottom:1rem">' + text["back_arrow"] + ' ' + scr["back_label"] + '</a>'
                             + '<div class="card"><div style="font-size:40px;margin-bottom:.5rem">' + scr["icon"] + '</div><div style="font-size:20px;font-weight:700;color:#1e3a8a;margin-bottom:4px">' + scr["name"] + '</div>'
                             + error + mapping_confirmation_html + '</div>',
                             lang=lang,
@@ -9278,7 +9303,7 @@ def run_script(script_id):
                         )
                         return render(
                             scr["name"],
-                            '<a href="/dashboard" style="color:#2563eb;font-size:13px;text-decoration:none;display:block;margin-bottom:1rem">' + text["back_arrow"] + ' ' + scr["back_label"] + '</a>'
+                            '<a href="/dashboard" style="color:#2563eb;font-size:13px;font-weight:600;text-decoration:none;display:inline-flex;align-items:center;gap:4px;margin-bottom:1rem">' + text["back_arrow"] + ' ' + scr["back_label"] + '</a>'
                             + '<div class="card"><div style="font-size:40px;margin-bottom:.5rem">' + scr["icon"] + '</div><div style="font-size:20px;font-weight:700;color:#1e3a8a;margin-bottom:4px">' + scr["name"] + '</div>'
                             + error + mapping_confirmation_html + '</div>',
                             lang=lang,
@@ -9301,7 +9326,7 @@ def run_script(script_id):
                         )
                         return render(
                             scr["name"],
-                            '<a href="/dashboard" style="color:#2563eb;font-size:13px;text-decoration:none;display:block;margin-bottom:1rem">' + text["back_arrow"] + ' ' + scr["back_label"] + '</a>'
+                            '<a href="/dashboard" style="color:#2563eb;font-size:13px;font-weight:600;text-decoration:none;display:inline-flex;align-items:center;gap:4px;margin-bottom:1rem">' + text["back_arrow"] + ' ' + scr["back_label"] + '</a>'
                             + '<div class="card"><div style="font-size:40px;margin-bottom:.5rem">' + scr["icon"] + '</div><div style="font-size:20px;font-weight:700;color:#1e3a8a;margin-bottom:4px">' + scr["name"] + '</div>'
                             + error + mapping_confirmation_html + '</div>',
                             lang=lang,
@@ -9324,7 +9349,7 @@ def run_script(script_id):
                         )
                         return render(
                             scr["name"],
-                            '<a href="/dashboard" style="color:#2563eb;font-size:13px;text-decoration:none;display:block;margin-bottom:1rem">' + text["back_arrow"] + ' ' + scr["back_label"] + '</a>'
+                            '<a href="/dashboard" style="color:#2563eb;font-size:13px;font-weight:600;text-decoration:none;display:inline-flex;align-items:center;gap:4px;margin-bottom:1rem">' + text["back_arrow"] + ' ' + scr["back_label"] + '</a>'
                             + '<div class="card"><div style="font-size:40px;margin-bottom:.5rem">' + scr["icon"] + '</div><div style="font-size:20px;font-weight:700;color:#1e3a8a;margin-bottom:4px">' + scr["name"] + '</div>'
                             + error + mapping_confirmation_html + '</div>',
                             lang=lang,
@@ -9351,7 +9376,7 @@ def run_script(script_id):
                         )
                         return render(
                             scr["name"],
-                            '<a href="/dashboard" style="color:#2563eb;font-size:13px;text-decoration:none;display:block;margin-bottom:1rem">' + text["back_arrow"] + ' ' + scr["back_label"] + '</a>'
+                            '<a href="/dashboard" style="color:#2563eb;font-size:13px;font-weight:600;text-decoration:none;display:inline-flex;align-items:center;gap:4px;margin-bottom:1rem">' + text["back_arrow"] + ' ' + scr["back_label"] + '</a>'
                             + '<div class="card"><div style="font-size:40px;margin-bottom:.5rem">' + scr["icon"] + '</div><div style="font-size:20px;font-weight:700;color:#1e3a8a;margin-bottom:4px">' + scr["name"] + '</div>'
                             + error + mapping_confirmation_html + '</div>',
                             lang=lang,
@@ -9380,7 +9405,7 @@ def run_script(script_id):
                         )
                         return render(
                             scr["name"],
-                            '<a href="/dashboard" style="color:#2563eb;font-size:13px;text-decoration:none;display:block;margin-bottom:1rem">' + text["back_arrow"] + ' ' + scr["back_label"] + '</a>'
+                            '<a href="/dashboard" style="color:#2563eb;font-size:13px;font-weight:600;text-decoration:none;display:inline-flex;align-items:center;gap:4px;margin-bottom:1rem">' + text["back_arrow"] + ' ' + scr["back_label"] + '</a>'
                             + '<div class="card"><div style="font-size:40px;margin-bottom:.5rem">' + scr["icon"] + '</div><div style="font-size:20px;font-weight:700;color:#1e3a8a;margin-bottom:4px">' + scr["name"] + '</div>'
                             + error + mapping_confirmation_html + '</div>',
                             lang=lang,
@@ -9403,7 +9428,7 @@ def run_script(script_id):
                         )
                         return render(
                             scr["name"],
-                            '<a href="/dashboard" style="color:#2563eb;font-size:13px;text-decoration:none;display:block;margin-bottom:1rem">' + text["back_arrow"] + ' ' + scr["back_label"] + '</a>'
+                            '<a href="/dashboard" style="color:#2563eb;font-size:13px;font-weight:600;text-decoration:none;display:inline-flex;align-items:center;gap:4px;margin-bottom:1rem">' + text["back_arrow"] + ' ' + scr["back_label"] + '</a>'
                             + '<div class="card"><div style="font-size:40px;margin-bottom:.5rem">' + scr["icon"] + '</div><div style="font-size:20px;font-weight:700;color:#1e3a8a;margin-bottom:4px">' + scr["name"] + '</div>'
                             + error + mapping_confirmation_html + '</div>',
                             lang=lang,
@@ -9426,7 +9451,7 @@ def run_script(script_id):
                         )
                         return render(
                             scr["name"],
-                            '<a href="/dashboard" style="color:#2563eb;font-size:13px;text-decoration:none;display:block;margin-bottom:1rem">' + text["back_arrow"] + ' ' + scr["back_label"] + '</a>'
+                            '<a href="/dashboard" style="color:#2563eb;font-size:13px;font-weight:600;text-decoration:none;display:inline-flex;align-items:center;gap:4px;margin-bottom:1rem">' + text["back_arrow"] + ' ' + scr["back_label"] + '</a>'
                             + '<div class="card"><div style="font-size:40px;margin-bottom:.5rem">' + scr["icon"] + '</div><div style="font-size:20px;font-weight:700;color:#1e3a8a;margin-bottom:4px">' + scr["name"] + '</div>'
                             + error + mapping_confirmation_html + '</div>',
                             lang=lang,
@@ -9450,7 +9475,7 @@ def run_script(script_id):
                         )
                         return render(
                             scr["name"],
-                            '<a href="/dashboard" style="color:#2563eb;font-size:13px;text-decoration:none;display:block;margin-bottom:1rem">' + text["back_arrow"] + ' ' + scr["back_label"] + '</a>'
+                            '<a href="/dashboard" style="color:#2563eb;font-size:13px;font-weight:600;text-decoration:none;display:inline-flex;align-items:center;gap:4px;margin-bottom:1rem">' + text["back_arrow"] + ' ' + scr["back_label"] + '</a>'
                             + '<div class="card"><div style="font-size:40px;margin-bottom:.5rem">' + scr["icon"] + '</div><div style="font-size:20px;font-weight:700;color:#1e3a8a;margin-bottom:4px">' + scr["name"] + '</div>'
                             + error + mapping_confirmation_html + '</div>',
                             lang=lang,
@@ -9704,12 +9729,12 @@ def run_script(script_id):
         )
 
     body = (
-        '<a href="/dashboard" style="color:#2563eb;font-size:13px;text-decoration:none;display:block;margin-bottom:1rem">' + text["back_arrow"] + ' ' + scr["back_label"] + '</a>'
-        + '<div class="card">'
-        + '<div style="font-size:40px;margin-bottom:.5rem">' + scr["icon"] + '</div>'
-        + '<div style="font-size:20px;font-weight:700;color:#1e3a8a;margin-bottom:4px">' + scr["name"] + '</div>'
+        '<a href="/dashboard" style="color:#2563eb;font-size:13px;font-weight:600;text-decoration:none;display:inline-flex;align-items:center;gap:4px;margin-bottom:1rem">' + text["back_arrow"] + ' ' + scr["back_label"] + '</a>'
+        + '<div class="card" style="border-radius:18px">'
+        + '<div style="width:56px;height:56px;border-radius:16px;background:linear-gradient(135deg,#eff6ff,#dbeafe);display:flex;align-items:center;justify-content:center;font-size:28px;margin-bottom:.75rem">' + scr["icon"] + '</div>'
+        + '<div style="font-size:22px;font-weight:800;color:#0f172a;margin-bottom:6px;letter-spacing:-0.3px">' + scr["name"] + '</div>'
         + '<div style="display:flex;align-items:center;justify-content:center;gap:10px;flex-wrap:wrap;margin-bottom:1.75rem">'
-        + '<div style="font-size:13px;color:#64748b">' + scr["desc"] + '</div>'
+        + '<div style="font-size:14px;color:#64748b;line-height:1.6">' + scr["desc"] + '</div>'
         + help_trigger_html
         + rules_trigger_html
         + '</div>'
@@ -11317,15 +11342,15 @@ def marketplace():
         cat_label = TOOL_CATEGORIES.get(tool["category"], tool["category"] or "כללי")
 
         tool_cards += (
-            '<a href="/marketplace/tool/' + str(tool["id"]) + '" style="background:white;border-radius:16px;box-shadow:0 2px 16px rgba(0,0,0,.06);padding:1.25rem;text-decoration:none;display:block;border:1px solid #e2e8f0;transition:transform .15s,box-shadow .15s" '
-            'onmouseover="this.style.transform=\'translateY(-2px)\';this.style.boxShadow=\'0 8px 30px rgba(37,99,235,.12)\'" '
-            'onmouseout="this.style.transform=\'none\';this.style.boxShadow=\'0 2px 16px rgba(0,0,0,.06)\'">'
-            '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">'
-            '<span style="font-size:28px">' + esc(tool["icon"] or "🔧") + '</span>'
+            '<a href="/marketplace/tool/' + str(tool["id"]) + '" style="background:white;border-radius:18px;box-shadow:0 2px 12px rgba(37,99,235,.06);padding:1.5rem;text-decoration:none;display:block;border:1px solid #e2e8f0;transition:all .3s cubic-bezier(.4,0,.2,1)" '
+            'onmouseover="this.style.transform=\'translateY(-3px)\';this.style.boxShadow=\'0 8px 28px rgba(37,99,235,.12)\';this.style.borderColor=\'#bfdbfe\'" '
+            'onmouseout="this.style.transform=\'none\';this.style.boxShadow=\'0 2px 12px rgba(37,99,235,.06)\';this.style.borderColor=\'#e2e8f0\'">'
+            '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">'
+            '<div style="width:44px;height:44px;border-radius:12px;background:linear-gradient(135deg,#eff6ff,#dbeafe);display:flex;align-items:center;justify-content:center;font-size:22px">' + esc(tool["icon"] or "🔧") + '</div>'
             + installed_badge
             + '</div>'
-            '<div style="font-size:15px;font-weight:700;color:#1e3a8a;margin-bottom:4px">' + esc(tool["name"]) + '</div>'
-            '<div style="font-size:12px;color:#64748b;margin-bottom:8px;line-height:1.5;min-height:36px">' + esc((tool["description"] or "")[:100]) + '</div>'
+            '<div style="font-size:15px;font-weight:800;color:#0f172a;margin-bottom:4px">' + esc(tool["name"]) + '</div>'
+            '<div style="font-size:12px;color:#64748b;margin-bottom:8px;line-height:1.6;min-height:36px">' + esc((tool["description"] or "")[:100]) + '</div>'
             '<div style="display:flex;align-items:center;justify-content:space-between;font-size:11px;color:#94a3b8">'
             '<span>' + esc(cat_label) + '</span>'
             '<span>' + stars + ' (' + str(tool["rating_count"] or 0) + ')</span>'
@@ -11343,10 +11368,10 @@ def marketplace():
         )
 
     # Category filter pills
-    cat_pills = '<a href="/marketplace" style="padding:6px 14px;border-radius:99px;font-size:12px;font-weight:600;text-decoration:none;' + ('background:#1e3a8a;color:white' if not category_filter else 'background:#f1f5f9;color:#475569') + '">הכל</a>'
+    cat_pills = '<a href="/marketplace" style="padding:8px 16px;border-radius:99px;font-size:12px;font-weight:700;text-decoration:none;transition:all .2s;' + ('background:linear-gradient(135deg,#1e3a8a,#2563eb);color:white;box-shadow:0 2px 8px rgba(37,99,235,.25)' if not category_filter else 'background:#f1f5f9;color:#475569') + '">הכל</a>'
     for cat_id, cat_name in TOOL_CATEGORIES.items():
         active = category_filter == cat_id
-        cat_pills += '<a href="/marketplace?category=' + cat_id + (('&q=' + esc(search_query)) if search_query else '') + '" style="padding:6px 14px;border-radius:99px;font-size:12px;font-weight:600;text-decoration:none;' + ('background:#1e3a8a;color:white' if active else 'background:#f1f5f9;color:#475569') + '">' + esc(cat_name) + '</a>'
+        cat_pills += '<a href="/marketplace?category=' + cat_id + (('&q=' + esc(search_query)) if search_query else '') + '" style="padding:8px 16px;border-radius:99px;font-size:12px;font-weight:700;text-decoration:none;transition:all .2s;' + ('background:linear-gradient(135deg,#1e3a8a,#2563eb);color:white;box-shadow:0 2px 8px rgba(37,99,235,.25)' if active else 'background:#f1f5f9;color:#475569') + '">' + esc(cat_name) + '</a>'
 
     # My tools section — link to My Tools page
     my_tools_html = ""
@@ -11363,9 +11388,9 @@ def marketplace():
                 '</a>'
             )
         my_tools_html = (
-            '<div class="card" style="margin-bottom:1.5rem;border:1px solid #dbeafe">'
+            '<div class="card" style="margin-bottom:1.5rem;border:1px solid #dbeafe;border-radius:18px">'
             '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">'
-            '<div style="font-size:18px;font-weight:800;color:#1e3a8a">הכלים שלי</div>'
+            '<div style="font-size:18px;font-weight:800;color:#0f172a">📦 הכלים שלי</div>'
             '<a href="/tools/my-tools" style="font-size:13px;color:#2563eb;text-decoration:none;font-weight:600">הצג הכל &#8592;</a>'
             '</div>'
             + my_tools_rows
@@ -11373,27 +11398,27 @@ def marketplace():
         )
 
     body = (
-        '<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;margin-bottom:1.5rem">'
+        '<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:14px;margin-bottom:1.5rem">'
         '<div>'
-        '<h2 style="font-size:24px;font-weight:800;color:#1e3a8a;margin-bottom:4px">🛒 שוק הכלים</h2>'
-        '<p style="font-size:14px;color:#64748b">גלה כלים שנבנו על ידי משתמשים אחרים — או צור כלי משלך עם AI</p>'
+        '<h2 style="font-size:clamp(22px,3.5vw,28px);font-weight:800;color:#0f172a;margin-bottom:6px;letter-spacing:-0.3px">🛒 שוק הכלים</h2>'
+        '<p style="font-size:14px;color:#64748b;line-height:1.6">גלה כלים שנבנו על ידי משתמשים אחרים — או צור כלי משלך עם AI</p>'
         '</div>'
-        '<div style="display:flex;gap:8px">'
-        '<a href="/tools/my-tools" class="btn btn-gray" style="text-decoration:none;display:inline-flex;align-items:center;gap:6px;padding:12px 20px;font-size:14px;border-radius:12px">&#128188; הכלים שלי</a>'
-        '<a href="/tools/create" class="btn btn-blue" style="text-decoration:none;display:inline-flex;align-items:center;gap:6px;padding:12px 20px;font-size:14px;border-radius:12px">&#129302; צור כלי חדש</a>'
+        '<div style="display:flex;gap:10px">'
+        '<a href="/tools/my-tools" class="btn btn-gray" style="text-decoration:none">&#128188; הכלים שלי</a>'
+        '<a href="/tools/create" class="btn btn-blue" style="text-decoration:none">&#129302; צור כלי חדש</a>'
         '</div>'
         '</div>'
         + my_tools_html
-        + '<form method="get" action="/marketplace" style="margin-bottom:1rem;display:flex;gap:8px">'
-        '<input type="text" name="q" value="' + esc(search_query) + '" placeholder="חיפוש כלים..." style="flex:1;padding:10px 14px;border:1.5px solid #e2e8f0;border-radius:12px;font-size:14px;font-family:inherit">'
-        '<button type="submit" class="btn btn-blue" style="border-radius:12px">חפש</button>'
+        + '<form method="get" action="/marketplace" style="margin-bottom:1rem;display:flex;gap:10px">'
+        '<input type="text" name="q" value="' + esc(search_query) + '" placeholder="חיפוש כלים..." style="flex:1">'
+        '<button type="submit" class="btn btn-blue">חפש</button>'
         '</form>'
         '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:1.5rem">' + cat_pills + '</div>'
         '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:1rem">'
         + tool_cards
         + '</div>'
         '<div style="text-align:center;margin-top:2rem">'
-        '<a href="/dashboard" style="color:#2563eb;font-size:14px;text-decoration:none">← חזרה לדשבורד</a>'
+        '<a href="/dashboard" style="color:#2563eb;font-size:14px;font-weight:600;text-decoration:none">← חזרה לדשבורד</a>'
         '</div>'
     )
 
@@ -11461,8 +11486,8 @@ def marketplace_tool_detail(tool_id):
         else:
             detail = step.get("field", "") or step.get("name", "")
         steps_html += (
-            '<div style="display:flex;align-items:center;gap:10px;padding:8px 12px;background:#f8fafc;border-radius:10px;margin-bottom:6px">'
-            '<span style="background:#1e3a8a;color:white;width:24px;height:24px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;flex-shrink:0">' + str(i) + '</span>'
+            '<div style="display:flex;align-items:center;gap:12px;padding:10px 14px;background:linear-gradient(180deg,#f8fafc,#f1f5f9);border:1px solid #e2e8f0;border-radius:12px;margin-bottom:8px">'
+            '<span style="background:linear-gradient(135deg,#1e3a8a,#2563eb);color:white;width:26px;height:26px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;flex-shrink:0">' + str(i) + '</span>'
             '<span style="font-size:13px;color:#0f172a"><strong>' + esc(action) + '</strong> ' + esc(detail) + '</span>'
             '</div>'
         )
@@ -11497,12 +11522,12 @@ def marketplace_tool_detail(tool_id):
             install_btn = '<form method="post" action="/marketplace/tool/' + str(tool_id) + '/install" style="display:inline"><button type="submit" class="btn btn-blue" style="border-radius:12px;padding:12px 24px;font-size:14px">➕ הוסף לדשבורד שלי</button></form>'
 
     body = (
-        '<div style="margin-bottom:1.5rem"><a href="/marketplace" style="color:#2563eb;font-size:13px;text-decoration:none">← חזרה לשוק הכלים</a></div>'
-        '<div class="card">'
+        '<div style="margin-bottom:1.5rem"><a href="/marketplace" style="color:#2563eb;font-size:13px;font-weight:600;text-decoration:none">← חזרה לשוק הכלים</a></div>'
+        '<div class="card" style="border-radius:18px">'
         '<div style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:1rem">'
         '<div>'
-        '<div style="font-size:36px;margin-bottom:8px">' + esc(tool["icon"] or "🔧") + '</div>'
-        '<h2 style="font-size:22px;font-weight:800;color:#1e3a8a;margin-bottom:4px;border:none;padding:0">' + esc(tool["name"]) + '</h2>'
+        '<div style="width:56px;height:56px;border-radius:16px;background:linear-gradient(135deg,#eff6ff,#dbeafe);display:flex;align-items:center;justify-content:center;font-size:28px;margin-bottom:10px">' + esc(tool["icon"] or "🔧") + '</div>'
+        '<h2 style="font-size:22px;font-weight:800;color:#0f172a;margin-bottom:6px;border:none;padding:0;letter-spacing:-0.3px">' + esc(tool["name"]) + '</h2>'
         '<div style="font-size:14px;color:#64748b;line-height:1.7;margin-bottom:8px">' + esc(tool["description"] or "") + '</div>'
         '<div style="font-size:12px;color:#94a3b8">יוצר: ' + esc(tool["creator_name"] or "אנונימי") + ' · ' + str(tool["usage_count"] or 0) + ' שימושים · ' + str(rating_count) + ' דירוגים</div>'
         '</div>'
@@ -11511,15 +11536,15 @@ def marketplace_tool_detail(tool_id):
         + '</div></div>'
         '<div style="margin-bottom:1rem"><span style="font-size:13px;color:#64748b;margin-left:8px">הדירוג שלך:</span>' + star_html + '</div>'
         '</div>'
-        '<div class="card">'
-        '<div style="font-size:16px;font-weight:800;color:#0f172a;margin-bottom:12px">שלבי עיבוד</div>'
+        '<div class="card" style="border-radius:18px">'
+        '<div style="font-size:16px;font-weight:800;color:#0f172a;margin-bottom:12px">⚙️ שלבי עיבוד</div>'
         + (steps_html or '<div style="color:#94a3b8;font-size:13px">אין שלבי עיבוד מוגדרים</div>')
         + '</div>'
-        '<div class="card">'
-        '<div style="font-size:16px;font-weight:800;color:#0f172a;margin-bottom:12px">תגובות</div>'
-        '<form method="post" action="/marketplace/tool/' + str(tool_id) + '/comment" style="margin-bottom:1rem;display:flex;gap:8px">'
-        '<input type="text" name="body" placeholder="כתוב תגובה..." style="flex:1;padding:10px 14px;border:1.5px solid #e2e8f0;border-radius:12px;font-size:14px;font-family:inherit" required>'
-        '<button type="submit" class="btn btn-blue" style="border-radius:12px">שלח</button>'
+        '<div class="card" style="border-radius:18px">'
+        '<div style="font-size:16px;font-weight:800;color:#0f172a;margin-bottom:12px">💬 תגובות</div>'
+        '<form method="post" action="/marketplace/tool/' + str(tool_id) + '/comment" style="margin-bottom:1rem;display:flex;gap:10px">'
+        '<input type="text" name="body" placeholder="כתוב תגובה..." style="flex:1" required>'
+        '<button type="submit" class="btn btn-blue">שלח</button>'
         '</form>'
         + (comments_html or '<div style="color:#94a3b8;font-size:13px;text-align:center;padding:1rem">עדיין אין תגובות — היה הראשון!</div>')
         + '</div>'
@@ -11715,9 +11740,9 @@ def run_marketplace_tool(tool_id):
 
     if result:
         left_panel = (
-            '<div class="card" style="text-align:center">'
+            '<div class="card" style="text-align:center;border-radius:18px">'
             '<div style="font-size:48px;margin-bottom:12px">&#10004;&#65039;</div>'
-            '<div style="font-size:18px;font-weight:800;color:#047857;margin-bottom:12px">הקובץ מוכן!</div>'
+            '<div style="font-size:20px;font-weight:800;color:#047857;margin-bottom:12px">הקובץ מוכן!</div>'
             '<a href="/download/' + esc(result) + '" class="btn btn-blue" style="text-decoration:none;display:inline-flex;padding:12px 28px;border-radius:12px;font-size:15px;margin-bottom:12px">&#11015; הורדת הקובץ</a><br>'
             '<a href="/marketplace/tool/' + str(tool_id) + '/run" style="color:#2563eb;font-size:13px;text-decoration:none">עיבוד קובץ נוסף</a>'
             '</div>'
@@ -11731,10 +11756,10 @@ def run_marketplace_tool(tool_id):
             accept_val = ".xls,.xlsx"
 
         left_panel = (
-            '<div class="card">'
-            '<div style="font-size:28px;margin-bottom:8px">' + esc(tool["icon"] or "🔧") + '</div>'
-            '<h2 style="font-size:20px;font-weight:800;color:#1e3a8a;margin-bottom:4px;border:none;padding:0">' + esc(tool["name"]) + '</h2>'
-            '<div style="font-size:13px;color:#64748b;margin-bottom:1rem;line-height:1.7">' + esc(tool["description"] or "") + '</div>'
+            '<div class="card" style="border-radius:18px">'
+            '<div style="width:48px;height:48px;border-radius:14px;background:linear-gradient(135deg,#eff6ff,#dbeafe);display:flex;align-items:center;justify-content:center;font-size:24px;margin-bottom:10px">' + esc(tool["icon"] or "🔧") + '</div>'
+            '<h2 style="font-size:20px;font-weight:800;color:#0f172a;margin-bottom:6px;border:none;padding:0;letter-spacing:-0.3px">' + esc(tool["name"]) + '</h2>'
+            '<div style="font-size:14px;color:#64748b;margin-bottom:1rem;line-height:1.7">' + esc(tool["description"] or "") + '</div>'
             + error
             + '<form method="post" enctype="multipart/form-data">'
             '<div class="drop-zone" id="dropZone" onclick="document.getElementById(\'fileInput\').click()">'
@@ -12089,7 +12114,27 @@ def tools_create():
 
     # Create new chat session
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    cutoff_24h = (datetime.now() - timedelta(hours=24)).strftime("%Y-%m-%d %H:%M:%S")
+    cutoff_7d = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d %H:%M:%S")
+    cutoff_90d = (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d %H:%M:%S")
     with get_db() as db:
+        # Auto-close stale active sessions (24h inactivity) and clear their data
+        db.execute(
+            "UPDATE tool_chat_sessions SET status='closed', messages_json='[]' WHERE status='active' AND updated_at < ?",
+            (cutoff_24h,),
+        )
+        # Purge old closed/completed sessions (7 days)
+        db.execute(
+            "DELETE FROM tool_chat_sessions WHERE status IN ('closed','completed') AND updated_at < ?",
+            (cutoff_7d,),
+        )
+        # Clean old token usage records (90 days, keep for billing)
+        db.execute(
+            "DELETE FROM chat_token_usage WHERE created_at < ?",
+            (cutoff_90d,),
+        )
+        db.commit()
+
         # Check for existing active session
         existing = db.execute(
             "SELECT id FROM tool_chat_sessions WHERE user_id=? AND status='active' ORDER BY created_at DESC LIMIT 1",
@@ -13274,7 +13319,7 @@ def tools_create_reset():
     # Close existing sessions and redirect to create a fresh one
     with get_db() as db:
         db.execute(
-            "UPDATE tool_chat_sessions SET status='closed' WHERE user_id=? AND status='active'",
+            "UPDATE tool_chat_sessions SET status='closed', messages_json='[]' WHERE user_id=? AND status='active'",
             (session["user_id"],),
         )
         db.commit()
@@ -13320,9 +13365,9 @@ def tools_create_save():
         db.commit()
         new_tool_id = db.execute("SELECT id FROM marketplace_tools WHERE creator_id=? ORDER BY id DESC LIMIT 1", (session["user_id"],)).fetchone()["id"]
 
-        # Close the chat session
+        # Close the chat session and clear messages (data privacy)
         db.execute(
-            "UPDATE tool_chat_sessions SET status='completed' WHERE user_id=? AND status='active'",
+            "UPDATE tool_chat_sessions SET status='completed', messages_json='[]' WHERE user_id=? AND status='active'",
             (session["user_id"],),
         )
         db.commit()
@@ -13378,6 +13423,14 @@ def tools_create_save_brief():
             ),
         )
         db.commit()
+
+        # Close chat session and clear messages (data privacy)
+        if chat_session_id:
+            db.execute(
+                "UPDATE tool_chat_sessions SET status='completed', messages_json='[]' WHERE id=?",
+                (chat_session_id,),
+            )
+            db.commit()
 
     log_user_activity("tool_request", "בקשת כלי חדש", "", tool_name, f"type={request_type}")
 
@@ -13449,14 +13502,14 @@ def my_tools():
         )
 
         created_html += (
-            f'<div style="border:1.5px solid #e2e8f0;border-radius:14px;padding:16px;margin-bottom:12px;background:white;'
-            f'transition:box-shadow .2s;display:flex;align-items:flex-start;gap:14px" '
-            f'onmouseover="this.style.boxShadow=\'0 4px 16px rgba(0,0,0,0.08)\'" '
-            f'onmouseout="this.style.boxShadow=\'none\'">'
-            f'<div style="font-size:32px;flex-shrink:0">{icon}</div>'
+            f'<div style="border:1.5px solid #e2e8f0;border-radius:16px;padding:18px;margin-bottom:12px;background:white;'
+            f'transition:all .3s cubic-bezier(.4,0,.2,1);display:flex;align-items:flex-start;gap:14px" '
+            f'onmouseover="this.style.boxShadow=\'0 8px 24px rgba(37,99,235,.08)\';this.style.borderColor=\'#bfdbfe\'" '
+            f'onmouseout="this.style.boxShadow=\'none\';this.style.borderColor=\'#e2e8f0\'">'
+            f'<div style="width:48px;height:48px;border-radius:14px;background:linear-gradient(135deg,#eff6ff,#dbeafe);display:flex;align-items:center;justify-content:center;font-size:24px;flex-shrink:0">{icon}</div>'
             f'<div style="flex:1;min-width:0">'
             f'<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;flex-wrap:wrap">'
-            f'<span style="font-weight:700;font-size:15px;color:#1e3a8a">{name}</span>'
+            f'<span style="font-weight:800;font-size:15px;color:#0f172a">{name}</span>'
             f'<span style="font-size:11px;padding:2px 8px;border-radius:99px;background:{st_color}15;color:{st_color};font-weight:700">{st_label}</span>'
             f'</div>'
             f'<div style="font-size:13px;color:#64748b;margin-bottom:8px">{desc}</div>'
@@ -13476,11 +13529,13 @@ def my_tools():
         desc = esc(t["description"] or "")[:80]
         tid = t["id"]
         saved_html += (
-            f'<div style="border:1.5px solid #e2e8f0;border-radius:14px;padding:16px;margin-bottom:12px;background:white;'
-            f'display:flex;align-items:center;gap:14px">'
-            f'<div style="font-size:28px;flex-shrink:0">{icon}</div>'
+            f'<div style="border:1.5px solid #e2e8f0;border-radius:16px;padding:18px;margin-bottom:12px;background:white;'
+            f'display:flex;align-items:center;gap:14px;transition:all .3s cubic-bezier(.4,0,.2,1)" '
+            f'onmouseover="this.style.borderColor=\'#bfdbfe\';this.style.boxShadow=\'0 4px 16px rgba(37,99,235,.06)\'" '
+            f'onmouseout="this.style.borderColor=\'#e2e8f0\';this.style.boxShadow=\'none\'">'
+            f'<div style="width:44px;height:44px;border-radius:12px;background:linear-gradient(135deg,#ecfdf5,#d1fae5);display:flex;align-items:center;justify-content:center;font-size:22px;flex-shrink:0">{icon}</div>'
             f'<div style="flex:1;min-width:0">'
-            f'<div style="font-weight:700;font-size:14px;color:#1e3a8a;margin-bottom:2px">{name}</div>'
+            f'<div style="font-weight:800;font-size:14px;color:#0f172a;margin-bottom:2px">{name}</div>'
             f'<div style="font-size:12px;color:#64748b">{desc}</div>'
             f'</div>'
             f'<a href="/marketplace/tool/{tid}/run" class="btn btn-blue" style="font-size:12px;padding:6px 12px;border-radius:8px">&#9654; הפעל</a>'
@@ -13492,20 +13547,20 @@ def my_tools():
 
     body = (
         '<div style="max-width:800px;margin:0 auto">'
-        '<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:1.5rem">'
-        '<h2 style="margin:0;font-size:22px;font-weight:800;color:#1e3a8a">&#128188; הכלים שלי</h2>'
-        '<div style="display:flex;gap:8px">'
-        '<a href="/tools/create" class="btn btn-blue" style="font-size:13px;border-radius:10px">&#10133; כלי חדש</a>'
-        '<a href="/marketplace" class="btn btn-gray" style="font-size:13px;border-radius:10px">&#128722; שוק הכלים</a>'
+        '<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:1.5rem">'
+        '<h2 style="margin:0;font-size:clamp(20px,3vw,24px);font-weight:800;color:#0f172a;letter-spacing:-0.3px">&#128188; הכלים שלי</h2>'
+        '<div style="display:flex;gap:10px">'
+        '<a href="/tools/create" class="btn btn-blue" style="text-decoration:none">&#10133; כלי חדש</a>'
+        '<a href="/marketplace" class="btn btn-gray" style="text-decoration:none">&#128722; שוק הכלים</a>'
         '</div></div>'
         # Created tools section
         '<div style="margin-bottom:2rem">'
-        '<h3 style="font-size:16px;font-weight:700;color:#1e3a8a;margin-bottom:12px;padding-bottom:8px;border-bottom:2px solid #dbeafe">&#9997; כלים שיצרתי</h3>'
+        '<h3 style="font-size:16px;font-weight:800;color:#1e3a8a;margin-bottom:14px;padding-bottom:10px;border-bottom:2px solid #dbeafe">&#9997; כלים שיצרתי</h3>'
         + created_html
         + '</div>'
         # Saved/favorite tools section
         '<div>'
-        '<h3 style="font-size:16px;font-weight:700;color:#1e3a8a;margin-bottom:12px;padding-bottom:8px;border-bottom:2px solid #dbeafe">&#11088; כלים שמורים</h3>'
+        '<h3 style="font-size:16px;font-weight:800;color:#1e3a8a;margin-bottom:14px;padding-bottom:10px;border-bottom:2px solid #dbeafe">&#11088; כלים שמורים</h3>'
         + saved_html
         + '</div>'
         '</div>'
