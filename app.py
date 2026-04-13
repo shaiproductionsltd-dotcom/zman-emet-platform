@@ -4295,22 +4295,40 @@ def write_dept_payroll_output_v2(output_path, worker_rows, dept_settings, client
 
     wb = Workbook()
 
-    # ── Common styles ──
-    header_font = Font(bold=True, size=12, color="FFFFFF")
+    # ── Professional color palette ──
+    header_font = Font(bold=True, size=11, color="FFFFFF")
     header_fill = PatternFill(start_color="1E3A8A", end_color="1E3A8A", fill_type="solid")
     section_font = Font(bold=True, size=11, color="1E3A8A")
     section_fill = PatternFill(start_color="DBEAFE", end_color="DBEAFE", fill_type="solid")
-    total_font = Font(bold=True, size=10, color="15803D")
-    total_fill = PatternFill(start_color="DCFCE7", end_color="DCFCE7", fill_type="solid")
-    grand_font = Font(bold=True, size=11, color="1E3A8A")
-    grand_fill = PatternFill(start_color="E0E7FF", end_color="E0E7FF", fill_type="solid")
+    # Client/worker subtotal — amber/gold
+    subtotal_font = Font(bold=True, size=10, color="92400E")
+    subtotal_fill = PatternFill(start_color="FEF3C7", end_color="FEF3C7", fill_type="solid")
+    # Daily total row per worker — teal
+    daily_total_font = Font(bold=True, size=10, color="115E59")
+    daily_total_fill = PatternFill(start_color="CCFBF1", end_color="CCFBF1", fill_type="solid")
+    # Grand total — bold indigo
+    grand_font = Font(bold=True, size=12, color="FFFFFF")
+    grand_fill = PatternFill(start_color="312E81", end_color="312E81", fill_type="solid")
+    # Error/missing — red
     attn_fill = PatternFill(start_color="FEE2E2", end_color="FEE2E2", fill_type="solid")
+    attn_font = Font(color="991B1B")
+    # Alternating row fills
+    alt_fill_a = PatternFill(start_color="FFFFFF", end_color="FFFFFF", fill_type="solid")
+    alt_fill_b = PatternFill(start_color="F8FAFC", end_color="F8FAFC", fill_type="solid")
+    # Calculation block — slate
+    calc_header_font = Font(bold=True, size=10, color="FFFFFF")
+    calc_header_fill = PatternFill(start_color="475569", end_color="475569", fill_type="solid")
+    calc_value_fill = PatternFill(start_color="F1F5F9", end_color="F1F5F9", fill_type="solid")
+    calc_value_font = Font(bold=True, size=11, color="0F172A")
+    # Info text — subtle
+    info_font = Font(size=10, color="64748B")
+
     num_fmt = '#,##0.00'
     thin_border = Border(
-        left=Side(style="thin", color="E2E8F0"),
-        right=Side(style="thin", color="E2E8F0"),
-        top=Side(style="thin", color="E2E8F0"),
-        bottom=Side(style="thin", color="E2E8F0"),
+        left=Side(style="thin", color="CBD5E1"),
+        right=Side(style="thin", color="CBD5E1"),
+        top=Side(style="thin", color="CBD5E1"),
+        bottom=Side(style="thin", color="CBD5E1"),
     )
 
     def style_header_row(ws, row, headers):
@@ -4318,13 +4336,14 @@ def write_dept_payroll_output_v2(output_path, worker_rows, dept_settings, client
             cell = ws.cell(row=row, column=col_idx, value=h)
             cell.font = header_font
             cell.fill = header_fill
-            cell.alignment = Alignment(horizontal="center")
+            cell.alignment = Alignment(horizontal="center", vertical="center")
             cell.border = thin_border
+        ws.row_dimensions[row].height = 28
 
-    def write_cell(ws, row, col, value, font=None, fill=None, fmt=None):
+    def write_cell(ws, row, col, value, font=None, fill=None, fmt=None, align=None):
         cell = ws.cell(row=row, column=col, value=value)
         cell.border = thin_border
-        cell.alignment = Alignment(horizontal="center")
+        cell.alignment = Alignment(horizontal=align or "center", vertical="center")
         if font:
             cell.font = font
         if fill:
@@ -4482,23 +4501,27 @@ def write_dept_payroll_output_v2(output_path, worker_rows, dept_settings, client
             worker_charge = round(worker_client_hours * charge_rate, 2) if charge_rate else 0
 
             if worker_daily_for_client:
-                # First daily row includes worker name
                 first = True
-                for dr in worker_daily_for_client:
-                    write_cell(ws1, row, 1, wc["worker_name"] if first else "", fmt=None)
-                    write_cell(ws1, row, 2, dr.get("date", ""))
-                    write_cell(ws1, row, 3, dr.get("entry_time", ""))
-                    write_cell(ws1, row, 4, dr.get("exit_time", ""))
-                    write_cell(ws1, row, 5, dr.get("total_hours", 0), fmt=num_fmt)
+                for idx, dr in enumerate(worker_daily_for_client):
+                    row_fill = alt_fill_b if idx % 2 else alt_fill_a
+                    write_cell(ws1, row, 1, wc["worker_name"] if first else "", fill=row_fill, align="right")
+                    write_cell(ws1, row, 2, dr.get("date", ""), fill=row_fill)
+                    write_cell(ws1, row, 3, dr.get("entry_time", ""), fill=row_fill)
+                    write_cell(ws1, row, 4, dr.get("exit_time", ""), fill=row_fill)
+                    write_cell(ws1, row, 5, dr.get("total_hours", 0), fmt=num_fmt, fill=row_fill)
                     if first:
-                        write_cell(ws1, row, 6, worker_client_hours, fmt=num_fmt)
-                        write_cell(ws1, row, 7, charge_rate, fmt=num_fmt)
-                        write_cell(ws1, row, 8, worker_charge, fmt=num_fmt)
+                        write_cell(ws1, row, 6, worker_client_hours, fmt=num_fmt, fill=row_fill)
+                        write_cell(ws1, row, 7, charge_rate, fmt=num_fmt, fill=row_fill)
+                        write_cell(ws1, row, 8, worker_charge, fmt=num_fmt, fill=row_fill)
+                    else:
+                        for c in (6, 7, 8):
+                            write_cell(ws1, row, c, "", fill=row_fill)
                     row += 1
                     first = False
             else:
-                # No daily breakdown, just summary line
-                write_cell(ws1, row, 1, wc["worker_name"])
+                write_cell(ws1, row, 1, wc["worker_name"], align="right")
+                for c in (2, 3, 4, 5):
+                    write_cell(ws1, row, c, "")
                 write_cell(ws1, row, 6, worker_client_hours, fmt=num_fmt)
                 write_cell(ws1, row, 7, charge_rate, fmt=num_fmt)
                 write_cell(ws1, row, 8, worker_charge, fmt=num_fmt)
@@ -4507,12 +4530,13 @@ def write_dept_payroll_output_v2(output_path, worker_rows, dept_settings, client
             client_total_hours += worker_client_hours
             client_total_charge += worker_charge
 
-        # Client total row
-        write_cell(ws1, row, 1, f"סה\"כ {client_info.get('name', client_name)} ({len(workers_for_client)} עובדים)", font=total_font, fill=total_fill)
-        for col_idx in range(2, 9):
-            write_cell(ws1, row, col_idx, "", fill=total_fill)
-        write_cell(ws1, row, 6, round(client_total_hours, 2), font=total_font, fill=total_fill, fmt=num_fmt)
-        write_cell(ws1, row, 8, round(client_total_charge, 2), font=total_font, fill=total_fill, fmt=num_fmt)
+        # Client subtotal row — amber
+        write_cell(ws1, row, 1, f"סה\"כ {client_info.get('name', client_name)} ({len(workers_for_client)} עובדים)", font=subtotal_font, fill=subtotal_fill, align="right")
+        for col_idx in range(2, 6):
+            write_cell(ws1, row, col_idx, "", fill=subtotal_fill)
+        write_cell(ws1, row, 6, round(client_total_hours, 2), font=subtotal_font, fill=subtotal_fill, fmt=num_fmt)
+        write_cell(ws1, row, 7, "", fill=subtotal_fill)
+        write_cell(ws1, row, 8, round(client_total_charge, 2), font=subtotal_font, fill=subtotal_fill, fmt=num_fmt)
         row += 2
 
         grand_charge_total += client_total_charge
@@ -4579,16 +4603,19 @@ def write_dept_payroll_output_v2(output_path, worker_rows, dept_settings, client
             row += 1
         row += 1
 
-    # Grand total
+    # Grand total — bold dark indigo
     if client_workers:
-        write_cell(ws1, row, 1, "סה\"כ חיוב כל הלקוחות", font=grand_font, fill=grand_fill)
+        write_cell(ws1, row, 1, "סה\"כ חיוב כל הלקוחות", font=grand_font, fill=grand_fill, align="right")
         for col_idx in range(2, 8):
             write_cell(ws1, row, col_idx, "", fill=grand_fill)
         write_cell(ws1, row, 8, round(grand_charge_total, 2), font=grand_font, fill=grand_fill, fmt=num_fmt)
         ws1.merge_cells(start_row=row, start_column=1, end_row=row, end_column=7)
+        ws1.row_dimensions[row].height = 32
 
-    for col_idx in range(1, 9):
-        ws1.column_dimensions[get_column_letter(col_idx)].width = 16
+    # Column widths
+    tab1_widths = {1: 20, 2: 14, 3: 10, 4: 10, 5: 12, 6: 18, 7: 14, 8: 14}
+    for col_idx, w in tab1_widths.items():
+        ws1.column_dimensions[get_column_letter(col_idx)].width = w
 
     # ── TAB 2: תשלום לעובד (Pay to Employee) ──
     ws2 = wb.create_sheet(safe_sheet_title("תשלום לעובד", "תשלום"))
@@ -4602,18 +4629,21 @@ def write_dept_payroll_output_v2(output_path, worker_rows, dept_settings, client
 
     for wc in worker_calculations:
         # Worker header
-        ws2.merge_cells(start_row=row, start_column=1, end_row=row, end_column=9)
+        ws2.merge_cells(start_row=row, start_column=1, end_row=row, end_column=7)
         worker_label = f"עובד: {wc['worker_name']}"
         if wc.get("id_number"):
             worker_label += f" | ת.ז: {wc['id_number']}"
         if wc.get("passport"):
-            worker_label += f" | פספורט: {wc['passport']}"
+            worker_label += f" | דרכון: {wc['passport']}"
         if wc.get("phone"):
             worker_label += f" | נייד: {wc['phone']}"
+        if wc.get("department"):
+            worker_label += f" | מחלקה: {wc['department']}"
         cell = ws2.cell(row=row, column=1, value=worker_label)
-        cell.font = section_font
+        cell.font = Font(bold=True, size=12, color="1E3A8A")
         cell.fill = section_fill
-        cell.alignment = Alignment(horizontal="right")
+        cell.alignment = Alignment(horizontal="right", vertical="center")
+        ws2.row_dimensions[row].height = 30
         row += 1
 
         # Daily breakdown headers
@@ -4622,140 +4652,194 @@ def write_dept_payroll_output_v2(output_path, worker_rows, dept_settings, client
         row += 1
 
         daily_rows_list = wc.get("daily_rows", [])
+        daily_hours_sum = 0
         if not daily_rows_list:
-            # No daily data at all — show a red warning row
-            c1 = write_cell(ws2, row, 1, "לא נמצאו נתוני נוכחות לעובד זה")
+            c1 = write_cell(ws2, row, 1, "לא נמצאו נתוני נוכחות לעובד זה", font=Font(bold=True, color="991B1B"), fill=attn_fill, align="right")
             for col_idx in range(2, 8):
                 write_cell(ws2, row, col_idx, "", fill=attn_fill)
-            c1.fill = attn_fill
-            c1.font = Font(bold=True, color="991B1B")
             row += 1
         else:
-            for dr in daily_rows_list:
+            for idx, dr in enumerate(daily_rows_list):
                 missing = dr.get("missing", [])
                 row_has_error = bool(missing)
-                err_fill = attn_fill if row_has_error else None
-                err_font = Font(color="991B1B") if row_has_error else None
-                write_cell(ws2, row, 1, dr.get("date", ""), fill=err_fill, font=err_font)
-                write_cell(ws2, row, 2, dr.get("day_name", ""), fill=err_fill, font=err_font)
-                write_cell(ws2, row, 3, dr.get("entry_time", "") or ("—" if row_has_error else ""), fill=err_fill, font=err_font)
-                write_cell(ws2, row, 4, dr.get("exit_time", "") or ("—" if row_has_error else ""), fill=err_fill, font=err_font)
-                write_cell(ws2, row, 5, dr.get("client_name", "") or ("—" if row_has_error else ""), fill=err_fill, font=err_font)
-                write_cell(ws2, row, 6, dr.get("total_hours", 0), fmt=num_fmt, fill=err_fill, font=err_font)
+                if row_has_error:
+                    rf, rfont = attn_fill, attn_font
+                else:
+                    rf = alt_fill_b if idx % 2 else alt_fill_a
+                    rfont = None
+                write_cell(ws2, row, 1, dr.get("date", ""), fill=rf, font=rfont)
+                write_cell(ws2, row, 2, dr.get("day_name", ""), fill=rf, font=rfont)
+                write_cell(ws2, row, 3, dr.get("entry_time", "") or ("—" if row_has_error else ""), fill=rf, font=rfont)
+                write_cell(ws2, row, 4, dr.get("exit_time", "") or ("—" if row_has_error else ""), fill=rf, font=rfont)
+                write_cell(ws2, row, 5, dr.get("client_name", "") or ("—" if row_has_error else ""), fill=rf, font=rfont, align="right")
+                hrs = dr.get("total_hours", 0)
+                write_cell(ws2, row, 6, hrs, fmt=num_fmt, fill=rf, font=rfont)
+                daily_hours_sum += hrs if isinstance(hrs, (int, float)) else 0
                 if missing:
-                    write_cell(ws2, row, 7, " | ".join(missing), fill=err_fill, font=Font(size=9, color="991B1B"))
+                    write_cell(ws2, row, 7, " | ".join(missing), fill=rf, font=Font(size=9, color="991B1B"))
+                else:
+                    write_cell(ws2, row, 7, "", fill=rf)
                 row += 1
+
+            # ── Daily total row — teal ──
+            write_cell(ws2, row, 1, "סה\"כ נוכחות", font=daily_total_font, fill=daily_total_fill, align="right")
+            for c in range(2, 6):
+                write_cell(ws2, row, c, "", fill=daily_total_fill)
+            write_cell(ws2, row, 6, round(daily_hours_sum, 2), font=daily_total_font, fill=daily_total_fill, fmt=num_fmt)
+            write_cell(ws2, row, 7, f"{len(daily_rows_list)} ימים", font=Font(size=9, color="115E59"), fill=daily_total_fill)
+            row += 1
 
         # Per-client subtotals from תנועות מיוחדות
         if wc.get("client_hours"):
             row += 1
-            write_cell(ws2, row, 1, "סיכום לפי לקוח:", font=Font(bold=True, size=10, color="334155"))
+            write_cell(ws2, row, 1, "פירוט לפי לקוח:", font=Font(bold=True, size=10, color="1E3A8A"), align="right")
             row += 1
-            for cn, hrs in wc["client_hours"].items():
-                write_cell(ws2, row, 1, cn)
-                write_cell(ws2, row, 6, hrs, fmt=num_fmt)
+            for cn_idx, (cn, hrs) in enumerate(wc["client_hours"].items()):
+                rf = alt_fill_b if cn_idx % 2 else alt_fill_a
+                write_cell(ws2, row, 1, cn, fill=rf, align="right")
+                for c in range(2, 6):
+                    write_cell(ws2, row, c, "", fill=rf)
+                write_cell(ws2, row, 6, hrs, fmt=num_fmt, fill=rf)
+                write_cell(ws2, row, 7, "", fill=rf)
                 row += 1
 
-        # Attendance events (vacation, sick leave, etc.)
+        # Attendance events
         if wc.get("attendance_events"):
             row += 1
-            write_cell(ws2, row, 1, "נוכחות אחר:", font=Font(bold=True, size=10, color="6B21A8"))
+            write_cell(ws2, row, 1, "נוכחות אחר:", font=Font(bold=True, size=10, color="6B21A8"), align="right")
             row += 1
+            purple_font = Font(size=10, color="6B21A8")
+            purple_fill = PatternFill(start_color="FAF5FF", end_color="FAF5FF", fill_type="solid")
             for ev_name, ev_hrs in wc["attendance_events"].items():
-                write_cell(ws2, row, 1, ev_name)
-                ws2.cell(row=row, column=1).font = Font(size=10, color="6B21A8")
-                write_cell(ws2, row, 6, ev_hrs, fmt=num_fmt)
+                write_cell(ws2, row, 1, ev_name, font=purple_font, fill=purple_fill, align="right")
+                for c in range(2, 6):
+                    write_cell(ws2, row, c, "", fill=purple_fill)
+                write_cell(ws2, row, 6, ev_hrs, fmt=num_fmt, font=purple_font, fill=purple_fill)
+                write_cell(ws2, row, 7, "", fill=purple_fill)
                 row += 1
 
-        # Unassigned hours summary
+        # Unassigned hours
         if wc.get("unassigned_hours"):
-            row += 1
-            c = write_cell(ws2, row, 1, f"שעות ללא שיוך לקוח: {wc['unassigned_hours']}", font=Font(bold=True, size=10, color="991B1B"))
-            c.fill = attn_fill
-            write_cell(ws2, row, 6, wc["unassigned_hours"], fmt=num_fmt, fill=attn_fill, font=Font(color="991B1B"))
+            write_cell(ws2, row, 1, "שעות ללא שיוך לקוח", font=Font(bold=True, size=10, color="991B1B"), fill=attn_fill, align="right")
+            for c in range(2, 6):
+                write_cell(ws2, row, c, "", fill=attn_fill)
+            write_cell(ws2, row, 6, wc["unassigned_hours"], fmt=num_fmt, fill=attn_fill, font=Font(bold=True, color="991B1B"))
+            write_cell(ws2, row, 7, "", fill=attn_fill)
             row += 1
 
-        # Calculation block
+        # ── Payment calculation block — slate header ──
         row += 1
-        calc_headers = ["שעות לתשלום", "תעריף שעתי", "ברוטו", "3% מיסים", "280 ביטוח", "חיוב דירה", "נטו לתשלום"]
-        style_header_row(ws2, row, calc_headers)
+        calc_headers = ["שעות לתשלום", "תעריף שעתי", "ברוטו", "3% מיסים", "ביטוח (280)", "חיוב דירה", "נטו לתשלום"]
+        for col_idx, h in enumerate(calc_headers, 1):
+            cell = ws2.cell(row=row, column=col_idx, value=h)
+            cell.font = calc_header_font
+            cell.fill = calc_header_fill
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+            cell.border = thin_border
+        ws2.row_dimensions[row].height = 26
         row += 1
 
         hours = wc.get("payable_hours") or 0
-        write_cell(ws2, row, 1, hours, fmt=num_fmt)
-        write_cell(ws2, row, 2, wc.get("hourly_rate", 0), fmt=num_fmt)
-        write_cell(ws2, row, 3, wc.get("gross", 0), fmt=num_fmt)
-        write_cell(ws2, row, 4, wc.get("taxes", 0), fmt=num_fmt)
-        write_cell(ws2, row, 5, wc.get("insurance", 0), fmt=num_fmt)
-        write_cell(ws2, row, 6, wc.get("housing_charge", 0), fmt=num_fmt)
-        write_cell(ws2, row, 7, wc.get("net", 0), fmt=num_fmt)
-
-        if wc["status"] != "OK":
-            for col_idx in range(1, 8):
-                ws2.cell(row=row, column=col_idx).fill = attn_fill
-        row += 2
+        net_val = wc.get("net", 0)
+        for col_idx, val in enumerate([hours, wc.get("hourly_rate", 0), wc.get("gross", 0), wc.get("taxes", 0), wc.get("insurance", 0), wc.get("housing_charge", 0), net_val], 1):
+            cf = calc_value_fill
+            cfo = calc_value_font
+            if wc["status"] != "OK":
+                cf = attn_fill
+                cfo = Font(bold=True, size=11, color="991B1B")
+            write_cell(ws2, row, col_idx, val, fmt=num_fmt, fill=cf, font=cfo)
+        ws2.row_dimensions[row].height = 28
+        row += 3
 
         grand_total_net += wc.get("net", 0)
         grand_total_gross += wc.get("gross", 0)
 
-    # Grand total for employees
-    write_cell(ws2, row, 1, f"סה\"כ תשלום לכל העובדים ({len(worker_calculations)} עובדים)", font=grand_font, fill=grand_fill)
+    # Grand total for employees — dark indigo
+    write_cell(ws2, row, 1, f"סה\"כ תשלום לכל העובדים ({len(worker_calculations)} עובדים)", font=grand_font, fill=grand_fill, align="right")
     write_cell(ws2, row, 2, "", fill=grand_fill)
     write_cell(ws2, row, 3, round(grand_total_gross, 2), font=grand_font, fill=grand_fill, fmt=num_fmt)
     for col_idx in range(4, 7):
         write_cell(ws2, row, col_idx, "", fill=grand_fill)
     write_cell(ws2, row, 7, round(grand_total_net, 2), font=grand_font, fill=grand_fill, fmt=num_fmt)
     ws2.merge_cells(start_row=row, start_column=1, end_row=row, end_column=2)
+    ws2.row_dimensions[row].height = 32
 
-    for col_idx in range(1, 10):
-        ws2.column_dimensions[get_column_letter(col_idx)].width = 16
+    # Column widths
+    tab2_widths = {1: 16, 2: 12, 3: 10, 4: 10, 5: 18, 6: 12, 7: 26}
+    for col_idx, w in tab2_widths.items():
+        ws2.column_dimensions[get_column_letter(col_idx)].width = w
 
-    # ── TAB 3: סיכום חברה (Company Summary) ──
+    # ── TAB 3: סיכום חברה (Company Summary) — Professional dashboard ──
     ws3 = wb.create_sheet(safe_sheet_title("סיכום חברה", "סיכום"))
     ws3.sheet_view.rightToLeft = True
     ws3.sheet_view.showGridLines = False
 
     row = 1
-    # Title
-    ws3.merge_cells(start_row=row, start_column=1, end_row=row, end_column=4)
+    # Title bar — full-width dark indigo
+    ws3.merge_cells(start_row=row, start_column=1, end_row=row, end_column=5)
     cell = ws3.cell(row=row, column=1, value="סיכום חברה")
-    cell.font = Font(bold=True, size=14, color="1E3A8A")
-    cell.alignment = Alignment(horizontal="center")
+    cell.font = Font(bold=True, size=16, color="FFFFFF")
+    cell.fill = grand_fill
+    cell.alignment = Alignment(horizontal="center", vertical="center")
+    for c in range(2, 6):
+        ws3.cell(row=row, column=c).fill = grand_fill
+    ws3.row_dimensions[row].height = 38
     row += 2
 
-    # Summary metrics
+    # ── KPI summary cards ──
     total_unassigned_hours = round(sum(wc.get("unassigned_hours", 0) for wc in worker_calculations), 2)
     total_assigned_hours = round(sum(sum(wc.get("client_hours", {}).values()) for wc in worker_calculations), 2)
     expected_profit = round(grand_charge_total - grand_total_net, 2)
-    summary_items = [
-        ("סה\"כ שולם לעובדים (נטו)", round(grand_total_net, 2)),
-        ("סה\"כ ברוטו עובדים", round(grand_total_gross, 2)),
-        ("סה\"כ חיוב ללקוחות", round(grand_charge_total, 2)),
-        ("רווח צפוי (חיוב − נטו)", expected_profit),
-        ("סה\"כ שעות משויכות ללקוחות", total_assigned_hours),
-        ("סה\"כ שעות ללא שיוך לקוח", total_unassigned_hours),
+
+    kpi_items = [
+        ("סה\"כ חיוב ללקוחות", round(grand_charge_total, 2), "15803D"),
+        ("סה\"כ שולם לעובדים (נטו)", round(grand_total_net, 2), "1E3A8A"),
+        ("סה\"כ ברוטו עובדים", round(grand_total_gross, 2), "475569"),
+        ("רווח צפוי (חיוב − נטו)", expected_profit, "15803D" if expected_profit >= 0 else "DC2626"),
+        ("סה\"כ שעות משויכות ללקוחות", total_assigned_hours, "115E59"),
+        ("סה\"כ שעות ללא שיוך לקוח", total_unassigned_hours, "991B1B" if total_unassigned_hours > 0 else "475569"),
     ]
-    summary_headers = ["פריט", "סכום"]
-    style_header_row(ws3, row, summary_headers)
+    # KPI header
+    kpi_header_fill = PatternFill(start_color="1E3A8A", end_color="1E3A8A", fill_type="solid")
+    ws3.merge_cells(start_row=row, start_column=1, end_row=row, end_column=2)
+    cell = ws3.cell(row=row, column=1, value="מדדים עיקריים")
+    cell.font = Font(bold=True, size=12, color="FFFFFF")
+    cell.fill = kpi_header_fill
+    cell.alignment = Alignment(horizontal="center", vertical="center")
+    ws3.cell(row=row, column=2).fill = kpi_header_fill
+    ws3.row_dimensions[row].height = 30
     row += 1
-    for label, val in summary_items:
-        write_cell(ws3, row, 1, label, font=Font(bold=True, size=11))
-        ws3.cell(row=row, column=1).alignment = Alignment(horizontal="right")
-        write_cell(ws3, row, 2, val, fmt=num_fmt, font=Font(bold=True, size=11, color="15803D" if val >= 0 else "DC2626"))
+
+    for idx, (label, val, color) in enumerate(kpi_items):
+        rf = alt_fill_b if idx % 2 else alt_fill_a
+        write_cell(ws3, row, 1, label, font=Font(bold=True, size=11, color="334155"), fill=rf, align="right")
+        write_cell(ws3, row, 2, val, fmt=num_fmt, font=Font(bold=True, size=12, color=color), fill=rf)
+        ws3.row_dimensions[row].height = 26
         row += 1
 
-    # Per-client breakdown
+    # Grand total bar
+    write_cell(ws3, row, 1, "מספר עובדים", font=grand_font, fill=grand_fill, align="right")
+    write_cell(ws3, row, 2, len(worker_calculations), font=grand_font, fill=grand_fill)
+    ws3.row_dimensions[row].height = 30
     row += 2
-    ws3.merge_cells(start_row=row, start_column=1, end_row=row, end_column=4)
+
+    # ── Per-client breakdown ──
+    ws3.merge_cells(start_row=row, start_column=1, end_row=row, end_column=5)
     cell = ws3.cell(row=row, column=1, value="פירוט לפי לקוח")
-    cell.font = Font(bold=True, size=12, color="1E3A8A")
-    cell.alignment = Alignment(horizontal="right")
+    cell.font = Font(bold=True, size=13, color="FFFFFF")
+    cell.fill = header_fill
+    cell.alignment = Alignment(horizontal="center", vertical="center")
+    for c in range(2, 6):
+        ws3.cell(row=row, column=c).fill = header_fill
+    ws3.row_dimensions[row].height = 30
     row += 1
-    client_breakdown_headers = ["לקוח", "שעות", "תעריף גביה", "סה\"כ חיוב"]
+    client_breakdown_headers = ["לקוח", "שעות", "תעריף גביה", "סה\"כ חיוב", "עובדים"]
     style_header_row(ws3, row, client_breakdown_headers)
     row += 1
 
-    for cn in sorted(client_workers.keys()):
+    client_grand_hours = 0
+    client_grand_charge = 0
+    for cn_idx, cn in enumerate(sorted(client_workers.keys())):
         workers_for_cn = client_workers[cn]
         norm_cn = normalize_token(cn)
         ci = clients_by_name.get(norm_cn, {})
@@ -4771,53 +4855,99 @@ def write_dept_payroll_output_v2(output_path, worker_rows, dept_settings, client
                 cr = ds["charge_rate"]
         total_hrs = round(sum(wc["client_hours"].get(cn, 0) for wc in workers_for_cn), 2)
         total_ch = round(total_hrs * cr, 2) if cr else 0
-        write_cell(ws3, row, 1, ci.get("name", cn))
-        ws3.cell(row=row, column=1).alignment = Alignment(horizontal="right")
-        write_cell(ws3, row, 2, total_hrs, fmt=num_fmt)
-        write_cell(ws3, row, 3, cr, fmt=num_fmt)
-        write_cell(ws3, row, 4, total_ch, fmt=num_fmt)
+        client_grand_hours += total_hrs
+        client_grand_charge += total_ch
+        rf = alt_fill_b if cn_idx % 2 else alt_fill_a
+        write_cell(ws3, row, 1, ci.get("name", cn), fill=rf, align="right")
+        write_cell(ws3, row, 2, total_hrs, fmt=num_fmt, fill=rf)
+        write_cell(ws3, row, 3, cr, fmt=num_fmt, fill=rf)
+        write_cell(ws3, row, 4, total_ch, fmt=num_fmt, fill=rf, font=Font(bold=True, size=10, color="15803D") if total_ch else None)
+        write_cell(ws3, row, 5, len(workers_for_cn), fill=rf)
+        if not cr:
+            for c in range(1, 6):
+                ws3.cell(row=row, column=c).font = Font(color="991B1B", italic=True)
         row += 1
 
-    # Per-worker breakdown
+    # Client grand total — amber
+    write_cell(ws3, row, 1, "סה\"כ לקוחות", font=subtotal_font, fill=subtotal_fill, align="right")
+    write_cell(ws3, row, 2, round(client_grand_hours, 2), font=subtotal_font, fill=subtotal_fill, fmt=num_fmt)
+    write_cell(ws3, row, 3, "", fill=subtotal_fill)
+    write_cell(ws3, row, 4, round(client_grand_charge, 2), font=subtotal_font, fill=subtotal_fill, fmt=num_fmt)
+    write_cell(ws3, row, 5, "", fill=subtotal_fill)
+    ws3.row_dimensions[row].height = 28
     row += 2
-    ws3.merge_cells(start_row=row, start_column=1, end_row=row, end_column=4)
+
+    # ── Per-worker breakdown ──
+    ws3.merge_cells(start_row=row, start_column=1, end_row=row, end_column=5)
     cell = ws3.cell(row=row, column=1, value="פירוט לפי עובד")
-    cell.font = Font(bold=True, size=12, color="1E3A8A")
-    cell.alignment = Alignment(horizontal="right")
+    cell.font = Font(bold=True, size=13, color="FFFFFF")
+    cell.fill = header_fill
+    cell.alignment = Alignment(horizontal="center", vertical="center")
+    for c in range(2, 6):
+        ws3.cell(row=row, column=c).fill = header_fill
+    ws3.row_dimensions[row].height = 30
     row += 1
-    worker_breakdown_headers = ["שם עובד", "שעות", "ברוטו", "נטו"]
+    worker_breakdown_headers = ["שם עובד", "שעות נוכחות", "ברוטו", "נטו", "מצב"]
     style_header_row(ws3, row, worker_breakdown_headers)
     row += 1
 
-    for wc in worker_calculations:
-        write_cell(ws3, row, 1, wc["worker_name"])
-        ws3.cell(row=row, column=1).alignment = Alignment(horizontal="right")
-        write_cell(ws3, row, 2, wc.get("payable_hours") or 0, fmt=num_fmt)
-        write_cell(ws3, row, 3, wc.get("gross", 0), fmt=num_fmt)
-        write_cell(ws3, row, 4, wc.get("net", 0), fmt=num_fmt)
+    for wc_idx, wc in enumerate(worker_calculations):
+        rf = alt_fill_b if wc_idx % 2 else alt_fill_a
+        status_ok = wc.get("status") == "OK"
+        status_txt = "תקין" if status_ok else wc.get("status", "—")
+        status_color = "15803D" if status_ok else "991B1B"
+        write_cell(ws3, row, 1, wc["worker_name"], fill=rf, font=Font(bold=True, size=10), align="right")
+        write_cell(ws3, row, 2, wc.get("payable_hours") or 0, fmt=num_fmt, fill=rf)
+        write_cell(ws3, row, 3, wc.get("gross", 0), fmt=num_fmt, fill=rf)
+        write_cell(ws3, row, 4, wc.get("net", 0), fmt=num_fmt, fill=rf, font=Font(bold=True, size=10, color="1E3A8A"))
+        write_cell(ws3, row, 5, status_txt, fill=rf, font=Font(bold=True, size=10, color=status_color))
         row += 1
 
-    for col_idx in range(1, 5):
-        ws3.column_dimensions[get_column_letter(col_idx)].width = 20
+    # Worker grand total — dark indigo
+    write_cell(ws3, row, 1, f"סה\"כ {len(worker_calculations)} עובדים", font=grand_font, fill=grand_fill, align="right")
+    write_cell(ws3, row, 2, round(sum(wc.get("payable_hours") or 0 for wc in worker_calculations), 2), font=grand_font, fill=grand_fill, fmt=num_fmt)
+    write_cell(ws3, row, 3, round(grand_total_gross, 2), font=grand_font, fill=grand_fill, fmt=num_fmt)
+    write_cell(ws3, row, 4, round(grand_total_net, 2), font=grand_font, fill=grand_fill, fmt=num_fmt)
+    write_cell(ws3, row, 5, "", fill=grand_fill)
+    ws3.row_dimensions[row].height = 32
 
-    # ── Attention sheet (heatmap: critical → warning → info) ──
+    # Column widths
+    tab3_widths = {1: 24, 2: 16, 3: 16, 4: 18, 5: 14}
+    for col_idx, w in tab3_widths.items():
+        ws3.column_dimensions[get_column_letter(col_idx)].width = w
+
+    # ── TAB 4: שימו לב (Alerts) — Professional heatmap dashboard ──
     attn_ws = wb.create_sheet(safe_sheet_title("שימו לב", "שימו לב"))
     attn_ws.sheet_view.rightToLeft = True
     attn_ws.sheet_view.showGridLines = False
+
+    # Title bar
+    attn_ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=4)
+    title_cell = attn_ws.cell(row=1, column=1, value="שימו לב — התראות ובעיות")
+    title_cell.font = Font(bold=True, size=14, color="FFFFFF")
+    title_cell.fill = grand_fill
+    title_cell.alignment = Alignment(horizontal="center", vertical="center")
+    for c in range(2, 5):
+        attn_ws.cell(row=1, column=c).fill = grand_fill
+    attn_ws.row_dimensions[1].height = 36
+
+    # Headers
     attn_headers = ["סוג", "שם", "בעיה", "פירוט"]
     for col_idx, header in enumerate(attn_headers, 1):
-        cell = attn_ws.cell(row=1, column=col_idx, value=header)
-        cell.font = Font(bold=True, size=11, color="FFFFFF")
-        cell.fill = PatternFill(start_color="1E3A8A", end_color="1E3A8A", fill_type="solid")
-        cell.alignment = Alignment(horizontal="center")
+        cell = attn_ws.cell(row=2, column=col_idx, value=header)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+        cell.border = thin_border
+    attn_ws.row_dimensions[2].height = 28
 
-    # Priority levels: 1=critical (red), 2=warning (orange), 3=info (yellow)
+    # Priority levels with icons: 1=critical (red), 2=warning (orange), 3=info (blue)
     critical_fill = PatternFill(start_color="FEE2E2", end_color="FEE2E2", fill_type="solid")
-    critical_font = Font(color="991B1B")
+    critical_font = Font(bold=True, size=10, color="991B1B")
     warning_fill = PatternFill(start_color="FEF3C7", end_color="FEF3C7", fill_type="solid")
-    warning_font = Font(color="92400E")
-    info_fill = PatternFill(start_color="EFF6FF", end_color="EFF6FF", fill_type="solid")
-    info_font = Font(color="1E40AF")
+    warning_font = Font(size=10, color="92400E")
+    info_fill_alert = PatternFill(start_color="EFF6FF", end_color="EFF6FF", fill_type="solid")
+    info_font_alert = Font(size=10, color="1E40AF")
 
     alerts = []  # (priority, type_label, name, problem, detail)
 
@@ -4874,30 +5004,60 @@ def write_dept_payroll_output_v2(output_path, worker_rows, dept_settings, client
     # Sort by priority (1=critical first, 3=info last)
     alerts.sort(key=lambda a: a[0])
 
-    attn_row = 2
+    attn_row = 3
     for priority, type_label, name, problem, detail in alerts:
         if priority == 1:
             row_fill, row_font = critical_fill, critical_font
+            type_prefix = "קריטי"
         elif priority == 2:
             row_fill, row_font = warning_fill, warning_font
+            type_prefix = "אזהרה"
         else:
-            row_fill, row_font = info_fill, info_font
-        for col_idx, val in enumerate([type_label, name, problem, detail], 1):
+            row_fill, row_font = info_fill_alert, info_font_alert
+            type_prefix = "מידע"
+        for col_idx, val in enumerate([f"{type_prefix} — {type_label}", name, problem, detail], 1):
             cell = attn_ws.cell(row=attn_row, column=col_idx, value=val)
             cell.fill = row_fill
             cell.font = row_font
-            cell.alignment = Alignment(horizontal="right")
+            cell.alignment = Alignment(horizontal="right", vertical="center", wrap_text=True)
+            cell.border = thin_border
+        attn_ws.row_dimensions[attn_row].height = 24
         attn_row += 1
 
-    if attn_row == 2:
+    if attn_row == 3:
         # No alerts — write a green "all good" message
-        attn_ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=4)
-        ok_cell = attn_ws.cell(row=2, column=1, value="הכל תקין — לא נמצאו בעיות")
-        ok_cell.font = Font(bold=True, size=12, color="166534")
-        ok_cell.fill = PatternFill(start_color="DCFCE7", end_color="DCFCE7", fill_type="solid")
-        ok_cell.alignment = Alignment(horizontal="center")
+        green_fill = PatternFill(start_color="DCFCE7", end_color="DCFCE7", fill_type="solid")
+        attn_ws.merge_cells(start_row=3, start_column=1, end_row=3, end_column=4)
+        ok_cell = attn_ws.cell(row=3, column=1, value="הכל תקין — לא נמצאו בעיות")
+        ok_cell.font = Font(bold=True, size=13, color="166534")
+        ok_cell.fill = green_fill
+        ok_cell.alignment = Alignment(horizontal="center", vertical="center")
+        for c in range(2, 5):
+            attn_ws.cell(row=3, column=c).fill = green_fill
+        attn_ws.row_dimensions[3].height = 36
+    else:
+        # Summary bar at the bottom
+        attn_row += 1
+        critical_count = sum(1 for a in alerts if a[0] == 1)
+        warning_count = sum(1 for a in alerts if a[0] == 2)
+        info_count = sum(1 for a in alerts if a[0] == 3)
+        summary_txt = f"סה\"כ: {len(alerts)} התראות"
+        if critical_count:
+            summary_txt += f" | {critical_count} קריטיות"
+        if warning_count:
+            summary_txt += f" | {warning_count} אזהרות"
+        if info_count:
+            summary_txt += f" | {info_count} מידע"
+        attn_ws.merge_cells(start_row=attn_row, start_column=1, end_row=attn_row, end_column=4)
+        sum_cell = attn_ws.cell(row=attn_row, column=1, value=summary_txt)
+        sum_cell.font = Font(bold=True, size=11, color="FFFFFF")
+        sum_cell.fill = calc_header_fill
+        sum_cell.alignment = Alignment(horizontal="center", vertical="center")
+        for c in range(2, 5):
+            attn_ws.cell(row=attn_row, column=c).fill = calc_header_fill
+        attn_ws.row_dimensions[attn_row].height = 30
 
-    for col_idx, width in enumerate([10, 22, 22, 40], 1):
+    for col_idx, width in enumerate([18, 22, 24, 42], 1):
         attn_ws.column_dimensions[get_column_letter(col_idx)].width = width
 
     wb.save(output_path)
