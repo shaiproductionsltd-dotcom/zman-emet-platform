@@ -6693,8 +6693,12 @@ def init_db():
         # Add session_type column (assistant vs tool_creation)
         try:
             db.execute("ALTER TABLE tool_chat_sessions ADD COLUMN session_type TEXT NOT NULL DEFAULT 'tool_creation'")
+            db.commit()
         except Exception:
-            pass  # column already exists
+            try:
+                db.conn.rollback()
+            except Exception:
+                pass
         # ── Tool requests (developer briefs from AI chat) ─────────
         db.execute(
             """CREATE TABLE IF NOT EXISTS tool_requests (
