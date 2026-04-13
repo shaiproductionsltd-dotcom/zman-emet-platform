@@ -8839,7 +8839,7 @@ def build_rimon_mapping_options(input_path, extension):
                     header_token = normalize_token(option["header"])
                     exact_token = normalize_token(option.get("exact_header", ""))
                     if (
-                        (any(keyword in exact_token for keyword in keywords) or (not option.get("from_nearby") and any(keyword in header_token for keyword in keywords)))
+                        (any(keyword in exact_token for keyword in keywords) or any(keyword in header_token for keyword in keywords))
                         and looks_like_time_sample(option.get("sample", ""))
                     ):
                         suggested = option["value"]
