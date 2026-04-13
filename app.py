@@ -3630,6 +3630,16 @@ def run_rimon_home_office_summary(input_path, output_path, extension, options=No
 
 # ---- Attendance Alerts ----
 
+ATTENDANCE_ALERT_TYPES = [
+    {"id": "day_over_8h", "label": "מעל 8 שעות עבודה ביום", "color": "FFFDE7", "severity": 2, "category": "long_day"},
+    {"id": "day_over_9h", "label": "מעל 9 שעות עבודה ביום", "color": "FFF3E0", "severity": 4, "category": "long_day"},
+    {"id": "exit_after_20", "label": "עבד אחרי השעה 20:00", "color": "FFF3E0", "severity": 3, "category": "late_exit"},
+    {"id": "exit_after_21", "label": "עבד אחרי השעה 21:00", "color": "FFEBEE", "severity": 5, "category": "late_exit"},
+    {"id": "exit_after_22", "label": "עבד אחרי השעה 22:00", "color": "FFEBEE", "severity": 6, "category": "late_exit"},
+    {"id": "week_over_40h", "label": "עבד מעל 40 שעות שבועיות", "color": "EDE7F6", "severity": 1, "category": "weekly"},
+]
+ATTENDANCE_ALERT_BY_ID = {a["id"]: a for a in ATTENDANCE_ALERT_TYPES}
+
 ATTENDANCE_ALERT_COLORS = {
     "FFEBEE": PatternFill(fill_type="solid", fgColor="FFEBEE"),
     "FFF3E0": PatternFill(fill_type="solid", fgColor="FFF3E0"),
@@ -3658,7 +3668,10 @@ def parse_exit_hour(text):
         except (ValueError, IndexError):
             return None
     try:
-        return float(text)
+        val = float(text)
+        if 0 < val < 1:
+            return val * 24
+        return val
     except (ValueError, TypeError):
         return None
 
@@ -3668,38 +3681,49 @@ def compute_day_total_hours(text):
     return try_parse_hours_value(cleaned)
 
 
-def detect_day_alerts(exit_text, total_text):
+def detect_day_alerts(exit_text, total_text, enabled_alerts=None):
     alerts = []
     exit_hour = parse_exit_hour(exit_text)
     total_hours = compute_day_total_hours(total_text)
+    enabled = enabled_alerts or {a["id"] for a in ATTENDANCE_ALERT_TYPES}
     if exit_hour is not None:
-        if exit_hour >= 21.0:
-            alerts.append({"id": "exit_after_21", "label": "יציאה אחרי 21:00", "color": "FFEBEE", "severity": 5})
-        elif exit_hour >= 20.0:
-            alerts.append({"id": "exit_after_20", "label": "יציאה אחרי 20:00", "color": "FFF3E0", "severity": 3})
+        if exit_hour >= 22.0 and "exit_after_22" in enabled:
+            alerts.append({"id": "exit_after_22", "label": "עבד אחרי 22:00", "color": "FFEBEE", "severity": 6})
+        elif exit_hour >= 21.0 and "exit_after_21" in enabled:
+            alerts.append({"id": "exit_after_21", "label": "עבד אחרי 21:00", "color": "FFEBEE", "severity": 5})
+        elif exit_hour >= 20.0 and "exit_after_20" in enabled:
+            alerts.append({"id": "exit_after_20", "label": "עבד אחרי 20:00", "color": "FFF3E0", "severity": 3})
     if total_hours is not None:
-        if total_hours > 12:
-            alerts.append({"id": "day_over_12h", "label": "יום מעל 12 שעות", "color": "FFEBEE", "severity": 6})
-        elif total_hours > 9:
-            alerts.append({"id": "day_over_9h", "label": "יום מעל 9 שעות", "color": "FFF3E0", "severity": 4})
-        elif total_hours > 8:
-            alerts.append({"id": "day_over_8h", "label": "יום מעל 8 שעות", "color": "FFFDE7", "severity": 2})
+        if total_hours > 9 and "day_over_9h" in enabled:
+            alerts.append({"id": "day_over_9h", "label": "מעל 9 שעות ביום", "color": "FFF3E0", "severity": 4})
+        elif total_hours > 8 and "day_over_8h" in enabled:
+            alerts.append({"id": "day_over_8h", "label": "מעל 8 שעות ביום", "color": "FFFDE7", "severity": 2})
     return alerts
 
 
-def get_israeli_week_key(date_obj):
+def get_israeli_week_sunday(date_obj):
     if date_obj is None:
-        return (0, 0)
-    adjusted = date_obj - timedelta(days=(date_obj.weekday() + 1) % 7)
-    return (adjusted.year, adjusted.timetuple().tm_yday)
+        return None
+    weekday = date_obj.weekday()
+    offset = (weekday + 1) % 7
+    return date_obj - timedelta(days=offset)
 
 
-def parse_attendance_alerts_report(input_path, extension, mapping):
+def get_israeli_week_range(date_obj):
+    sunday = get_israeli_week_sunday(date_obj)
+    if sunday is None:
+        return None, None
+    saturday = sunday + timedelta(days=6)
+    return sunday, saturday
+
+
+def parse_attendance_alerts_report(input_path, extension, mapping, enabled_alerts=None):
     workbook_kind, workbook = open_excel_workbook(input_path, extension)
     sheets = iter_excel_sheets(workbook_kind, workbook)
     employee_summaries = []
     employee_daily_data = {}
     all_dates = []
+    enabled = enabled_alerts or {a["id"] for a in ATTENDANCE_ALERT_TYPES}
 
     for sheet in sheets:
         header_row = detect_rimon_header_row(sheet, workbook_kind)
@@ -3760,6 +3784,8 @@ def parse_attendance_alerts_report(input_path, extension, mapping):
         for day in raw_days:
             if merged_days and day["date"] and merged_days[-1]["date"] == day["date"]:
                 prev = merged_days[-1]
+                if day["entry"] and not prev["entry"]:
+                    prev["entry"] = day["entry"]
                 if day["exit"]:
                     prev["exit"] = day["exit"]
                 if day["total"]:
@@ -3778,7 +3804,7 @@ def parse_attendance_alerts_report(input_path, extension, mapping):
         total_alerts = 0
         daily_data = []
         for day in merged_days:
-            alerts = detect_day_alerts(day["exit"], day["total"])
+            alerts = detect_day_alerts(day["exit"], day["total"], enabled)
             total_alerts += len(alerts)
             max_severity = max((a["severity"] for a in alerts), default=0)
             row_color = ""
@@ -3788,33 +3814,51 @@ def parse_attendance_alerts_report(input_path, extension, mapping):
             day["row_color"] = row_color
             day["alert_texts"] = " | ".join(a["label"] for a in sorted(alerts, key=lambda x: -x["severity"]))
             day["weekly_alert"] = False
+            day["weekly_range_label"] = ""
             if day["date"]:
                 all_dates.append(day["date"])
             daily_data.append(day)
 
-        # Weekly totals
-        weekly_totals = {}
-        for day in daily_data:
-            if not day["date"]:
-                continue
-            wk = get_israeli_week_key(day["date"])
-            total_h = compute_day_total_hours(day["total"])
-            if total_h is not None:
-                weekly_totals[wk] = weekly_totals.get(wk, 0) + total_h
+        # Weekly 40h check — only complete weeks (Sun-Sat fully within data range)
+        if "week_over_40h" in enabled and daily_data:
+            emp_dates = sorted(d["date"] for d in daily_data if d["date"])
+            if emp_dates:
+                first_date = emp_dates[0]
+                last_date = emp_dates[-1]
+                weekly_totals = {}
+                weekly_date_ranges = {}
+                for day in daily_data:
+                    if not day["date"]:
+                        continue
+                    sunday = get_israeli_week_sunday(day["date"])
+                    saturday = sunday + timedelta(days=6)
+                    # Only count complete weeks: both Sunday and Saturday must be within data range
+                    if sunday < first_date or saturday > last_date:
+                        continue
+                    wk_key = (sunday, saturday)
+                    total_h = compute_day_total_hours(day["total"])
+                    if total_h is not None:
+                        weekly_totals[wk_key] = weekly_totals.get(wk_key, 0) + total_h
+                    weekly_date_ranges[wk_key] = (sunday, saturday)
 
-        for day in daily_data:
-            if not day["date"]:
-                continue
-            wk = get_israeli_week_key(day["date"])
-            if weekly_totals.get(wk, 0) > 40:
-                day["weekly_alert"] = True
-                weekly_alert = {"id": "week_over_40h", "label": "שבוע מעל 40 שעות", "color": "EDE7F6", "severity": 1}
-                day["alerts"].append(weekly_alert)
-                if not day["alert_texts"]:
-                    day["alert_texts"] = weekly_alert["label"]
-                else:
-                    day["alert_texts"] += " | " + weekly_alert["label"]
-                total_alerts += 1
+                for day in daily_data:
+                    if not day["date"]:
+                        continue
+                    sunday = get_israeli_week_sunday(day["date"])
+                    saturday = sunday + timedelta(days=6)
+                    wk_key = (sunday, saturday)
+                    if wk_key in weekly_totals and weekly_totals[wk_key] > 40:
+                        day["weekly_alert"] = True
+                        range_label = sunday.strftime("%d/%m") + "-" + saturday.strftime("%d/%m")
+                        day["weekly_range_label"] = range_label
+                        weekly_label = "מעל 40ש שבועיות (" + range_label + ")"
+                        weekly_alert = {"id": "week_over_40h", "label": weekly_label, "color": "EDE7F6", "severity": 1}
+                        day["alerts"].append(weekly_alert)
+                        if not day["alert_texts"]:
+                            day["alert_texts"] = weekly_label
+                        else:
+                            day["alert_texts"] += " | " + weekly_label
+                        total_alerts += 1
 
         alert_counts = {}
         for day in daily_data:
@@ -3840,22 +3884,25 @@ def parse_attendance_alerts_report(input_path, extension, mapping):
     return employee_summaries, employee_daily_data, report_meta
 
 
-def write_attendance_alerts_summary(ws, summaries, employee_daily_data, meta):
+def write_attendance_alerts_summary(ws, summaries, employee_daily_data, meta, enabled_alerts=None):
     ws.title = safe_sheet_title("סיכום התראות", "Alert Summary")
     ws.sheet_view.rightToLeft = True
     ws.sheet_view.showGridLines = False
     title_font = Font(name="Calibri", size=16, bold=True, color="1E3A8A")
+    section_font = Font(name="Calibri", size=14, bold=True, color="1E3A8A")
     header_font = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
     header_fill = PatternFill(fill_type="solid", fgColor="1E3A8A")
+    enabled = enabled_alerts or {a["id"] for a in ATTENDANCE_ALERT_TYPES}
 
+    # --- Title ---
     ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=7)
     ws["A1"] = "דוח התראות נוכחות"
     ws["A1"].font = title_font
     ws["A1"].alignment = Alignment(horizontal="center")
     ws["A1"].fill = PatternFill(fill_type="solid", fgColor="BFDBFE")
-
     ws.cell(row=2, column=1, value=meta.get("date_range", "")).font = Font(name="Calibri", size=11, color="64748B")
 
+    # --- Metrics ---
     metrics = [
         ("סה\"כ עובדים", str(meta["total_employees"]), "E0F2FE"),
         ("סה\"כ התראות", str(meta["total_alerts"]), "FEE2E2"),
@@ -3871,20 +3918,19 @@ def write_attendance_alerts_summary(ws, summaries, employee_daily_data, meta):
         label_cell.alignment = Alignment(horizontal="right")
         value_cell.alignment = Alignment(horizontal="center")
 
-    # Employee alert count table
+    # --- Employee summary table ---
     row_num = 6
     emp_headers = ["שם עובד", "מספר עובד", "מחלקה", "סה\"כ התראות", "יציאה מאוחרת", "יום ארוך", "שבוע מעל 40ש"]
-    for col_idx, header in enumerate(emp_headers, 1):
-        cell = ws.cell(row=row_num, column=col_idx, value=header)
+    for col_idx, h in enumerate(emp_headers, 1):
+        cell = ws.cell(row=row_num, column=col_idx, value=h)
         cell.font = header_font
         cell.fill = header_fill
         cell.alignment = Alignment(horizontal="center")
-
     sorted_summaries = sorted(summaries, key=lambda x: -x["total_alerts"])
     for emp in sorted_summaries:
         row_num += 1
-        exit_alerts = emp["alert_counts"].get("exit_after_20", 0) + emp["alert_counts"].get("exit_after_21", 0)
-        day_alerts = emp["alert_counts"].get("day_over_8h", 0) + emp["alert_counts"].get("day_over_9h", 0) + emp["alert_counts"].get("day_over_12h", 0)
+        exit_alerts = emp["alert_counts"].get("exit_after_20", 0) + emp["alert_counts"].get("exit_after_21", 0) + emp["alert_counts"].get("exit_after_22", 0)
+        day_alerts = emp["alert_counts"].get("day_over_8h", 0) + emp["alert_counts"].get("day_over_9h", 0)
         week_alerts = emp["alert_counts"].get("week_over_40h", 0)
         values = [emp["name"], emp["number"], emp["department"], emp["total_alerts"], exit_alerts, day_alerts, week_alerts]
         for col_idx, val in enumerate(values, 1):
@@ -3895,65 +3941,142 @@ def write_attendance_alerts_summary(ws, summaries, employee_daily_data, meta):
             if emp["total_alerts"] > 0 and col_idx == 4:
                 cell.font = Font(bold=True, color="DC2626")
 
-    # Detailed alert list
-    row_num += 2
-    ws.cell(row=row_num, column=1, value="פירוט התראות").font = Font(name="Calibri", size=14, bold=True, color="1E3A8A")
-    row_num += 1
-    detail_headers = ["שם עובד", "תאריך", "סוג התראה", "חומרה", "פירוט"]
-    for col_idx, header in enumerate(detail_headers, 1):
-        cell = ws.cell(row=row_num, column=col_idx, value=header)
-        cell.font = header_font
-        cell.fill = header_fill
-        cell.alignment = Alignment(horizontal="center")
+    # --- Department summary table ---
+    has_departments = any(e["department"] for e in summaries)
+    if has_departments:
+        row_num += 2
+        ws.cell(row=row_num, column=1, value="סיכום לפי מחלקות").font = section_font
+        row_num += 1
+        dept_headers = ["מחלקה", "עובדים", "סה\"כ התראות", "יציאה מאוחרת", "יום ארוך", "שבוע מעל 40ש"]
+        for col_idx, h in enumerate(dept_headers, 1):
+            cell = ws.cell(row=row_num, column=col_idx, value=h)
+            cell.font = header_font
+            cell.fill = PatternFill(fill_type="solid", fgColor="334155")
+            cell.alignment = Alignment(horizontal="center")
+        dept_data = {}
+        for emp in summaries:
+            dept = emp["department"] or "(ללא מחלקה)"
+            if dept not in dept_data:
+                dept_data[dept] = {"count": 0, "total": 0, "exit": 0, "day": 0, "week": 0}
+            dept_data[dept]["count"] += 1
+            dept_data[dept]["total"] += emp["total_alerts"]
+            dept_data[dept]["exit"] += emp["alert_counts"].get("exit_after_20", 0) + emp["alert_counts"].get("exit_after_21", 0) + emp["alert_counts"].get("exit_after_22", 0)
+            dept_data[dept]["day"] += emp["alert_counts"].get("day_over_8h", 0) + emp["alert_counts"].get("day_over_9h", 0)
+            dept_data[dept]["week"] += emp["alert_counts"].get("week_over_40h", 0)
+        for dept_name in sorted(dept_data.keys(), key=lambda d: -dept_data[d]["total"]):
+            row_num += 1
+            d = dept_data[dept_name]
+            for col_idx, val in enumerate([dept_name, d["count"], d["total"], d["exit"], d["day"], d["week"]], 1):
+                cell = ws.cell(row=row_num, column=col_idx, value=val)
+                cell.alignment = Alignment(horizontal="right")
+                if row_num % 2 == 0:
+                    cell.fill = PatternFill(fill_type="solid", fgColor="F8FAFC")
 
-    severity_labels = {1: "נמוכה", 2: "נמוכה", 3: "בינונית", 4: "בינונית", 5: "גבוהה", 6: "קריטית"}
-    for emp in sorted_summaries:
-        daily = employee_daily_data.get(emp["name"], [])
-        for day in daily:
-            for alert in day.get("alerts", []):
-                row_num += 1
-                date_str = day["date"].strftime("%d/%m/%Y") if day.get("date") else ""
-                detail = ""
-                if "exit" in alert["id"]:
-                    detail = "יציאה: " + day.get("exit", "")
-                elif "day_over" in alert["id"]:
-                    detail = 'סה"כ: ' + day.get("total", "")
-                elif "week" in alert["id"]:
-                    detail = "סה\"כ שבועי מעל 40 שעות"
-                values = [emp["name"], date_str, alert["label"], severity_labels.get(alert["severity"], ""), detail]
-                for col_idx, val in enumerate(values, 1):
-                    cell = ws.cell(row=row_num, column=col_idx, value=val)
-                    cell.alignment = Alignment(horizontal="right")
-                    color = alert.get("color", "")
-                    if color in ATTENDANCE_ALERT_COLORS:
-                        cell.fill = ATTENDANCE_ALERT_COLORS[color]
+    # --- Per alert type breakdown ---
+    alert_type_order = [a for a in ATTENDANCE_ALERT_TYPES if a["id"] in enabled]
+    for alert_type in alert_type_order:
+        instances = []
+        for emp in sorted_summaries:
+            daily = employee_daily_data.get(emp["name"], [])
+            for day in daily:
+                for alert in day.get("alerts", []):
+                    if alert["id"] == alert_type["id"]:
+                        instances.append({"name": emp["name"], "number": emp["number"], "department": emp["department"], "date": day.get("date"), "detail": day.get("exit", "") if "exit" in alert["id"] else day.get("total", "")})
+        if not instances:
+            continue
+        row_num += 2
+        ws.cell(row=row_num, column=1, value=alert_type["label"] + " (" + str(len(instances)) + ")").font = section_font
+        row_num += 1
+        alert_color = alert_type["color"]
+        alert_fill = ATTENDANCE_ALERT_COLORS.get(alert_color)
+        sub_headers = ["שם עובד", "מספר עובד", "מחלקה", "תאריך", "פירוט"]
+        for col_idx, h in enumerate(sub_headers, 1):
+            cell = ws.cell(row=row_num, column=col_idx, value=h)
+            cell.font = header_font
+            cell.fill = PatternFill(fill_type="solid", fgColor="475569")
+            cell.alignment = Alignment(horizontal="center")
+        for inst in sorted(instances, key=lambda x: (x["name"], x["date"] or date.min)):
+            row_num += 1
+            date_str = inst["date"].strftime("%d/%m/%Y") if inst["date"] else ""
+            detail = ""
+            if "exit" in alert_type["id"]:
+                detail = "יציאה: " + inst["detail"] if inst["detail"] else ""
+            elif "day_over" in alert_type["id"]:
+                detail = 'סה"כ: ' + inst["detail"] if inst["detail"] else ""
+            elif "week" in alert_type["id"]:
+                detail = "שבוע מעל 40 שעות"
+            for col_idx, val in enumerate([inst["name"], inst["number"], inst["department"], date_str, detail], 1):
+                cell = ws.cell(row=row_num, column=col_idx, value=val)
+                cell.alignment = Alignment(horizontal="right")
+                if alert_fill:
+                    cell.fill = alert_fill
 
-    widths = [22, 14, 22, 12, 22, 14, 18]
+    widths = [22, 14, 22, 14, 22, 14, 18]
     for col_idx, w in enumerate(widths, 1):
         ws.column_dimensions[get_column_letter(col_idx)].width = w
 
 
-def write_attendance_alerts_employee_tab(ws, name, daily_data):
+def write_attendance_alerts_employee_tab(ws, name, daily_data, emp_summary):
     ws.title = safe_sheet_title(name, "Employee")
     ws.sheet_view.rightToLeft = True
     ws.sheet_view.showGridLines = False
-    ws.freeze_panes = "A2"
 
-    headers = [
-        "תאריך", "יום", "כניסה", "יציאה", "סה\"כ שעות", "תקן", "הפסקה", "חוסר",
-        "רגילות", "100%", "125%", "150%", "200%", "אירוע", "שגיאות", "התראות",
-    ]
     header_font = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
     header_fill = PatternFill(fill_type="solid", fgColor="1E3A8A")
     purple_border = Border(left=Side(style="medium", color="7C3AED"))
 
-    for col_idx, header in enumerate(headers, 1):
-        cell = ws.cell(row=1, column=col_idx, value=header)
+    # --- Employee summary header ---
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=8)
+    ws["A1"] = name
+    ws["A1"].font = Font(name="Calibri", size=14, bold=True, color="1E3A8A")
+    ws["A1"].alignment = Alignment(horizontal="center")
+    ws["A1"].fill = PatternFill(fill_type="solid", fgColor="BFDBFE")
+
+    total_alerts = emp_summary.get("total_alerts", 0)
+    alert_counts = emp_summary.get("alert_counts", {})
+    exit_alerts = alert_counts.get("exit_after_20", 0) + alert_counts.get("exit_after_21", 0) + alert_counts.get("exit_after_22", 0)
+    day_alerts = alert_counts.get("day_over_8h", 0) + alert_counts.get("day_over_9h", 0)
+    week_alerts = alert_counts.get("week_over_40h", 0)
+
+    summary_items = [
+        ("סה\"כ התראות", str(total_alerts), "FEE2E2"),
+        ("יציאה מאוחרת", str(exit_alerts), "FFF3E0"),
+        ("יום ארוך", str(day_alerts), "FFFDE7"),
+        ("שבוע מעל 40ש", str(week_alerts), "EDE7F6"),
+    ]
+    for idx, (label, value, color) in enumerate(summary_items):
+        lc = ws.cell(row=2, column=idx * 2 + 1, value=label)
+        vc = ws.cell(row=2, column=idx * 2 + 2, value=value)
+        lc.font = Font(bold=True, size=10, color="334155")
+        vc.font = Font(bold=True, size=13, color="1E3A8A")
+        lc.fill = PatternFill(fill_type="solid", fgColor=color)
+        vc.fill = PatternFill(fill_type="solid", fgColor=color)
+        lc.alignment = Alignment(horizontal="right")
+        vc.alignment = Alignment(horizontal="center")
+
+    # Alert dates mini-summary
+    alert_dates = sorted(set(d["date"] for d in daily_data if d.get("alerts") and d.get("date")))
+    dates_text = ", ".join(d.strftime("%d/%m") for d in alert_dates[:15])
+    if len(alert_dates) > 15:
+        dates_text += "..."
+    if dates_text:
+        ws.cell(row=3, column=1, value="תאריכי התראות: " + dates_text).font = Font(size=10, color="64748B")
+
+    # --- Daily data table ---
+    data_start_row = 5
+    headers = [
+        "תאריך", "יום", "כניסה", "יציאה", "סה\"כ שעות", "תקן", "הפסקה", "חוסר",
+        "רגילות", "100%", "125%", "150%", "200%", "אירוע", "שגיאות", "התראות",
+    ]
+    for col_idx, h in enumerate(headers, 1):
+        cell = ws.cell(row=data_start_row, column=col_idx, value=h)
         cell.font = header_font
         cell.fill = header_fill
         cell.alignment = Alignment(horizontal="center")
+    ws.freeze_panes = "A" + str(data_start_row + 1)
 
-    for row_idx, day in enumerate(daily_data, start=2):
+    for row_offset, day in enumerate(daily_data):
+        row_idx = data_start_row + 1 + row_offset
         date_str = day["date"].strftime("%d/%m/%Y") if day.get("date") else ""
         values = [
             date_str, day.get("day_name", ""), day.get("entry", ""), day.get("exit", ""),
@@ -3985,13 +4108,19 @@ def run_attendance_alerts(input_path, output_path, extension, options=None):
     options = options or {}
     mapping = default_attendance_alerts_mapping()
     mapping.update({key: value for key, value in options.items() if key.endswith("_source")})
-    summaries, daily_data, meta = parse_attendance_alerts_report(input_path, extension, mapping)
+    enabled_alerts = set()
+    for a in ATTENDANCE_ALERT_TYPES:
+        if options.get("alert_" + a["id"]) != "0":
+            enabled_alerts.add(a["id"])
+    if not enabled_alerts:
+        enabled_alerts = {a["id"] for a in ATTENDANCE_ALERT_TYPES}
+    summaries, daily_data, meta = parse_attendance_alerts_report(input_path, extension, mapping, enabled_alerts)
     wb = Workbook()
-    write_attendance_alerts_summary(wb.active, summaries, daily_data, meta)
+    write_attendance_alerts_summary(wb.active, summaries, daily_data, meta, enabled_alerts)
     for emp in summaries:
         emp_daily = daily_data.get(emp["name"], [])
         if emp_daily:
-            write_attendance_alerts_employee_tab(wb.create_sheet(), emp["name"], emp_daily)
+            write_attendance_alerts_employee_tab(wb.create_sheet(), emp["name"], emp_daily, emp)
     wb.save(output_path)
     return {"warnings": []}
 
@@ -9209,6 +9338,20 @@ def build_attendance_alerts_mapping_form(script_id, temp_upload_path, temp_uploa
         + '</div>'
         + '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-bottom:12px">' + mapping_fields_html + '</div>'
         + '<div style="font-size:12px;color:#64748b;line-height:1.7;margin-bottom:12px">שדות חובה: שם עובד, מספר עובד, תאריך ואירוע. שדות נוספים (הפסקה, שעות רגילות, שעות נוספות) ישפרו את הדוח.</div>'
+        + '<div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;padding:12px;margin-bottom:14px">'
+        + '<div style="font-size:14px;font-weight:700;color:#0f172a;margin-bottom:10px">בחירת התראות לדוח</div>'
+        + '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px">'
+        + ''.join(
+            '<label style="display:flex;align-items:center;gap:8px;font-size:13px;color:#334155;padding:6px 10px;border-radius:8px;background:white;border:1px solid #e2e8f0;cursor:pointer">'
+            + '<input type="checkbox" name="alert_' + a["id"] + '" value="1" checked>'
+            + '<span style="width:12px;height:12px;border-radius:3px;background:#' + a["color"] + ';border:1px solid #cbd5e1;flex-shrink:0"></span>'
+            + a["label"]
+            + '</label>'
+            for a in ATTENDANCE_ALERT_TYPES
+        )
+        + '</div>'
+        + '<div style="font-size:11px;color:#94a3b8;margin-top:6px">בטל סימון של התראות שלא רלוונטיות. רק התראות מסומנות יופיעו בדוח.</div>'
+        + '</div>'
         + '<div style="display:flex;gap:10px;flex-wrap:wrap;justify-content:center"><button type="submit" id="mappingConfirmButton" name="mapping_action" value="confirm" class="btn btn-blue" style="min-width:220px">אשר הכל והפעל עיבוד</button><a href="/run/' + script_id + '" class="btn btn-gray" style="text-decoration:none;display:inline-flex;align-items:center;justify-content:center;min-width:150px">העלאת קובץ חדש</a></div>'
         + '</div></div>'
         + '</div>'
@@ -11501,6 +11644,10 @@ def run_script(script_id):
                     options.update(org_options)
                 elif script_id == "matan_manual_corrections":
                     options.update(corrections_filters)
+                elif script_id == "attendance_alerts":
+                    for a in ATTENDANCE_ALERT_TYPES:
+                        key = "alert_" + a["id"]
+                        options[key] = "1" if request.form.get(key) else "0"
                 result_name = build_output_filename(scr, uid, options)
                 out = str(OUTPUT_FOLDER / result_name)
                 try:
