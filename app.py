@@ -3975,13 +3975,30 @@ def write_attendance_alerts_summary(ws, summaries, employee_daily_data, meta, en
     # --- Per alert type breakdown ---
     alert_type_order = [a for a in ATTENDANCE_ALERT_TYPES if a["id"] in enabled]
     for alert_type in alert_type_order:
+        is_weekly = alert_type["id"] == "week_over_40h"
         instances = []
-        for emp in sorted_summaries:
-            daily = employee_daily_data.get(emp["name"], [])
-            for day in daily:
-                for alert in day.get("alerts", []):
-                    if alert["id"] == alert_type["id"]:
-                        instances.append({"name": emp["name"], "number": emp["number"], "department": emp["department"], "date": day.get("date"), "detail": day.get("exit", "") if "exit" in alert["id"] else day.get("total", "")})
+        if is_weekly:
+            # Deduplicate: one row per employee per week range
+            seen_weeks = set()
+            for emp in sorted_summaries:
+                daily = employee_daily_data.get(emp["name"], [])
+                for day in daily:
+                    if not day.get("weekly_alert") or not day.get("date"):
+                        continue
+                    sunday = get_israeli_week_sunday(day["date"])
+                    saturday = sunday + timedelta(days=6)
+                    week_key = (emp["name"], sunday)
+                    if week_key in seen_weeks:
+                        continue
+                    seen_weeks.add(week_key)
+                    instances.append({"name": emp["name"], "number": emp["number"], "department": emp["department"], "date": sunday, "date_end": saturday})
+        else:
+            for emp in sorted_summaries:
+                daily = employee_daily_data.get(emp["name"], [])
+                for day in daily:
+                    for alert in day.get("alerts", []):
+                        if alert["id"] == alert_type["id"]:
+                            instances.append({"name": emp["name"], "number": emp["number"], "department": emp["department"], "date": day.get("date"), "detail": day.get("exit", "") if "exit" in alert["id"] else day.get("total", "")})
         if not instances:
             continue
         row_num += 2
@@ -3997,14 +4014,16 @@ def write_attendance_alerts_summary(ws, summaries, employee_daily_data, meta, en
             cell.alignment = Alignment(horizontal="center")
         for inst in sorted(instances, key=lambda x: (x["name"], x["date"] or date.min)):
             row_num += 1
-            date_str = inst["date"].strftime("%d/%m/%Y") if inst["date"] else ""
-            detail = ""
-            if "exit" in alert_type["id"]:
-                detail = "יציאה: " + inst["detail"] if inst["detail"] else ""
-            elif "day_over" in alert_type["id"]:
-                detail = 'סה"כ: ' + inst["detail"] if inst["detail"] else ""
-            elif "week" in alert_type["id"]:
-                detail = "שבוע מעל 40 שעות"
+            if is_weekly:
+                date_str = inst["date"].strftime("%d/%m/%Y") + " - " + inst["date_end"].strftime("%d/%m/%Y")
+                detail = "מעל 40 שעות שבועיות"
+            else:
+                date_str = inst["date"].strftime("%d/%m/%Y") if inst.get("date") else ""
+                detail = ""
+                if "exit" in alert_type["id"]:
+                    detail = "יציאה: " + inst.get("detail", "") if inst.get("detail") else ""
+                elif "day_over" in alert_type["id"]:
+                    detail = 'סה"כ: ' + inst.get("detail", "") if inst.get("detail") else ""
             for col_idx, val in enumerate([inst["name"], inst["number"], inst["department"], date_str, detail], 1):
                 cell = ws.cell(row=row_num, column=col_idx, value=val)
                 cell.alignment = Alignment(horizontal="right")
