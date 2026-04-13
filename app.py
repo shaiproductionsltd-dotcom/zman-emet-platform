@@ -4030,7 +4030,7 @@ def write_attendance_alerts_summary(ws, summaries, employee_daily_data, meta, en
                 if alert_fill:
                     cell.fill = alert_fill
 
-    widths = [22, 14, 22, 14, 22, 14, 18]
+    widths = [22, 14, 22, 28, 28, 14, 18]
     for col_idx, w in enumerate(widths, 1):
         ws.column_dimensions[get_column_letter(col_idx)].width = w
 
