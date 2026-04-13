@@ -3226,6 +3226,19 @@ def default_rimon_mapping():
     }
 
 
+def default_attendance_alerts_mapping():
+    m = default_rimon_mapping()
+    m.update({
+        "break_hours_source": "col:28",
+        "regular_hours_source": "col:34",
+        "overtime_100_source": "col:38",
+        "overtime_125_source": "col:41",
+        "overtime_150_source": "col:46",
+        "overtime_200_source": "col:54",
+    })
+    return m
+
+
 def build_rimon_mapping_warnings(mapping):
     warnings = []
     if not mapping.get("error_text_source"):
@@ -3613,6 +3626,374 @@ def run_rimon_home_office_summary(input_path, output_path, extension, options=No
     write_rimon_home_office_daily(wb.create_sheet(), daily_rows)
     wb.save(output_path)
     return {"warnings": build_rimon_mapping_warnings(mapping)}
+
+
+# ---- Attendance Alerts ----
+
+ATTENDANCE_ALERT_COLORS = {
+    "FFEBEE": PatternFill(fill_type="solid", fgColor="FFEBEE"),
+    "FFF3E0": PatternFill(fill_type="solid", fgColor="FFF3E0"),
+    "FFFDE7": PatternFill(fill_type="solid", fgColor="FFFDE7"),
+    "EDE7F6": PatternFill(fill_type="solid", fgColor="EDE7F6"),
+}
+
+
+def clean_time_text(raw):
+    if not raw:
+        return ""
+    text = str(raw).strip()
+    while text and text[0] in ("*", "?"):
+        text = text[1:]
+    return text.strip()
+
+
+def parse_exit_hour(text):
+    text = clean_time_text(text)
+    if not text:
+        return None
+    if ":" in text:
+        parts = text.split(":", 1)
+        try:
+            return int(parts[0]) + int(parts[1]) / 60.0
+        except (ValueError, IndexError):
+            return None
+    try:
+        return float(text)
+    except (ValueError, TypeError):
+        return None
+
+
+def compute_day_total_hours(text):
+    cleaned = clean_time_text(text)
+    return try_parse_hours_value(cleaned)
+
+
+def detect_day_alerts(exit_text, total_text):
+    alerts = []
+    exit_hour = parse_exit_hour(exit_text)
+    total_hours = compute_day_total_hours(total_text)
+    if exit_hour is not None:
+        if exit_hour >= 21.0:
+            alerts.append({"id": "exit_after_21", "label": "יציאה אחרי 21:00", "color": "FFEBEE", "severity": 5})
+        elif exit_hour >= 20.0:
+            alerts.append({"id": "exit_after_20", "label": "יציאה אחרי 20:00", "color": "FFF3E0", "severity": 3})
+    if total_hours is not None:
+        if total_hours > 12:
+            alerts.append({"id": "day_over_12h", "label": "יום מעל 12 שעות", "color": "FFEBEE", "severity": 6})
+        elif total_hours > 9:
+            alerts.append({"id": "day_over_9h", "label": "יום מעל 9 שעות", "color": "FFF3E0", "severity": 4})
+        elif total_hours > 8:
+            alerts.append({"id": "day_over_8h", "label": "יום מעל 8 שעות", "color": "FFFDE7", "severity": 2})
+    return alerts
+
+
+def get_israeli_week_key(date_obj):
+    if date_obj is None:
+        return (0, 0)
+    adjusted = date_obj - timedelta(days=(date_obj.weekday() + 1) % 7)
+    return (adjusted.year, adjusted.timetuple().tm_yday)
+
+
+def parse_attendance_alerts_report(input_path, extension, mapping):
+    workbook_kind, workbook = open_excel_workbook(input_path, extension)
+    sheets = iter_excel_sheets(workbook_kind, workbook)
+    employee_summaries = []
+    employee_daily_data = {}
+    all_dates = []
+
+    for sheet in sheets:
+        header_row = detect_rimon_header_row(sheet, workbook_kind)
+        emp_name = str(extract_rimon_mapping_value(sheet, workbook_kind, mapping.get("employee_name_source", "")) or "").strip()
+        emp_number = str(extract_rimon_mapping_value(sheet, workbook_kind, mapping.get("payroll_number_source", "")) or "").strip()
+        department = str(extract_rimon_mapping_value(sheet, workbook_kind, mapping.get("department_source", "")) or "").strip()
+        id_number = str(extract_rimon_mapping_value(sheet, workbook_kind, mapping.get("id_number_source", "")) or "").strip()
+        if not emp_name:
+            continue
+        rows, cols = get_excel_dims(sheet, workbook_kind)
+        raw_days = []
+        for row_idx in range(header_row + 1, rows):
+            date_raw = extract_rimon_mapping_value(sheet, workbook_kind, mapping.get("date_source", ""), row_idx)
+            date_val = parse_excel_date_generic(workbook_kind, workbook, date_raw)
+            entry_raw = extract_rimon_mapping_value(sheet, workbook_kind, mapping.get("entry_time_source", ""), row_idx)
+            exit_raw = extract_rimon_mapping_value(sheet, workbook_kind, mapping.get("exit_time_source", ""), row_idx)
+            total_raw = extract_rimon_mapping_value(sheet, workbook_kind, mapping.get("total_hours_source", ""), row_idx)
+            standard_raw = extract_rimon_mapping_value(sheet, workbook_kind, mapping.get("standard_hours_source", ""), row_idx)
+            break_raw = extract_rimon_mapping_value(sheet, workbook_kind, mapping.get("break_hours_source", ""), row_idx)
+            missing_raw = extract_rimon_mapping_value(sheet, workbook_kind, mapping.get("missing_hours_source", ""), row_idx)
+            regular_raw = extract_rimon_mapping_value(sheet, workbook_kind, mapping.get("regular_hours_source", ""), row_idx)
+            ot100_raw = extract_rimon_mapping_value(sheet, workbook_kind, mapping.get("overtime_100_source", ""), row_idx)
+            ot125_raw = extract_rimon_mapping_value(sheet, workbook_kind, mapping.get("overtime_125_source", ""), row_idx)
+            ot150_raw = extract_rimon_mapping_value(sheet, workbook_kind, mapping.get("overtime_150_source", ""), row_idx)
+            ot200_raw = extract_rimon_mapping_value(sheet, workbook_kind, mapping.get("overtime_200_source", ""), row_idx)
+            event_raw = extract_rimon_mapping_value(sheet, workbook_kind, mapping.get("event_source", ""), row_idx)
+            error_raw = extract_rimon_mapping_value(sheet, workbook_kind, mapping.get("error_text_source", ""), row_idx)
+            day_name_raw = extract_rimon_mapping_value(sheet, workbook_kind, mapping.get("day_name_source", ""), row_idx)
+
+            entry_text = clean_time_text(stringify_excel_value(entry_raw))
+            exit_text = clean_time_text(stringify_excel_value(exit_raw))
+            total_text = clean_time_text(stringify_excel_value(total_raw))
+            standard_text = clean_time_text(stringify_excel_value(standard_raw))
+            break_text = clean_time_text(stringify_excel_value(break_raw))
+            missing_text = clean_time_text(stringify_excel_value(missing_raw))
+            regular_text = clean_time_text(stringify_excel_value(regular_raw))
+            ot100_text = clean_time_text(stringify_excel_value(ot100_raw))
+            ot125_text = clean_time_text(stringify_excel_value(ot125_raw))
+            ot150_text = clean_time_text(stringify_excel_value(ot150_raw))
+            ot200_text = clean_time_text(stringify_excel_value(ot200_raw))
+            event_text = stringify_excel_value(event_raw).strip()
+            error_text = stringify_excel_value(error_raw).strip()
+            day_name_text = stringify_excel_value(day_name_raw).strip()
+
+            if not date_val and not entry_text and not exit_text and not total_text and not event_text:
+                continue
+            raw_days.append({
+                "date": date_val, "day_name": day_name_text,
+                "entry": entry_text, "exit": exit_text, "total": total_text,
+                "standard": standard_text, "break": break_text, "missing": missing_text,
+                "regular": regular_text, "ot100": ot100_text, "ot125": ot125_text,
+                "ot150": ot150_text, "ot200": ot200_text,
+                "event": event_text, "error": error_text,
+            })
+
+        # Merge split-shift continuation rows (same date)
+        merged_days = []
+        for day in raw_days:
+            if merged_days and day["date"] and merged_days[-1]["date"] == day["date"]:
+                prev = merged_days[-1]
+                if day["exit"]:
+                    prev["exit"] = day["exit"]
+                if day["total"]:
+                    prev["total"] = day["total"]
+                for field in ("standard", "break", "missing", "regular", "ot100", "ot125", "ot150", "ot200"):
+                    if day[field] and not prev[field]:
+                        prev[field] = day[field]
+                if day["event"] and day["event"] != prev.get("event", ""):
+                    prev["event"] = (prev.get("event", "") + " / " + day["event"]).strip(" / ")
+                if day["error"] and day["error"] != prev.get("error", ""):
+                    prev["error"] = (prev.get("error", "") + " / " + day["error"]).strip(" / ")
+            else:
+                merged_days.append(dict(day))
+
+        # Detect per-day alerts
+        total_alerts = 0
+        daily_data = []
+        for day in merged_days:
+            alerts = detect_day_alerts(day["exit"], day["total"])
+            total_alerts += len(alerts)
+            max_severity = max((a["severity"] for a in alerts), default=0)
+            row_color = ""
+            if max_severity > 0:
+                row_color = next((a["color"] for a in alerts if a["severity"] == max_severity), "")
+            day["alerts"] = alerts
+            day["row_color"] = row_color
+            day["alert_texts"] = " | ".join(a["label"] for a in sorted(alerts, key=lambda x: -x["severity"]))
+            day["weekly_alert"] = False
+            if day["date"]:
+                all_dates.append(day["date"])
+            daily_data.append(day)
+
+        # Weekly totals
+        weekly_totals = {}
+        for day in daily_data:
+            if not day["date"]:
+                continue
+            wk = get_israeli_week_key(day["date"])
+            total_h = compute_day_total_hours(day["total"])
+            if total_h is not None:
+                weekly_totals[wk] = weekly_totals.get(wk, 0) + total_h
+
+        for day in daily_data:
+            if not day["date"]:
+                continue
+            wk = get_israeli_week_key(day["date"])
+            if weekly_totals.get(wk, 0) > 40:
+                day["weekly_alert"] = True
+                weekly_alert = {"id": "week_over_40h", "label": "שבוע מעל 40 שעות", "color": "EDE7F6", "severity": 1}
+                day["alerts"].append(weekly_alert)
+                if not day["alert_texts"]:
+                    day["alert_texts"] = weekly_alert["label"]
+                else:
+                    day["alert_texts"] += " | " + weekly_alert["label"]
+                total_alerts += 1
+
+        alert_counts = {}
+        for day in daily_data:
+            for a in day["alerts"]:
+                alert_counts[a["id"]] = alert_counts.get(a["id"], 0) + 1
+
+        employee_summaries.append({
+            "name": emp_name, "number": emp_number, "department": department,
+            "id_number": id_number, "total_alerts": total_alerts,
+            "alert_counts": alert_counts, "days_count": len(merged_days),
+        })
+        employee_daily_data[emp_name] = daily_data
+
+    if workbook_kind == "xlsx":
+        workbook.close()
+
+    report_meta = {
+        "total_employees": len(employee_summaries),
+        "total_alerts": sum(e["total_alerts"] for e in employee_summaries),
+        "employees_with_alerts": sum(1 for e in employee_summaries if e["total_alerts"] > 0),
+        "date_range": (min(all_dates).strftime("%d/%m/%Y") + " - " + max(all_dates).strftime("%d/%m/%Y")) if all_dates else "",
+    }
+    return employee_summaries, employee_daily_data, report_meta
+
+
+def write_attendance_alerts_summary(ws, summaries, employee_daily_data, meta):
+    ws.title = safe_sheet_title("סיכום התראות", "Alert Summary")
+    ws.sheet_view.rightToLeft = True
+    ws.sheet_view.showGridLines = False
+    title_font = Font(name="Calibri", size=16, bold=True, color="1E3A8A")
+    header_font = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
+    header_fill = PatternFill(fill_type="solid", fgColor="1E3A8A")
+
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=7)
+    ws["A1"] = "דוח התראות נוכחות"
+    ws["A1"].font = title_font
+    ws["A1"].alignment = Alignment(horizontal="center")
+    ws["A1"].fill = PatternFill(fill_type="solid", fgColor="BFDBFE")
+
+    ws.cell(row=2, column=1, value=meta.get("date_range", "")).font = Font(name="Calibri", size=11, color="64748B")
+
+    metrics = [
+        ("סה\"כ עובדים", str(meta["total_employees"]), "E0F2FE"),
+        ("סה\"כ התראות", str(meta["total_alerts"]), "FEE2E2"),
+        ("עובדים עם התראות", str(meta["employees_with_alerts"]), "FEF3C7"),
+    ]
+    for idx, (label, value, fill_color) in enumerate(metrics):
+        label_cell = ws.cell(row=4, column=idx * 2 + 1, value=label)
+        value_cell = ws.cell(row=4, column=idx * 2 + 2, value=value)
+        label_cell.font = Font(bold=True, color="334155")
+        value_cell.font = Font(bold=True, size=14, color="1E3A8A")
+        label_cell.fill = PatternFill(fill_type="solid", fgColor=fill_color)
+        value_cell.fill = PatternFill(fill_type="solid", fgColor=fill_color)
+        label_cell.alignment = Alignment(horizontal="right")
+        value_cell.alignment = Alignment(horizontal="center")
+
+    # Employee alert count table
+    row_num = 6
+    emp_headers = ["שם עובד", "מספר עובד", "מחלקה", "סה\"כ התראות", "יציאה מאוחרת", "יום ארוך", "שבוע מעל 40ש"]
+    for col_idx, header in enumerate(emp_headers, 1):
+        cell = ws.cell(row=row_num, column=col_idx, value=header)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = Alignment(horizontal="center")
+
+    sorted_summaries = sorted(summaries, key=lambda x: -x["total_alerts"])
+    for emp in sorted_summaries:
+        row_num += 1
+        exit_alerts = emp["alert_counts"].get("exit_after_20", 0) + emp["alert_counts"].get("exit_after_21", 0)
+        day_alerts = emp["alert_counts"].get("day_over_8h", 0) + emp["alert_counts"].get("day_over_9h", 0) + emp["alert_counts"].get("day_over_12h", 0)
+        week_alerts = emp["alert_counts"].get("week_over_40h", 0)
+        values = [emp["name"], emp["number"], emp["department"], emp["total_alerts"], exit_alerts, day_alerts, week_alerts]
+        for col_idx, val in enumerate(values, 1):
+            cell = ws.cell(row=row_num, column=col_idx, value=val)
+            cell.alignment = Alignment(horizontal="right")
+            if row_num % 2 == 0:
+                cell.fill = PatternFill(fill_type="solid", fgColor="F8FAFC")
+            if emp["total_alerts"] > 0 and col_idx == 4:
+                cell.font = Font(bold=True, color="DC2626")
+
+    # Detailed alert list
+    row_num += 2
+    ws.cell(row=row_num, column=1, value="פירוט התראות").font = Font(name="Calibri", size=14, bold=True, color="1E3A8A")
+    row_num += 1
+    detail_headers = ["שם עובד", "תאריך", "סוג התראה", "חומרה", "פירוט"]
+    for col_idx, header in enumerate(detail_headers, 1):
+        cell = ws.cell(row=row_num, column=col_idx, value=header)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = Alignment(horizontal="center")
+
+    severity_labels = {1: "נמוכה", 2: "נמוכה", 3: "בינונית", 4: "בינונית", 5: "גבוהה", 6: "קריטית"}
+    for emp in sorted_summaries:
+        daily = employee_daily_data.get(emp["name"], [])
+        for day in daily:
+            for alert in day.get("alerts", []):
+                row_num += 1
+                date_str = day["date"].strftime("%d/%m/%Y") if day.get("date") else ""
+                detail = ""
+                if "exit" in alert["id"]:
+                    detail = "יציאה: " + day.get("exit", "")
+                elif "day_over" in alert["id"]:
+                    detail = 'סה"כ: ' + day.get("total", "")
+                elif "week" in alert["id"]:
+                    detail = "סה\"כ שבועי מעל 40 שעות"
+                values = [emp["name"], date_str, alert["label"], severity_labels.get(alert["severity"], ""), detail]
+                for col_idx, val in enumerate(values, 1):
+                    cell = ws.cell(row=row_num, column=col_idx, value=val)
+                    cell.alignment = Alignment(horizontal="right")
+                    color = alert.get("color", "")
+                    if color in ATTENDANCE_ALERT_COLORS:
+                        cell.fill = ATTENDANCE_ALERT_COLORS[color]
+
+    widths = [22, 14, 22, 12, 22, 14, 18]
+    for col_idx, w in enumerate(widths, 1):
+        ws.column_dimensions[get_column_letter(col_idx)].width = w
+
+
+def write_attendance_alerts_employee_tab(ws, name, daily_data):
+    ws.title = safe_sheet_title(name, "Employee")
+    ws.sheet_view.rightToLeft = True
+    ws.sheet_view.showGridLines = False
+    ws.freeze_panes = "A2"
+
+    headers = [
+        "תאריך", "יום", "כניסה", "יציאה", "סה\"כ שעות", "תקן", "הפסקה", "חוסר",
+        "רגילות", "100%", "125%", "150%", "200%", "אירוע", "שגיאות", "התראות",
+    ]
+    header_font = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
+    header_fill = PatternFill(fill_type="solid", fgColor="1E3A8A")
+    purple_border = Border(left=Side(style="medium", color="7C3AED"))
+
+    for col_idx, header in enumerate(headers, 1):
+        cell = ws.cell(row=1, column=col_idx, value=header)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = Alignment(horizontal="center")
+
+    for row_idx, day in enumerate(daily_data, start=2):
+        date_str = day["date"].strftime("%d/%m/%Y") if day.get("date") else ""
+        values = [
+            date_str, day.get("day_name", ""), day.get("entry", ""), day.get("exit", ""),
+            day.get("total", ""), day.get("standard", ""), day.get("break", ""), day.get("missing", ""),
+            day.get("regular", ""), day.get("ot100", ""), day.get("ot125", ""),
+            day.get("ot150", ""), day.get("ot200", ""),
+            day.get("event", ""), day.get("error", ""), day.get("alert_texts", ""),
+        ]
+        row_color = day.get("row_color", "")
+        fill = ATTENDANCE_ALERT_COLORS.get(row_color) if row_color else None
+        for col_idx, val in enumerate(values, 1):
+            cell = ws.cell(row=row_idx, column=col_idx, value=val)
+            cell.alignment = Alignment(horizontal="right")
+            if fill:
+                cell.fill = fill
+            elif row_idx % 2 == 0:
+                cell.fill = PatternFill(fill_type="solid", fgColor="F8FAFC")
+            if day.get("weekly_alert"):
+                cell.border = purple_border
+
+    widths = [12, 10, 8, 8, 10, 8, 8, 8, 8, 8, 8, 8, 8, 18, 18, 28]
+    for col_idx, w in enumerate(widths, 1):
+        ws.column_dimensions[get_column_letter(col_idx)].width = w
+
+
+def run_attendance_alerts(input_path, output_path, extension, options=None):
+    if extension not in {"xls", "xlsx"}:
+        raise ValueError("כלי התראות הנוכחות תומך בקבצי XLS ו-XLSX בלבד")
+    options = options or {}
+    mapping = default_attendance_alerts_mapping()
+    mapping.update({key: value for key, value in options.items() if key.endswith("_source")})
+    summaries, daily_data, meta = parse_attendance_alerts_report(input_path, extension, mapping)
+    wb = Workbook()
+    write_attendance_alerts_summary(wb.active, summaries, daily_data, meta)
+    for emp in summaries:
+        emp_daily = daily_data.get(emp["name"], [])
+        if emp_daily:
+            write_attendance_alerts_employee_tab(wb.create_sheet(), emp["name"], emp_daily)
+    wb.save(output_path)
+    return {"warnings": []}
 
 
 def run_matan_missing_filter(input_path, output_path, extension, options=None):
@@ -5611,6 +5992,36 @@ SCRIPTS["rimon_home_office_summary"] = {
     "icon": "🏠",
 }
 
+SCRIPTS["attendance_alerts"] = {
+    "id": "attendance_alerts",
+    "name": "התראות נוכחות",
+    "desc": "זיהוי חריגות שעות ויציאות מאוחרות מתוך דוח נוכחות חודשי — עם סימון צבעוני אוטומטי",
+    "help_label": "דרישות לקובץ",
+    "help_title": "מה צריך להעלות?",
+    "help_intro": "יש להעלות דוח מפורט חודשי (לשונית לכל עובד).",
+    "help_items": [
+        "המערכת מזהה אוטומטית יציאות מאוחרות (אחרי 20:00 ו-21:00)",
+        "מזהה ימים ארוכים (מעל 8, 9 ו-12 שעות)",
+        "מזהה שבועות עם מעל 40 שעות עבודה",
+        "כל חריגה מסומנת בצבע לפי חומרה",
+    ],
+    "help_note": "הפלט כולל לשונית סיכום כוללת ולשונית לכל עובד עם שורות צבעוניות.",
+    "rules_label": "כללי ההתראות",
+    "rules_title": "מתי נוצרת התראה?",
+    "rules_intro": "המערכת בודקת כל יום עבודה לפי הכללים הבאים:",
+    "rules_items": [
+        "יציאה אחרי 20:00 — כתום (חומרה בינונית)",
+        "יציאה אחרי 21:00 — אדום (חומרה גבוהה, גובר על הכתום)",
+        "סה\"כ שעות ביום מעל 8 — צהוב בהיר",
+        "סה\"כ שעות ביום מעל 9 — כתום",
+        "סה\"כ שעות ביום מעל 12 — אדום (חומרה קריטית)",
+        "סה\"כ שעות בשבוע (ראשון-שבת) מעל 40 — סגול (גבול שמאלי)",
+    ],
+    "rules_note": "צבע השורה נקבע לפי ההתראה בעלת החומרה הגבוהה ביותר באותו יום.",
+    "accept": ".xls,.xlsx",
+    "icon": "🚨",
+}
+
 SCRIPTS["dept_payroll"] = {
     "id": "dept_payroll",
     "name": "חיוב לקוחות ותשלום עובדים",
@@ -5750,6 +6161,27 @@ SCRIPT_REGISTRY["rimon_home_office_summary"] = {
     "processing_note": "המערכת מקבצת תאריכים וסופרת ימי משרד, עבודה מהבית, היעדרות ושגיאות. הפעולה עשויה להימשך כמה דקות.",
     "file_picker_label": "בחירת דוח מפורט חודשי",
     "requires_mapping_confirmation": True,
+}
+
+SCRIPT_REGISTRY["attendance_alerts"] = {
+    **SCRIPTS["attendance_alerts"],
+    "processor": run_attendance_alerts,
+    "output_suffix": "attendance_alerts_report",
+    "requires_mapping_confirmation": True,
+    "success_title": "דוח ההתראות מוכן",
+    "success_action": "הורדת הדוח",
+    "retry_action": "עיבוד קובץ נוסף",
+    "submit_label": "יצירת דוח התראות",
+    "back_label": "חזרה לכלים",
+    "empty_error": "לא נבחר קובץ",
+    "unsupported_error": "יש להעלות דוח מפורט חודשי מסוג XLS או XLSX",
+    "invalid_error": "הקובץ שהועלה אינו קובץ אקסל תקין",
+    "empty_file_error": "הקובץ שהועלה ריק",
+    "too_large_error": "הקובץ שהועלה גדול מדי",
+    "processing_error": "לא ניתן היה להפיק את דוח ההתראות מהקובץ הזה",
+    "processing_title": "דוח ההתראות בהכנה",
+    "processing_note": "המערכת בודקת חריגות שעות ויציאות מאוחרות. הפעולה עשויה להימשך כמה דקות.",
+    "file_picker_label": "בחירת דוח מפורט חודשי",
 }
 
 SCRIPT_REGISTRY["dept_payroll"] = {
@@ -6479,6 +6911,28 @@ RIMON_MAPPING_FIELDS = [
     {"name": "id_number_source", "label": "תעודת זהות", "required": False},
 ]
 
+ATTENDANCE_ALERTS_MAPPING_FIELDS = [
+    {"name": "employee_name_source", "label": "שם עובד", "required": True},
+    {"name": "payroll_number_source", "label": "מספר עובד", "required": True},
+    {"name": "date_source", "label": "תאריך", "required": True},
+    {"name": "day_name_source", "label": "סוג יום", "required": False},
+    {"name": "entry_time_source", "label": "שעת כניסה", "required": False},
+    {"name": "exit_time_source", "label": "שעת יציאה", "required": False},
+    {"name": "total_hours_source", "label": "סה\"כ שעות", "required": False},
+    {"name": "standard_hours_source", "label": "שעות תקן", "required": False},
+    {"name": "break_hours_source", "label": "הפסקה", "required": False},
+    {"name": "missing_hours_source", "label": "שעות חוסר", "required": False},
+    {"name": "regular_hours_source", "label": "שעות רגילות", "required": False},
+    {"name": "overtime_100_source", "label": 'שעות נוספות 100%', "required": False},
+    {"name": "overtime_125_source", "label": 'שעות נוספות 125%', "required": False},
+    {"name": "overtime_150_source", "label": 'שעות נוספות 150%', "required": False},
+    {"name": "overtime_200_source", "label": 'שעות נוספות 200%', "required": False},
+    {"name": "event_source", "label": "אירוע", "required": True},
+    {"name": "error_text_source", "label": "שדה שגיאה", "required": False},
+    {"name": "department_source", "label": "מחלקה", "required": False},
+    {"name": "id_number_source", "label": "תעודת זהות", "required": False},
+]
+
 FLAMINGO_MAPPING_FIELDS = [
     {"name": "worker_name_source", "label": "שם עובד", "required": True},
     {"name": "worker_number_source", "label": "מספר עובד", "required": False},
@@ -6591,6 +7045,28 @@ RIMON_SUGGESTION_KEYWORDS = {
     "total_hours_source": ["סהכ", "סה\"כ", "total", "hours"],
     "standard_hours_source": ["תקן", "ש.תקן", "standard"],
     "missing_hours_source": ["חוסר", "missing"],
+    "event_source": ["אירוע", "event", "סטטוס"],
+    "error_text_source": ["שגיאה", "שגיאות", "error", "errors"],
+    "department_source": ["מחלקה", "department"],
+    "id_number_source": ["תעודתזהות", "זהות", "דרכון", "id", "identity"],
+}
+
+ATTENDANCE_ALERTS_SUGGESTION_KEYWORDS = {
+    "employee_name_source": ["שםלתצוגה", "שםעובד", "עובד", "employee", "name"],
+    "payroll_number_source": ["מספרשכר", "מספרעובד", "שכר", "עובד", "payroll", "employeeid"],
+    "date_source": ["תאריך", "date"],
+    "day_name_source": ["יום", "day"],
+    "entry_time_source": ["כניסה", "entry", "checkin"],
+    "exit_time_source": ["יציאה", "exit", "checkout"],
+    "total_hours_source": ["סהכ", "סה\"כ", "total", "hours"],
+    "standard_hours_source": ["תקן", "ש.תקן", "standard"],
+    "break_hours_source": ["הפסקה", "break"],
+    "missing_hours_source": ["חוסר", "missing"],
+    "regular_hours_source": ["רגילות", "regular"],
+    "overtime_100_source": ["100", "נוספות100"],
+    "overtime_125_source": ["125", "נוספות125"],
+    "overtime_150_source": ["150", "נוספות150"],
+    "overtime_200_source": ["200", "נוספות200"],
     "event_source": ["אירוע", "event", "סטטוס"],
     "error_text_source": ["שגיאה", "שגיאות", "error", "errors"],
     "department_source": ["מחלקה", "department"],
@@ -8611,6 +9087,166 @@ def build_rimon_mapping_form(script_id, temp_upload_path, temp_upload_ext, inspe
     )
 
 
+def build_attendance_alerts_mapping_options(input_path, extension):
+    base = build_rimon_mapping_options(input_path, extension)
+    options_by_field = dict(base["options_by_field"])
+    suggestions = dict(base["suggestions"])
+    visible_table_options = []
+    for key, opts in options_by_field.items():
+        for opt in opts:
+            if opt.get("source_kind") in ("table_exact", "table_nearby") and opt not in visible_table_options:
+                visible_table_options.append(opt)
+    extra_fields = [f for f in ATTENDANCE_ALERTS_MAPPING_FIELDS if f["name"] not in options_by_field]
+    for field in extra_fields:
+        field_name = field["name"]
+        options = [{"value": "", "label": "לא נבחר", "source_kind": "empty"}]
+        options.extend(visible_table_options)
+        options_by_field[field_name] = options
+        suggested = ""
+        keywords = ATTENDANCE_ALERTS_SUGGESTION_KEYWORDS.get(field_name, [])
+        ranked = sorted(visible_table_options, key=lambda o: (o.get("from_nearby", False), o["value"]))
+        for option in ranked:
+            header_token = normalize_token(option["header"])
+            exact_token = normalize_token(option.get("exact_header", ""))
+            if any(kw in exact_token for kw in keywords):
+                suggested = option["value"]
+                break
+            if not option.get("from_nearby") and any(kw in header_token for kw in keywords):
+                suggested = option["value"]
+                break
+        if not suggested:
+            for option in ranked:
+                token = normalize_token(option["header"])
+                if any(kw in token for kw in keywords):
+                    suggested = option["value"]
+                    break
+        suggestions[field_name] = suggested
+    base["options_by_field"] = options_by_field
+    base["suggestions"] = suggestions
+    base["suggested_template_name"] = base.get("suggested_template_name", "תבנית התראות")
+    return base
+
+
+def build_attendance_alerts_mapping_form(script_id, temp_upload_path, temp_upload_ext, inspection, current_mapping, templates, template_name_value):
+    template_options = '<option value="">ללא תבנית שמורה</option>'
+    for template in templates:
+        template_options += '<option value="' + str(template["id"]) + '">' + esc(template["name"]) + '</option>'
+    mapping_labels = {field["name"]: field["label"] for field in ATTENDANCE_ALERTS_MAPPING_FIELDS}
+    template_payload = {
+        str(template["id"]): {key: str(value or "") for key, value in template["mapping"].items()}
+        for template in templates
+    }
+    mapping_fields_html = ""
+    for field in ATTENDANCE_ALERTS_MAPPING_FIELDS:
+        field_name = field["name"]
+        current_value = str(current_mapping.get(field_name, "") or "")
+        options = inspection["options_by_field"].get(field_name, [])
+        blank_options = [o for o in options if not o.get("value")]
+        meta_options = [o for o in options if o.get("source_kind") == "meta"]
+        table_exact_options = [o for o in options if o.get("source_kind") == "table_exact"]
+        table_nearby_options = [o for o in options if o.get("source_kind") == "table_nearby"]
+        select_options = ""
+
+        def render_option(option):
+            selected = ' selected' if option["value"] == current_value else ""
+            return (
+                '<option value="' + esc(option["value"]) + '" data-base-label="' + esc(option["label"]) + '" data-source-kind="' + esc(option.get("source_kind", "empty")) + '"' + selected + ">"
+                + esc(option["label"])
+                + "</option>"
+            )
+
+        for option in blank_options:
+            select_options += render_option(option)
+        if meta_options:
+            select_options += '<optgroup label="שדות עליונים">'
+            for option in meta_options:
+                select_options += render_option(option)
+            select_options += '</optgroup>'
+        if table_exact_options:
+            select_options += '<optgroup label="שדות מהטבלה">'
+            for option in table_exact_options:
+                select_options += render_option(option)
+            select_options += '</optgroup>'
+        if table_nearby_options:
+            select_options += '<optgroup label="שדות מהטבלה (כותרת זוהתה מעמודה סמוכה)">'
+            for option in table_nearby_options:
+                select_options += render_option(option)
+            select_options += '</optgroup>'
+
+        required_badge = ' <span style="color:#dc2626">*</span>' if field["required"] else ' <span style="color:#94a3b8">(אופציונלי)</span>'
+        mapping_fields_html += (
+            '<div><label class="field-label">' + field["label"] + required_badge + '</label>'
+            + '<select name="' + field_name + '" data-mapping-field="1" data-field-label="' + esc(field["label"]) + '" style="padding:9px 12px;border:1.5px solid #e2e8f0;border-radius:8px;font-size:13px;font-family:inherit;outline:none;width:100%;margin-bottom:0;background:white;transition:background-color .15s ease,border-color .15s ease,box-shadow .15s ease">'
+            + select_options
+            + '</select></div>'
+        )
+
+    return (
+        '<form method="POST" id="mappingConfirmForm">'
+        + '<input type="hidden" name="flow_mode" value="confirm_mapping">'
+        + '<input type="hidden" name="temp_upload_path" value="' + esc(temp_upload_path) + '">'
+        + '<input type="hidden" name="temp_upload_ext" value="' + esc(temp_upload_ext) + '">'
+        + '<div style="background:#fafcff;border:1px solid #dbeafe;border-radius:14px;padding:1rem;margin-bottom:1rem">'
+        + '<div style="font-size:15px;font-weight:700;color:#1e3a8a;margin-bottom:10px">אישור שדות לפני עיבוד</div>'
+        + '<div style="display:grid;grid-template-columns:260px minmax(0,1fr);gap:14px;align-items:start">'
+        + '<div style="background:#ffffff;border:1px solid #e2e8f0;border-radius:12px;padding:12px">'
+        + '<div style="font-size:14px;font-weight:700;color:#0f172a;margin-bottom:10px">תבניות שמורות</div>'
+        + '<label class="field-label">בחירת תבנית</label>'
+        + '<div style="display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:center;margin-bottom:12px">'
+        + '<select id="selectedTemplateId" name="selected_template_id" style="padding:9px 12px;border:1.5px solid #e2e8f0;border-radius:8px;font-size:13px;font-family:inherit;outline:none;width:100%;background:white">' + template_options + '</select>'
+        + '<button type="submit" name="mapping_action" value="delete_template" class="btn btn-gray" style="min-width:104px;padding-inline:14px;white-space:nowrap">מחיקה</button>'
+        + '</div>'
+        + '<label style="display:flex;align-items:center;gap:6px;font-size:13px;color:#334155;margin-bottom:10px"><input type="checkbox" name="save_template" value="1"> שמור כתבנית חדשה</label>'
+        + '<label class="field-label">שם תבנית חדשה</label>'
+        + '<input type="text" name="template_name" value="' + esc(template_name_value) + '" placeholder="שם תבנית" style="margin-bottom:0">'
+        + '<div style="font-size:12px;color:#64748b;line-height:1.7;margin-top:10px">בחירת תבנית תעדכן את כל השדות בהתאם. שמירה תיצור תבנית חדשה בלבד ולא תדרוס תבנית קיימת.</div>'
+        + '</div>'
+        + '<div>'
+        + '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">'
+        + '<span style="display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border-radius:999px;background:#eff6ff;border:1px solid #bfdbfe;font-size:12px;color:#1d4ed8">שדה עליון</span>'
+        + '<span style="display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border-radius:999px;background:#ecfdf5;border:1px solid #86efac;font-size:12px;color:#166534">שדה מהטבלה</span>'
+        + '<span style="display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border-radius:999px;background:#fffbeb;border:1px solid #fcd34d;font-size:12px;color:#92400e">שדה מהטבלה שזוהה לפי כותרת סמוכה</span>'
+        + '</div>'
+        + '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-bottom:12px">' + mapping_fields_html + '</div>'
+        + '<div style="font-size:12px;color:#64748b;line-height:1.7;margin-bottom:12px">שדות חובה: שם עובד, מספר עובד, תאריך ואירוע. שדות נוספים (הפסקה, שעות רגילות, שעות נוספות) ישפרו את הדוח.</div>'
+        + '<div style="display:flex;gap:10px;flex-wrap:wrap;justify-content:center"><button type="submit" id="mappingConfirmButton" name="mapping_action" value="confirm" class="btn btn-blue" style="min-width:220px">אשר הכל והפעל עיבוד</button><a href="/run/' + script_id + '" class="btn btn-gray" style="text-decoration:none;display:inline-flex;align-items:center;justify-content:center;min-width:150px">העלאת קובץ חדש</a></div>'
+        + '</div></div>'
+        + '</div>'
+        + '<div id="mappingProcessingOverlay" style="display:none;position:fixed;inset:0;background:rgba(248,250,252,.78);backdrop-filter:blur(2px);z-index:80;align-items:center;justify-content:center;padding:20px">'
+        + '<div style="width:100%;max-width:320px;background:#ffffff;border:1px solid #dbeafe;border-radius:18px;box-shadow:0 20px 50px rgba(15,23,42,.14);padding:24px 20px;text-align:center">'
+        + '<div style="width:42px;height:42px;border-radius:999px;border:3px solid #bfdbfe;border-top-color:#2563eb;margin:0 auto 14px;animation:mappingSpin .9s linear infinite"></div>'
+        + '<div style="font-size:16px;font-weight:800;color:#1e3a8a;margin-bottom:6px">הדוח בהכנה</div>'
+        + '<div style="font-size:13px;line-height:1.7;color:#475569">המערכת מאשרת את השדות ומעבדת את הקובץ. בדוחות גדולים הפעולה יכולה להימשך מעט זמן.</div>'
+        + '</div></div>'
+        + '<script>'
+        + '(function(){'
+        + 'var templateSelect=document.getElementById("selectedTemplateId");'
+        + 'var fieldSelects=Array.prototype.slice.call(document.querySelectorAll(\'select[data-mapping-field="1"]\'));'
+        + 'var form=document.getElementById("mappingConfirmForm");'
+        + 'var confirmButton=document.getElementById("mappingConfirmButton");'
+        + 'var overlay=document.getElementById("mappingProcessingOverlay");'
+        + 'var templateMappings=' + json.dumps(template_payload, ensure_ascii=False) + ';'
+        + 'var fieldLabels=' + json.dumps(mapping_labels, ensure_ascii=False) + ';'
+        + 'var selectStyles={meta:{bg:"#eff6ff",border:"#60a5fa",shadow:"rgba(59,130,246,.12)"},table_exact:{bg:"#ecfdf5",border:"#4ade80",shadow:"rgba(34,197,94,.14)"},table_nearby:{bg:"#fffbeb",border:"#f59e0b",shadow:"rgba(245,158,11,.16)"},empty:{bg:"#ffffff",border:"#e2e8f0",shadow:"rgba(148,163,184,.08)"}};'
+        + 'function applySelectVisual(sel){var opt=sel.options[sel.selectedIndex];var kind=(opt&&opt.getAttribute("data-source-kind"))||"empty";var style=selectStyles[kind]||selectStyles.empty;sel.style.backgroundColor=style.bg;sel.style.borderColor=style.border;sel.style.boxShadow="0 0 0 3px "+style.shadow;}'
+        + 'function refreshOptionLabels(){'
+        + 'var assignments={};'
+        + 'fieldSelects.forEach(function(sel){if(sel.value){assignments[sel.value]=sel.name;}});'
+        + 'fieldSelects.forEach(function(sel){Array.prototype.forEach.call(sel.options,function(opt){var base=opt.getAttribute("data-base-label")||opt.text;var assigned=assignments[opt.value];var suffix="";if(opt.value && assigned && assigned!==sel.name){suffix=" [נבחר עבור "+(fieldLabels[assigned]||assigned)+"]";}opt.text=base+suffix;});applySelectVisual(sel);});'
+        + '}'
+        + 'function clearDuplicateSelections(changedSelect){if(!changedSelect.value){refreshOptionLabels();return;}fieldSelects.forEach(function(sel){if(sel!==changedSelect && sel.value===changedSelect.value){sel.value="";}});refreshOptionLabels();}'
+        + 'function applyTemplate(templateId){var mapping=templateMappings[templateId]||{};if(!templateId){refreshOptionLabels();return;}fieldSelects.forEach(function(sel){sel.value=mapping[sel.name]||"";});var seen={};fieldSelects.forEach(function(sel){if(sel.value && seen[sel.value]){sel.value="";}else if(sel.value){seen[sel.value]=true;}});refreshOptionLabels();}'
+        + 'fieldSelects.forEach(function(sel){sel.addEventListener("change",function(){clearDuplicateSelections(sel);});});'
+        + 'if(templateSelect){templateSelect.addEventListener("change",function(){applyTemplate(this.value);});}'
+        + 'if(form){form.addEventListener("submit",function(event){var submitter=event.submitter||document.activeElement;if(!submitter||submitter.value!=="confirm"){return;}if(confirmButton){confirmButton.disabled=true;confirmButton.textContent="העיבוד התחיל...";}if(overlay){overlay.style.display="flex";}document.body.style.overflow="hidden";});}'
+        + 'refreshOptionLabels();'
+        + '})();'
+        + '</script>'
+        + '<style>@keyframes mappingSpin{from{transform:rotate(0deg);}to{transform:rotate(360deg);}}</style>'
+        + '</form>'
+    )
+
+
 def build_matan_missing_mapping_form(script_id, temp_upload_path, temp_upload_ext, inspection, current_mapping, templates, template_name_value, current_filters):
     template_options = '<option value="">ללא תבנית שמורה</option>'
     for template in templates:
@@ -10110,6 +10746,10 @@ def run_script(script_id):
                 elif script_id == "matan_manual_corrections":
                     inspection = build_matan_corrections_mapping_options(inp, ext)
                     selected_mapping = dict(inspection["suggestions"])
+                elif script_id == "attendance_alerts":
+                    inspection = build_attendance_alerts_mapping_options(inp, ext)
+                    selected_mapping = dict(default_attendance_alerts_mapping())
+                    selected_mapping.update(inspection["suggestions"])
                 else:
                     inspection = build_rimon_mapping_options(inp, ext)
                     selected_mapping = dict(inspection["suggestions"])
@@ -10191,6 +10831,16 @@ def run_script(script_id):
                             "max_corrections": request.form.get("max_corrections", "").strip(),
                         },
                     )
+                elif script_id == "attendance_alerts":
+                    mapping_confirmation_html = build_attendance_alerts_mapping_form(
+                        script_id,
+                        inp,
+                        ext,
+                        inspection,
+                        selected_mapping,
+                        mapping_templates,
+                        get_next_mapping_template_name(mapping_templates),
+                    )
                 else:
                     mapping_confirmation_html = build_rimon_mapping_form(
                         script_id,
@@ -10205,7 +10855,7 @@ def run_script(script_id):
             inp = request.form.get("temp_upload_path", "").strip()
             ext = request.form.get("temp_upload_ext", "").strip().lower()
             mapping = {}
-            mapping_fields = FLAMINGO_MAPPING_FIELDS if script_id == "flamingo_payroll" else DEPT_PAYROLL_MAPPING_FIELDS if script_id == "dept_payroll" else MATAN_MISSING_MAPPING_FIELDS if script_id == "matan_missing" else INACTIVE_WORKERS_MAPPING_FIELDS if script_id == "inactive_workers" else ORG_HIERARCHY_MAPPING_FIELDS if script_id == "org_hierarchy_report" else MATAN_CORRECTIONS_MAPPING_FIELDS if script_id == "matan_manual_corrections" else RIMON_MAPPING_FIELDS
+            mapping_fields = FLAMINGO_MAPPING_FIELDS if script_id == "flamingo_payroll" else DEPT_PAYROLL_MAPPING_FIELDS if script_id == "dept_payroll" else MATAN_MISSING_MAPPING_FIELDS if script_id == "matan_missing" else INACTIVE_WORKERS_MAPPING_FIELDS if script_id == "inactive_workers" else ORG_HIERARCHY_MAPPING_FIELDS if script_id == "org_hierarchy_report" else MATAN_CORRECTIONS_MAPPING_FIELDS if script_id == "matan_manual_corrections" else ATTENDANCE_ALERTS_MAPPING_FIELDS if script_id == "attendance_alerts" else RIMON_MAPPING_FIELDS
             for field in mapping_fields:
                 mapping[field["name"]] = request.form.get(field["name"], "").strip()
             manual_hourly_rate = request.form.get("manual_hourly_rate", "").strip() if script_id == "flamingo_payroll" else ""
@@ -10241,7 +10891,7 @@ def run_script(script_id):
                         info_message = '<div class="flash" style="background:#eff6ff;border-color:#bfdbfe;color:#1d4ed8">התבנית נמחקה.</div>'
                     else:
                         info_message = '<div class="flash-err">לא נבחרה תבנית למחיקה.</div>'
-                    inspection = build_flamingo_mapping_options(inp, ext) if script_id == "flamingo_payroll" else build_dept_payroll_mapping_options(inp, ext) if script_id == "dept_payroll" else build_matan_missing_mapping_options(inp, ext) if script_id == "matan_missing" else build_inactive_workers_mapping_options(inp, ext) if script_id == "inactive_workers" else build_org_hierarchy_mapping_options(inp, ext) if script_id == "org_hierarchy_report" else build_matan_corrections_mapping_options(inp, ext) if script_id == "matan_manual_corrections" else build_rimon_mapping_options(inp, ext)
+                    inspection = build_flamingo_mapping_options(inp, ext) if script_id == "flamingo_payroll" else build_dept_payroll_mapping_options(inp, ext) if script_id == "dept_payroll" else build_matan_missing_mapping_options(inp, ext) if script_id == "matan_missing" else build_inactive_workers_mapping_options(inp, ext) if script_id == "inactive_workers" else build_org_hierarchy_mapping_options(inp, ext) if script_id == "org_hierarchy_report" else build_matan_corrections_mapping_options(inp, ext) if script_id == "matan_manual_corrections" else build_attendance_alerts_mapping_options(inp, ext) if script_id == "attendance_alerts" else build_rimon_mapping_options(inp, ext)
                     mapping_templates = get_mapping_templates(session["user_id"], script_id)
                     if script_id == "flamingo_payroll":
                         mapping_confirmation_html = build_flamingo_mapping_form(
@@ -10310,6 +10960,16 @@ def run_script(script_id):
                             get_next_mapping_template_name(mapping_templates),
                             corrections_filters,
                         )
+                    elif script_id == "attendance_alerts":
+                        mapping_confirmation_html = build_attendance_alerts_mapping_form(
+                            script_id,
+                            inp,
+                            ext,
+                            inspection,
+                            mapping,
+                            mapping_templates,
+                            get_next_mapping_template_name(mapping_templates),
+                        )
                     else:
                         mapping_confirmation_html = build_rimon_mapping_form(
                             script_id,
@@ -10321,9 +10981,9 @@ def run_script(script_id):
                             get_next_mapping_template_name(mapping_templates),
                         )
             elif mapping_action == "apply_template":
-                inspection = build_flamingo_mapping_options(inp, ext) if script_id == "flamingo_payroll" else build_dept_payroll_mapping_options(inp, ext) if script_id == "dept_payroll" else build_matan_missing_mapping_options(inp, ext) if script_id == "matan_missing" else build_inactive_workers_mapping_options(inp, ext) if script_id == "inactive_workers" else build_org_hierarchy_mapping_options(inp, ext) if script_id == "org_hierarchy_report" else build_matan_corrections_mapping_options(inp, ext) if script_id == "matan_manual_corrections" else build_rimon_mapping_options(inp, ext)
+                inspection = build_flamingo_mapping_options(inp, ext) if script_id == "flamingo_payroll" else build_dept_payroll_mapping_options(inp, ext) if script_id == "dept_payroll" else build_matan_missing_mapping_options(inp, ext) if script_id == "matan_missing" else build_inactive_workers_mapping_options(inp, ext) if script_id == "inactive_workers" else build_org_hierarchy_mapping_options(inp, ext) if script_id == "org_hierarchy_report" else build_matan_corrections_mapping_options(inp, ext) if script_id == "matan_manual_corrections" else build_attendance_alerts_mapping_options(inp, ext) if script_id == "attendance_alerts" else build_rimon_mapping_options(inp, ext)
                 selected_mapping, selected_template = apply_selected_template(
-                    dict(default_flamingo_mapping()) if script_id == "flamingo_payroll" else dict(default_dept_payroll_mapping()) if script_id == "dept_payroll" else dict(default_matan_missing_mapping()) if script_id == "matan_missing" else dict(default_inactive_workers_mapping()) if script_id == "inactive_workers" else dict(default_org_hierarchy_mapping()) if script_id == "org_hierarchy_report" else dict(inspection["suggestions"]),
+                    dict(default_flamingo_mapping()) if script_id == "flamingo_payroll" else dict(default_dept_payroll_mapping()) if script_id == "dept_payroll" else dict(default_matan_missing_mapping()) if script_id == "matan_missing" else dict(default_inactive_workers_mapping()) if script_id == "inactive_workers" else dict(default_org_hierarchy_mapping()) if script_id == "org_hierarchy_report" else dict(default_attendance_alerts_mapping()) if script_id == "attendance_alerts" else dict(inspection["suggestions"]),
                     mapping_templates,
                     selected_template_id,
                 )
@@ -10403,6 +11063,16 @@ def run_script(script_id):
                         mapping_templates,
                         request.form.get("template_name", "").strip() or get_next_mapping_template_name(mapping_templates),
                         corrections_filters,
+                    )
+                elif script_id == "attendance_alerts":
+                    mapping_confirmation_html = build_attendance_alerts_mapping_form(
+                        script_id,
+                        inp,
+                        ext,
+                        inspection,
+                        selected_mapping,
+                        mapping_templates,
+                        request.form.get("template_name", "").strip() or get_next_mapping_template_name(mapping_templates),
                     )
                 else:
                     mapping_confirmation_html = build_rimon_mapping_form(
