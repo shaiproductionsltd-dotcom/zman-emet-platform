@@ -9925,6 +9925,16 @@ def render_assistant_widget():
             return ""
     except Exception:
         pass
+    # Get first name for personalized greeting
+    user_first = ""
+    try:
+        full_name = session.get("name", "")
+        if full_name:
+            user_first = full_name.split()[0]
+    except Exception:
+        pass
+    welcome_line = f"שלום {user_first}, " if user_first else ""
+    welcome_line += "אני היועץ של Scriptly. אפשר לשאול על שכר, נוכחות וחוקי עבודה, או להעלות קובץ לניתוח."
     return (
         '<!-- Assistant Widget -->'
         '<style>'
@@ -9948,6 +9958,9 @@ def render_assistant_widget():
         '  align-items:center;justify-content:space-between;border-bottom:1px solid rgba(255,255,255,.08);flex-shrink:0;'
         '}'
         '#ast-header h3{margin:0;font-size:15px;color:#e2e8f0;font-weight:600}'
+        '.ast-header-btns{display:flex;align-items:center;gap:4px}'
+        '#ast-refresh{background:none;border:none;color:#94a3b8;font-size:16px;cursor:pointer;padding:0 4px}'
+        '#ast-refresh:hover{color:#93c5fd}'
         '#ast-close{background:none;border:none;color:#94a3b8;font-size:20px;cursor:pointer;padding:0 4px}'
         '#ast-close:hover{color:#f1f5f9}'
         '#ast-messages{'
@@ -9957,6 +9970,7 @@ def render_assistant_widget():
         '.ast-msg{max-width:88%;padding:10px 14px;border-radius:14px;font-size:13px;line-height:1.6;word-wrap:break-word;direction:rtl;text-align:right}'
         '.ast-msg-ai{background:#1e293b;color:#e2e8f0;align-self:flex-start;border-bottom-left-radius:4px}'
         '.ast-msg-user{background:linear-gradient(135deg,#3b82f6,#6366f1);color:#fff;align-self:flex-end;border-bottom-right-radius:4px}'
+        '.ast-msg-system{background:rgba(250,204,21,.1);color:#fbbf24;align-self:center;text-align:center;font-size:12px;border-radius:8px;max-width:95%}'
         '.ast-welcome{color:#94a3b8;font-size:13px;text-align:center;padding:8px 0;line-height:1.7}'
         '.ast-chips{display:flex;flex-wrap:wrap;gap:6px;justify-content:center;padding:6px 0}'
         '.ast-chip{'
@@ -9991,34 +10005,35 @@ def render_assistant_widget():
         '  #ast-fab{bottom:16px;right:16px}'
         '}'
         '</style>'
-        '<button id="ast-fab" onclick="toggleAssistantPanel()" title="עוזר AI">&#129302;</button>'
+        '<button id="ast-fab" onclick="toggleAssistantPanel()" title="יועץ Scriptly">&#129302;</button>'
         '<div id="ast-panel">'
         '  <div id="ast-header">'
-        '    <h3>&#129302; העוזר של Scriptly</h3>'
-        '    <button id="ast-close" onclick="toggleAssistantPanel()">&times;</button>'
+        '    <h3>&#9201; \u05d9\u05d5\u05e2\u05e5 Scriptly</h3>'
+        '    <div class="ast-header-btns">'
+        '      <button id="ast-refresh" onclick="astResetSession()" title="\u05e9\u05d9\u05d7\u05d4 \u05d7\u05d3\u05e9\u05d4">&#8635;</button>'
+        '      <button id="ast-close" onclick="toggleAssistantPanel()">&times;</button>'
+        '    </div>'
         '  </div>'
         '  <div id="ast-messages">'
         '    <div class="ast-welcome">'
-        '      &#128075; היי! אני העוזר החכם של Scriptly.<br>'
-        '      אפשר לשאול אותי על שכר, נוכחות, חוקי עבודה,<br>'
-        '      או להעלות קובץ לניתוח מהיר.'
+        '      ' + welcome_line +
         '    </div>'
         '    <div class="ast-chips">'
-        '      <span class="ast-chip" onclick="astPickSuggestion(this)">&#128202; ניתוח קובץ נוכחות</span>'
-        '      <span class="ast-chip" onclick="astPickSuggestion(this)">&#128176; שאלות על שכר ושעות נוספות</span>'
-        '      <span class="ast-chip" onclick="astPickSuggestion(this)">&#9200; בדיקת חריגות שעות</span>'
-        '      <span class="ast-chip" onclick="astPickSuggestion(this)">&#128203; חוקי עבודה בישראל</span>'
+        '      <span class="ast-chip" onclick="astPickSuggestion(this)">\u05d0\u05d9\u05d6\u05d4 \u05db\u05dc\u05d9 \u05de\u05ea\u05d0\u05d9\u05dd \u05dc\u05e7\u05d5\u05d1\u05e5 \u05e9\u05dc\u05d9?</span>'
+        '      <span class="ast-chip" onclick="astPickSuggestion(this)">\u05d0\u05d9\u05da \u05de\u05e8\u05d9\u05e6\u05d9\u05dd \u05d3\u05d5\u05d7?</span>'
+        '      <span class="ast-chip" onclick="astPickSuggestion(this)">\u05e9\u05d0\u05dc\u05d4 \u05e2\u05dc \u05e9\u05e2\u05d5\u05ea \u05e0\u05d5\u05e1\u05e4\u05d5\u05ea</span>'
+        '      <span class="ast-chip" onclick="astPickSuggestion(this)">\u05de\u05d4 \u05d4\u05db\u05dc\u05d9\u05dd \u05e9\u05d6\u05de\u05d9\u05e0\u05d9\u05dd \u05dc\u05d9?</span>'
         '    </div>'
         '  </div>'
         '  <div id="ast-input-area">'
-        '    <button id="ast-file-btn" onclick="document.getElementById(\'ast-file-input\').click()" title="העלאת קובץ">&#128206;</button>'
+        '    <button id="ast-file-btn" onclick="document.getElementById(\'ast-file-input\').click()" title="\u05d4\u05e2\u05dc\u05d0\u05ea \u05e7\u05d5\u05d1\u05e5">&#128206;</button>'
         '    <input type="file" id="ast-file-input" style="display:none" accept=".xlsx,.xls,.csv,.pdf,.txt,.png,.jpg,.jpeg,.gif,.doc,.docx" onchange="astHandleFileSelect(this)" multiple>'
-        '    <textarea id="ast-input" rows="1" placeholder="שאל אותי משהו..." onkeydown="if(event.key===\'Enter\'&&!event.shiftKey){event.preventDefault();astSendMessage()}"></textarea>'
-        '    <button id="ast-send" onclick="astSendMessage()" title="שלח">&#10148;</button>'
+        '    <textarea id="ast-input" rows="1" placeholder="\u05e9\u05d0\u05dc \u05d0\u05d5\u05ea\u05d9 \u05de\u05e9\u05d4\u05d5..." onkeydown="if(event.key===\'Enter\'&&!event.shiftKey){event.preventDefault();astSendMessage()}"></textarea>'
+        '    <button id="ast-send" onclick="astSendMessage()" title="\u05e9\u05dc\u05d7">&#10148;</button>'
         '  </div>'
         '</div>'
         '<script>'
-        'var astSessionId=null,astLoading=false,astFileContext="";'
+        'var astSessionId=null,astLoading=false,astFileContext="",astMsgCount=0;'
         'function toggleAssistantPanel(){'
         '  var p=document.getElementById("ast-panel"),f=document.getElementById("ast-fab");'
         '  if(p.classList.contains("ast-open")){'
@@ -10035,11 +10050,24 @@ def render_assistant_widget():
         '  .then(function(r){return r.json()})'
         '  .then(function(d){'
         '    if(d.session_id){astSessionId=d.session_id;'
-        '      if(d.messages&&d.messages.length>0){astRenderHistory(d.messages)}'
+        '      if(d.messages&&d.messages.length>0){astMsgCount=d.messages.length;astRenderHistory(d.messages)}'
         '    }'
         '  }).catch(function(){});'
         '  var fab=document.getElementById("ast-fab");'
         '  if(!localStorage.getItem("ast_seen")){fab.classList.add("ast-pulse");localStorage.setItem("ast_seen","1")}'
+        '}'
+        'function astResetSession(){'
+        '  fetch("/assistant/session/reset",{method:"POST",headers:{"Content-Type":"application/json","X-Requested-With":"XMLHttpRequest"}})'
+        '  .then(function(r){return r.json()})'
+        '  .then(function(d){'
+        '    if(d.ok&&d.session_id){'
+        '      astSessionId=d.session_id;astMsgCount=0;astFileContext="";'
+        '      var c=document.getElementById("ast-messages");c.innerHTML="";'
+        '      var w=document.createElement("div");w.className="ast-welcome";'
+        '      w.textContent="\\u05e9\\u05d9\\u05d7\\u05d4 \\u05d7\\u05d3\\u05e9\\u05d4 \\u05e0\\u05e4\\u05ea\\u05d7\\u05d4. \\u05d0\\u05e4\\u05e9\\u05e8 \\u05dc\\u05e9\\u05d0\\u05d5\\u05dc.";'
+        '      c.appendChild(w);'
+        '    }'
+        '  }).catch(function(){});'
         '}'
         'function astRenderHistory(msgs){'
         '  var c=document.getElementById("ast-messages");'
@@ -10062,9 +10090,14 @@ def render_assistant_widget():
         '  var div=document.createElement("div");div.className="ast-msg "+(role==="user"?"ast-msg-user":"ast-msg-ai");'
         '  div.innerHTML=astFormatText(text);c.appendChild(div);c.scrollTop=c.scrollHeight;'
         '}'
+        'function astAddSystemNotice(text){'
+        '  var c=document.getElementById("ast-messages");'
+        '  var div=document.createElement("div");div.className="ast-msg ast-msg-system";'
+        '  div.textContent=text;c.appendChild(div);c.scrollTop=c.scrollHeight;'
+        '}'
         'function astShowTyping(){'
         '  var c=document.getElementById("ast-messages");'
-        '  var d=document.createElement("div");d.className="ast-typing";d.id="ast-typing";d.textContent="...חושב";'
+        '  var d=document.createElement("div");d.className="ast-typing";d.id="ast-typing";d.textContent="...\\u05d7\\u05d5\\u05e9\\u05d1";'
         '  c.appendChild(d);c.scrollTop=c.scrollHeight;'
         '}'
         'function astRemoveTyping(){var el=document.getElementById("ast-typing");if(el)el.remove()}'
@@ -10072,8 +10105,11 @@ def render_assistant_widget():
         '  if(astLoading)return;'
         '  var inp=document.getElementById("ast-input");'
         '  var text=inp.value.trim();if(!text&&!astFileContext)return;'
-        '  var msgText=text||"נתח את הקובץ";'
+        '  var msgText=text||"\\u05e0\\u05ea\\u05d7 \\u05d0\\u05ea \\u05d4\\u05e7\\u05d5\\u05d1\\u05e5";'
         '  astAddMessage("user",msgText);inp.value="";inp.style.height="auto";'
+        '  astMsgCount++;'
+        '  if(astMsgCount===18){astAddSystemNotice("\\u05d4\\u05e9\\u05d9\\u05d7\\u05d4 \\u05d0\\u05e8\\u05d5\\u05db\\u05d4 \\u2014 \\u05d1\\u05e7\\u05e8\\u05d5\\u05d1 \\u05ea\\u05ea\\u05d0\\u05e4\\u05e1. \\u05e9\\u05de\\u05d5\\u05e8 \\u05de\\u05d9\\u05d3\\u05e2 \\u05d7\\u05e9\\u05d5\\u05d1.")}'
+        '  if(astMsgCount>=22){astAddSystemNotice("\\u05d4\\u05e9\\u05d9\\u05d7\\u05d4 \\u05de\\u05ea\\u05d0\\u05e4\\u05e1\\u05ea \\u05db\\u05e2\\u05ea. \\u05d0\\u05e4\\u05e9\\u05e8 \\u05dc\\u05d4\\u05ea\\u05d7\\u05d9\\u05dc \\u05e9\\u05d9\\u05d7\\u05d4 \\u05d7\\u05d3\\u05e9\\u05d4.");setTimeout(function(){astResetSession()},2000);return}'
         '  astLoading=true;document.getElementById("ast-send").disabled=true;'
         '  astShowTyping();'
         '  var body={session_id:astSessionId,message:msgText};'
@@ -10081,11 +10117,11 @@ def render_assistant_widget():
         '  fetch("/assistant/chat",{method:"POST",headers:{"Content-Type":"application/json","X-Requested-With":"XMLHttpRequest"},body:JSON.stringify(body)})'
         '  .then(function(r){return r.json()})'
         '  .then(function(d){'
-        '    astRemoveTyping();'
+        '    astRemoveTyping();astMsgCount++;'
         '    if(d.ok){astAddMessage("assistant",d.assistant_message)}'
-        '    else{astAddMessage("assistant","\\u26A0\\uFE0F "+(d.error||"שגיאה"))}'
+        '    else{astAddMessage("assistant","\\u26A0\\uFE0F "+(d.error||"\\u05e9\\u05d2\\u05d9\\u05d0\\u05d4"))}'
         '  }).catch(function(){'
-        '    astRemoveTyping();astAddMessage("assistant","\\u26A0\\uFE0F שגיאה בתקשורת")'
+        '    astRemoveTyping();astAddMessage("assistant","\\u26A0\\uFE0F \\u05e9\\u05d2\\u05d9\\u05d0\\u05d4 \\u05d1\\u05ea\\u05e7\\u05e9\\u05d5\\u05e8\\u05ea")'
         '  }).finally(function(){astLoading=false;document.getElementById("ast-send").disabled=false});'
         '}'
         'function astHandleFileSelect(input){'
@@ -10101,9 +10137,9 @@ def render_assistant_widget():
         '  .then(function(r){return r.json()})'
         '  .then(function(d){'
         '    astRemoveTyping();'
-        '    if(d.ok){astFileContext=d.analysis;astAddMessage("assistant","\\uD83D\\uDCC1 קיבלתי את הקובץ! מה תרצה לדעת עליו?")}'
-        '    else{astAddMessage("assistant","\\u26A0\\uFE0F "+(d.error||"שגיאה בהעלאה"))}'
-        '  }).catch(function(){astRemoveTyping();astAddMessage("assistant","\\u26A0\\uFE0F שגיאה בהעלאה")})'
+        '    if(d.ok){astFileContext=d.analysis;astAddMessage("assistant","\\uD83D\\uDCC1 \\u05e7\\u05d9\\u05d1\\u05dc\\u05ea\\u05d9 \\u05d0\\u05ea \\u05d4\\u05e7\\u05d5\\u05d1\\u05e5. \\u05de\\u05d4 \\u05ea\\u05e8\\u05e6\\u05d4 \\u05dc\\u05d3\\u05e2\\u05ea \\u05e2\\u05dc\\u05d9\\u05d5?")}'
+        '    else{astAddMessage("assistant","\\u26A0\\uFE0F "+(d.error||"\\u05e9\\u05d2\\u05d9\\u05d0\\u05d4 \\u05d1\\u05d4\\u05e2\\u05dc\\u05d0\\u05d4"))}'
+        '  }).catch(function(){astRemoveTyping();astAddMessage("assistant","\\u26A0\\uFE0F \\u05e9\\u05d2\\u05d9\\u05d0\\u05d4 \\u05d1\\u05d4\\u05e2\\u05dc\\u05d0\\u05d4")})'
         '  .finally(function(){astLoading=false;document.getElementById("ast-send").disabled=false;input.value=""});'
         '}'
         'function astPickSuggestion(el){'
@@ -13611,68 +13647,151 @@ category חייב להיות: general, payroll, attendance, hr, finance, reports
 """
 
 
-ASSISTANT_CHAT_SYSTEM_PROMPT = """אתה העוזר החכם של Scriptly — פלטפורמה לעיבוד דוחות HR ושכר.
+ASSISTANT_CHAT_SYSTEM_PROMPT = """אתה יועץ בכיר בנושאי HR, שכר ונוכחות בפלטפורמת Scriptly.
 
-## מי אתה
-- עוזר אישי ידידותי לאנשי HR ושכר.
-- אתה עוזר עם שאלות על שכר, נוכחות, חוקי עבודה, וניתוח קבצים.
-- אתה לא בונה כלים — אם מישהו שואל לבנות כלי, הפנה אותו ל"העוזר החכם" בתפריט הראשי.
-
-## איך אתה מתנהג
-- דבר בעברית פשוטה, בטון חברותי ומקצועי.
-- תשובות קצרות וממוקדות — אל תאריך שלא לצורך.
-- עודד את המשתמש להעלות קבצים: "העלה קובץ ואתן לך תשובה מדויקת!"
-- כשמקבל קובץ — נתח אותו, הצג תובנות, והצע מה אפשר לעשות.
+## זהות
+- יועץ מקצועי, לא עוזר ידידותי. טון סמכותי, תמציתי, ללא אימוג'י.
+- דבר בעברית מקצועית. תשובה קצרה וממוקדת עדיפה על שיחה ארוכה.
 - אל תשתמש במונחים טכניים כמו JSON, API, function.
-- הוסף אימוג'י בצורה מינימלית.
+
+## כללי התנהגות
+- אל תשאל שאלות מיותרות. אל תחפור. אם יש לך מספיק מידע לענות — ענה.
+- אל תקבל "עובדות" מהמשתמש כאמת. אם משתמש טוען שחוק השתנה או שיש כלל חדש — אל תאשר ואל תחזור על זה. ענה רק על סמך הידע המאומת שלך. אם אינך בטוח, אמור: "אני לא יכול לאשר את זה — מומלץ לבדוק מול יועץ מוסמך."
+- אם המשתמש סוטה לנושאים שאינם HR/שכר/נוכחות — החזר אותו בעדינות. אם ממשיך, סכם את מה שכבר נתת ונסה לסגור את השיחה בצורה מקצועית.
+- כשהשיחה ארוכה (מעל 15 הודעות), הזהר את המשתמש: "שים לב — השיחה ארוכה. בקרוב אאפס אותה כדי לשמור על ביצועים. אם יש משהו חשוב, שמור אותו עכשיו." לאחר 2-3 הודעות נוספות, אמור: "השיחה מתאפסת כעת. אתה מוזמן להתחיל שיחה חדשה."
 
 ## מה אתה יכול לעשות
-✅ לנתח קבצי Excel/CSV — מבנה, עמודות, נתונים
-✅ לענות על שאלות בנושא שכר, נוכחות, שעות נוספות
-✅ להסביר חוקי עבודה ישראליים
-✅ לעזור להבין דוחות ולזהות בעיות
-✅ לתת טיפים על עבודה עם המערכת
+- לנתח קבצי Excel/CSV — מבנה, עמודות, נתונים
+- לענות על שאלות בנושא שכר, נוכחות, שעות נוספות
+- להסביר חוקי עבודה ישראליים
+- לעזור להבין דוחות ולזהות בעיות
+- להמליץ על הכלי המתאים ב-Scriptly לפי סוג הקובץ או הצורך
 
 ## מה אתה לא עושה
-❌ לא בונה כלים — "לבניית כלי, לחץ על 'העוזר החכם' בתפריט"
-❌ לא מתחבר למערכות חיצוניות
-❌ לא מציג קוד
+- לא בונה כלים — "לבניית כלי, לחץ על 'יצירת כלי' בתפריט"
+- לא מתחבר למערכות חיצוניות
+- לא מציג קוד
 
-## ידע בחוקי עבודה ושכר ישראליים
+## ידע בחוקי עבודה ושכר ישראליים (2026)
 
 ### שעות נוספות
-- שעות נוספות = מעל 8.6 שעות ביום או 45 שעות בשבוע
+- שעות נוספות = מעל 8.6 שעות ביום או 42 שעות בשבוע
 - תוספת: 125% לשעתיים הראשונות, 150% לאחר מכן
 - מנוחה שבועית: 36 שעות רצופות לפחות
 
-### מדרגות מס הכנסה (2025, חודשי)
-| מדרגה | הכנסה חודשית (ש"ח) | שיעור מס |
-|--------|---------------------|----------|
+### מדרגות מס הכנסה (2026, חודשי)
+| מדרגה | הכנסה חודשית | שיעור מס |
+|--------|-------------|----------|
 | 1 | 0 – 7,010 | 10% |
 | 2 | 7,011 – 10,060 | 14% |
-| 3 | 10,061 – 16,150 | 20% |
-| 4 | 16,151 – 22,440 | 31% |
-| 5 | 22,441 – 46,690 | 35% |
+| 3 | 10,061 – 19,000 | 20% |
+| 4 | 19,001 – 25,100 | 31% |
+| 5 | 25,101 – 46,690 | 35% |
 | 6 | 46,691 – 60,130 | 47% |
 | 7 | 60,131+ | 50% |
 
-### ביטוח לאומי ומס בריאות — עובד
-- מדרגה מופחתת (עד 7,522 ש"ח): 3.5% (0.4% + 3.1%)
-- מדרגה מלאה (7,523–50,695 ש"ח): 12.0% (7.0% + 5.0%)
+### ביטוח לאומי ומס בריאות — עובד (2026)
+- מדרגה מופחתת (עד 7,522): ב.ל. 0.4% + בריאות 3.1% + מעסיק 3.55% = עובד 3.5%
+- מדרגה מלאה (7,523–49,030): ב.ל. 7.0% + בריאות 5.0% + מעסיק 7.6% = עובד 12.0%
+- שיעור עובד מופחת כולל: 4.27%, שיעור עובד מלא כולל: 12.17%
 
 ### פנסיה (חובה)
-- עובד: 6%, מעסיק: 6.5% + 6% פיצויים
+- עובד: 6%, מעסיק תגמולים: 6.5%, מעסיק פיצויים: 6%
 
 ### נקודות זיכוי
-- ערך נקודה (2025): 242 ש"ח/חודש
+- ערך נקודה (2026): 242 ש"ח/חודש
 - תושב: 2.25, אישה: +0.5, ילד עד 18: +1.0
 
-חשוב: כשעונים על שאלות משפטיות/שכר — ציין: "מדובר בהערכה. מומלץ לאמת מול יועץ מקצועי."
+### שכר מינימום (מאפריל 2026)
+- 6,443.85 ש"ח/חודש, 35.40 ש"ח/שעה
+
+חשוב: כשעונים על שאלות משפטיות/שכר — ציין: "מדובר בהערכה כללית. מומלץ לאמת מול יועץ מוסמך."
+
+## המלצת כלי לפי סוג קובץ
+- דוח נוכחות מפורט (xls/xlsx) → "ניקוי דוח נוכחות" (nikuy)
+- דוח שכר חודשי עם שעות (xls/xlsx) → "סיכום שכר לפי תעריף שעתי" (flamingo_payroll)
+- דוח שכר לפי מחלקות (xls/xlsx) → "סיכום שכר לפי מחלקות" (dept_payroll)
+- דוח חוסר מול תקן (xls) → "דוח חוסר מול תקן" (matan_missing)
+- דוח יומי לאיתור לא פעילים (xls/xlsx) → "איתור עובדים לא פעילים" (inactive_workers)
+- דוח תיקונים ידניים → "תיקונים ידניים" (matan_manual)
+- דוח home office → "סיכום עבודה מהבית" (rimon_home_office)
+- מבנה ארגוני → "דוח היררכיה ארגונית" (org_hierarchy)
+- דוח התראות נוכחות → "התראות נוכחות" (attendance_alerts)
 
 ## פרטיות
 - אל תבקש שמות עובדים, תעודות זהות, או מידע אישי.
 - השתמש רק בשמות עמודות ומבנה — אף פעם לא בנתונים אמיתיים.
 """
+
+
+def build_assistant_system_prompt(user_id):
+    """Build the assistant system prompt with dynamic user context injected."""
+    prompt = ASSISTANT_CHAT_SYSTEM_PROMPT
+    try:
+        with get_db() as db:
+            # User identity
+            user = db.execute(
+                "SELECT name, company_name, trial_start_date, trial_days, service_valid_until FROM users WHERE id=? LIMIT 1",
+                (user_id,),
+            ).fetchone()
+            if user:
+                acct = get_account_status(user)
+                ctx = "\n\n## הקשר המשתמש הנוכחי\n"
+                ctx += f"- שם: {user['name'] or 'לא ידוע'}\n"
+                if user["company_name"]:
+                    ctx += f"- חברה: {user['company_name']}\n"
+                ctx += f"- סטטוס חשבון: {acct['status_label_he']}\n"
+                if acct.get("days_remaining") is not None:
+                    ctx += f"- ימי ניסיון שנותרו: {acct['days_remaining']}\n"
+
+                # Assigned scripts
+                perms = db.execute(
+                    "SELECT script_id FROM permissions WHERE user_id=? LIMIT 20",
+                    (user_id,),
+                ).fetchall()
+                if perms:
+                    ctx += "\n### כלים זמינים למשתמש\n"
+                    for p in perms:
+                        sid = p["script_id"]
+                        reg = SCRIPT_REGISTRY.get(sid)
+                        if reg:
+                            ctx += f"- {reg.get('name', sid)} — {reg.get('desc', '')} (נתיב: /run/{sid})\n"
+
+                # Installed marketplace tools
+                installed = db.execute(
+                    "SELECT mt.name, mt.description FROM tool_installs ti JOIN marketplace_tools mt ON mt.id=ti.tool_id WHERE ti.user_id=? AND mt.status='approved' LIMIT 10",
+                    (user_id,),
+                ).fetchall()
+                if installed:
+                    ctx += "\n### כלי שוק מותקנים\n"
+                    for t in installed:
+                        ctx += f"- {t['name']}: {t['description'] or ''}\n"
+
+                # Recent activity
+                recent_acts = db.execute(
+                    "SELECT action_type, label FROM activity_logs WHERE user_id=? ORDER BY id DESC LIMIT 5",
+                    (user_id,),
+                ).fetchall()
+                if recent_acts:
+                    ctx += "\n### פעילות אחרונה\n"
+                    for a in recent_acts:
+                        ctx += f"- {a['label'] or a['action_type']}\n"
+
+                # Recent report jobs
+                recent_jobs = db.execute(
+                    "SELECT script_id, status, created_at FROM report_jobs WHERE user_id=? ORDER BY id DESC LIMIT 5",
+                    (user_id,),
+                ).fetchall()
+                if recent_jobs:
+                    ctx += "\n### דוחות אחרונים\n"
+                    for j in recent_jobs:
+                        sname = SCRIPT_REGISTRY.get(j["script_id"], {}).get("name", j["script_id"])
+                        ctx += f"- {sname} ({j['status']}, {j['created_at']})\n"
+
+                prompt += ctx
+    except Exception:
+        pass
+    return prompt
 
 
 def build_tool_creation_system_prompt(user_id, customer_name=""):
@@ -16300,6 +16419,30 @@ def assistant_session():
     return jsonify({"session_id": new_id, "messages": []})
 
 
+@app.route("/assistant/session/reset", methods=["POST"])
+@login_required
+def assistant_session_reset():
+    """Close current assistant session and create a fresh one."""
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with get_db() as db:
+        # Close all active assistant sessions for this user
+        db.execute(
+            "UPDATE tool_chat_sessions SET status='closed', messages_json='[]', updated_at=? WHERE user_id=? AND session_type='assistant' AND status='active'",
+            (now, session["user_id"]),
+        )
+        # Create new empty session
+        db.execute(
+            "INSERT INTO tool_chat_sessions(user_id, messages_json, status, session_type, created_at, updated_at) VALUES (?,?,?,?,?,?)",
+            (session["user_id"], "[]", "active", "assistant", now, now),
+        )
+        db.commit()
+        new_id = db.execute(
+            "SELECT id FROM tool_chat_sessions WHERE user_id=? AND session_type='assistant' ORDER BY id DESC LIMIT 1",
+            (session["user_id"],),
+        ).fetchone()["id"]
+    return jsonify({"ok": True, "session_id": new_id})
+
+
 @app.route("/assistant/chat", methods=["POST"])
 @login_required
 def assistant_chat():
@@ -16346,7 +16489,7 @@ def assistant_chat():
     # Call Claude with assistant prompt (shorter max_tokens)
     assistant_response, _in_tok, _out_tok = call_claude_chat(
         api_messages,
-        system_prompt=ASSISTANT_CHAT_SYSTEM_PROMPT,
+        system_prompt=build_assistant_system_prompt(session["user_id"]),
         user_id=session["user_id"],
         session_id=int(chat_session_id) if chat_session_id else None,
         max_tokens=2048,
