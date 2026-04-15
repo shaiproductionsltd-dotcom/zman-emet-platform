@@ -10729,6 +10729,19 @@ def login():
 
 @app.route("/logout")
 def logout():
+    # Close any active assistant chat sessions for this user
+    uid = session.get("user_id")
+    if uid:
+        try:
+            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            with get_db() as db:
+                db.execute(
+                    "UPDATE tool_chat_sessions SET status='closed', messages_json='[]', updated_at=? WHERE user_id=? AND session_type='assistant' AND status='active'",
+                    (now, uid),
+                )
+                db.commit()
+        except Exception:
+            pass
     session.clear()
     return redirect("/login")
 
