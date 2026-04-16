@@ -4143,6 +4143,184 @@ def write_office_occupancy_heatmap(ws, heatmap_grid):
         ws.column_dimensions[get_column_letter(2 + wd)].width = 16
 
 
+def build_monthly_heatmap_grids(daily_rows, hour_range=(6, 22)):
+    """Groups daily_rows into calendar weeks (Sun-Sat) and builds per-week grids.
+    Returns list of dicts sorted by week_start, each containing:
+      - week_start: date, week_end: date
+      - date_labels: {weekday_0sun: "DD/MM"}  (only for dates actually in the data)
+      - cells: {(weekday_0sun, hour): employee_count_float}
+    """
+    start_h, end_h = hour_range
+
+    # Collect all dates present in the data (for labels + gray-out)
+    all_dates_by_week = {}
+    for row in daily_rows:
+        date_str = row.get("date")
+        if not date_str:
+            continue
+        try:
+            d = datetime.strptime(date_str, "%Y-%m-%d").date()
+        except (ValueError, TypeError):
+            continue
+        wd_sun = israeli_weekday_index(d)
+        week_sunday = d - timedelta(days=wd_sun)
+        if week_sunday not in all_dates_by_week:
+            all_dates_by_week[week_sunday] = set()
+        all_dates_by_week[week_sunday].add(d)
+
+    # Build per-week cells from office rows
+    week_cells = {}
+    for row in daily_rows:
+        if row["category"] != "office":
+            continue
+        entry_h = row.get("entry_hour")
+        exit_h = row.get("exit_hour")
+        if entry_h is None or exit_h is None or exit_h <= entry_h:
+            continue
+        date_str = row.get("date")
+        if not date_str:
+            continue
+        try:
+            d = datetime.strptime(date_str, "%Y-%m-%d").date()
+        except (ValueError, TypeError):
+            continue
+        wd_sun = israeli_weekday_index(d)
+        week_sunday = d - timedelta(days=wd_sun)
+        if week_sunday not in week_cells:
+            week_cells[week_sunday] = {(wd, h): 0.0 for wd in range(7) for h in range(start_h, end_h)}
+        for h in range(start_h, end_h):
+            overlap_start = max(entry_h, float(h))
+            overlap_end = min(exit_h, float(h + 1))
+            if overlap_end > overlap_start:
+                week_cells[week_sunday][(wd_sun, h)] += overlap_end - overlap_start
+
+    all_weeks = sorted(set(list(week_cells.keys()) + list(all_dates_by_week.keys())))
+    results = []
+    for week_sunday in all_weeks:
+        week_saturday = week_sunday + timedelta(days=6)
+        date_labels = {}
+        for d in all_dates_by_week.get(week_sunday, set()):
+            date_labels[israeli_weekday_index(d)] = d.strftime("%d/%m")
+        cells = week_cells.get(week_sunday, {(wd, h): 0.0 for wd in range(7) for h in range(start_h, end_h)})
+        results.append({
+            "week_start": week_sunday,
+            "week_end": week_saturday,
+            "date_labels": date_labels,
+            "cells": cells,
+        })
+    return results
+
+
+def write_office_occupancy_monthly(ws, monthly_grids, hour_range=(6, 22)):
+    ws.title = safe_sheet_title("מפת חום חודשית", "Monthly Heatmap")
+    ws.sheet_view.rightToLeft = True
+    ws.sheet_view.showGridLines = False
+
+    start_h, end_h = hour_range
+
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=8)
+    ws["A1"] = "מפת חום חודשית — נוכחות במשרד לפי שבועות"
+    ws["A1"].font = Font(bold=True, size=16, color="0F172A")
+    ws["A1"].fill = PatternFill(fill_type="solid", fgColor="BFDBFE")
+    ws["A1"].alignment = Alignment(horizontal="center")
+
+    ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=8)
+    ws["A2"] = "כל תא: מספר עובדים נוכחים במשרד באותה שעה ובאותו תאריך"
+    ws["A2"].font = Font(italic=True, size=11, color="64748B")
+    ws["A2"].alignment = Alignment(horizontal="center")
+
+    # Global max for consistent color gradient across all weeks
+    all_values = []
+    for grid in monthly_grids:
+        for key, val in grid["cells"].items():
+            wd = key[0]
+            if wd in grid["date_labels"] and val > 0:
+                all_values.append(val)
+    global_max = max(all_values, default=0.0)
+
+    thin = Side(border_style="thin", color="E2E8F0")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    gray_fill = PatternFill(fill_type="solid", fgColor="F1F5F9")
+
+    current_row = 4
+
+    for grid_idx, grid in enumerate(monthly_grids):
+        # Week header
+        week_label = f"שבוע {grid_idx + 1}: {grid['week_start'].strftime('%d/%m')} — {grid['week_end'].strftime('%d/%m')}"
+        ws.merge_cells(start_row=current_row, start_column=1, end_row=current_row, end_column=8)
+        hdr = ws.cell(row=current_row, column=1, value=week_label)
+        hdr.font = Font(bold=True, size=13, color="1E3A8A")
+        hdr.fill = PatternFill(fill_type="solid", fgColor="EFF6FF")
+        hdr.alignment = Alignment(horizontal="center")
+        current_row += 1
+
+        # Day column headers with dates
+        hour_hdr = ws.cell(row=current_row, column=1, value="שעה")
+        hour_hdr.font = Font(bold=True, color="FFFFFF")
+        hour_hdr.fill = PatternFill(fill_type="solid", fgColor="1E3A8A")
+        hour_hdr.alignment = Alignment(horizontal="center")
+        for wd in range(7):
+            date_label = grid["date_labels"].get(wd)
+            if date_label:
+                header_text = f"{OFFICE_HEATMAP_WEEKDAY_SHORT_HE[wd]} {date_label}"
+            else:
+                header_text = OFFICE_HEATMAP_WEEKDAY_SHORT_HE[wd]
+            c = ws.cell(row=current_row, column=2 + wd, value=header_text)
+            c.font = Font(bold=True, color="FFFFFF")
+            c.fill = PatternFill(fill_type="solid", fgColor="1E3A8A")
+            c.alignment = Alignment(horizontal="center")
+        current_row += 1
+
+        # Data rows (hours)
+        for h in range(start_h, end_h):
+            hour_cell = ws.cell(row=current_row, column=1, value=f"{h:02d}:00")
+            hour_cell.font = Font(bold=True, color="0F172A")
+            hour_cell.fill = gray_fill
+            hour_cell.alignment = Alignment(horizontal="center")
+            hour_cell.border = border
+
+            for wd in range(7):
+                value = grid["cells"].get((wd, h), 0.0)
+                cell = ws.cell(row=current_row, column=2 + wd)
+                cell.border = border
+                cell.alignment = Alignment(horizontal="center")
+                if wd not in grid["date_labels"]:
+                    # Day not in data — gray out
+                    cell.fill = gray_fill
+                    cell.font = Font(color="CBD5E1")
+                    cell.value = ""
+                else:
+                    cell.value = round(value, 1) if value > 0 else 0
+                    color = _heatmap_color_for_value(value, global_max)
+                    text_color = _heatmap_text_color_for_value(value, global_max)
+                    cell.fill = PatternFill(fill_type="solid", fgColor=color)
+                    cell.font = Font(bold=value > 0, color=text_color)
+            current_row += 1
+
+        # Totals row per week
+        totals_label = ws.cell(row=current_row, column=1, value="סה\"כ ליום")
+        totals_label.font = Font(bold=True, color="FFFFFF")
+        totals_label.fill = PatternFill(fill_type="solid", fgColor="0F766E")
+        totals_label.alignment = Alignment(horizontal="center")
+        for wd in range(7):
+            c = ws.cell(row=current_row, column=2 + wd)
+            c.alignment = Alignment(horizontal="center")
+            if wd not in grid["date_labels"]:
+                c.fill = gray_fill
+                c.value = ""
+            else:
+                day_total = sum(grid["cells"].get((wd, h), 0.0) for h in range(start_h, end_h))
+                c.value = round(day_total, 1) if day_total > 0 else 0
+                c.font = Font(bold=True, color="FFFFFF")
+                c.fill = PatternFill(fill_type="solid", fgColor="0F766E")
+        current_row += 2  # gap between weeks
+
+    # Column widths
+    ws.column_dimensions[get_column_letter(1)].width = 12
+    for wd in range(7):
+        ws.column_dimensions[get_column_letter(2 + wd)].width = 14
+
+
 def write_office_occupancy_daily(ws, daily_rows):
     ws.title = safe_sheet_title("פירוט יומי", "Daily Breakdown")
     ws.sheet_view.rightToLeft = True
@@ -4217,9 +4395,11 @@ def run_office_occupancy_heatmap(input_path, output_path, extension, options=Non
         classifications = {}
     employee_rows, daily_rows, report_meta = parse_office_occupancy_report(input_path, extension, mapping, classifications)
     heatmap_grid = build_weekly_heatmap_grid(daily_rows, hour_range=(6, 22))
+    monthly_grids = build_monthly_heatmap_grids(daily_rows, hour_range=(6, 22))
     wb = Workbook()
     write_office_occupancy_overview(wb.active, employee_rows, heatmap_grid, report_meta)
     write_office_occupancy_heatmap(wb.create_sheet(), heatmap_grid)
+    write_office_occupancy_monthly(wb.create_sheet(), monthly_grids, hour_range=(6, 22))
     write_office_occupancy_daily(wb.create_sheet(), daily_rows)
     wb.save(output_path)
     return {"warnings": build_rimon_mapping_warnings(mapping)}
