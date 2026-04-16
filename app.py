@@ -11855,7 +11855,7 @@ def run_script(script_id):
 
     if request.method == "POST":
         flow_mode = request.form.get("flow_mode", "").strip()
-        if scr.get("requires_mapping_confirmation") and flow_mode != "confirm_mapping":
+        if scr.get("requires_mapping_confirmation") and flow_mode not in ("confirm_mapping", "confirm_events"):
             file_obj = request.files.get("file")
             validation_error, ext = validate_upload(file_obj)
             if validation_error == "missing":
