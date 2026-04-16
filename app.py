@@ -10409,6 +10409,9 @@ def homepage():
         '</style>'
         '</head>'
         '<body>'
+        '<div style="background:linear-gradient(90deg,#f59e0b,#d97706);color:white;text-align:center;padding:8px 16px;font-size:13px;font-weight:700;letter-spacing:.3px;position:relative;z-index:200;box-shadow:0 2px 8px rgba(217,119,6,.25)">'
+        '🚧 פלטפורמה בפיתוח — יתכנו באגים ועדכונים שוטפים. תודה על ההבנה!'
+        '</div>'
         '<nav class="hp-nav" id="hpNav">'
         '<a href="/" class="hp-nav-brand">'
         '<svg viewBox="0 0 28 28" fill="none" width="28" height="28"><circle cx="14" cy="14" r="13" stroke="currentColor" stroke-width="2"/><path d="M9 14h10M14 9v10" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>'
@@ -10440,7 +10443,7 @@ def homepage():
         '<a href="#features" class="hp-btn-secondary">גלו את היכולות</a>'
         '</div>'
         '<div class="hp-hero-stats">'
-        '<div class="hp-hero-stat"><span class="hp-hero-stat-num">30</span><span class="hp-hero-stat-label">ימי ניסיון חינם</span></div>'
+        '<div class="hp-hero-stat"><span class="hp-hero-stat-num">∞</span><span class="hp-hero-stat-label">שימוש חינם</span></div>'
         '<div class="hp-hero-stat"><span class="hp-hero-stat-num">7+</span><span class="hp-hero-stat-label">כלים מובנים</span></div>'
         '<div class="hp-hero-stat"><span class="hp-hero-stat-num">AI</span><span class="hp-hero-stat-label">בונה כלים בשבילכם</span></div>'
         '</div>'
@@ -10457,7 +10460,7 @@ def homepage():
         '<div class="hp-feature feat-market"><div class="hp-feature-icon-wrap">&#127968;</div><h3>שוק כלים קהילתי</h3><p>גלו כלים שנוצרו על ידי משתמשים אחרים. התקינו, דרגו, והשתמשו בכלים מוכחים.</p></div>'
         '<div class="hp-feature feat-file"><div class="hp-feature-icon-wrap">&#128196;</div><h3>עיבוד קבצים מיידי</h3><p>העלו קובץ Excel או CSV, קבלו דוח מעובד בחזרה. תוצאות מדויקות תוך שניות.</p></div>'
         '<div class="hp-feature feat-il"><div class="hp-feature-icon-wrap">&#127470;&#127473;</div><h3>בנוי ל-HR ישראלי</h3><p>עברית מלאה, הבנה של מערכות נוכחות ושכר ישראליות, מושגים מדיני עבודה מקומיים.</p></div>'
-        '<div class="hp-feature feat-free"><div class="hp-feature-icon-wrap">&#127873;</div><h3>30 יום חינם</h3><p>התנסו בכל היכולות &mdash; ללא כרטיס אשראי, ללא התחייבות, ללא הגבלה.</p></div>'
+        '<div class="hp-feature feat-free"><div class="hp-feature-icon-wrap">&#127873;</div><h3>שימוש חינם</h3><p>התנסו בכל היכולות &mdash; ללא כרטיס אשראי, ללא התחייבות, ללא הגבלה.</p></div>'
         '</div></div></section>'
         '<section class="hp-section hp-showcase"><div class="hp-section-inner"><div class="hp-showcase-grid">'
         '<div class="hp-showcase-text">'
@@ -10510,12 +10513,12 @@ def homepage():
         '<div class="hp-hero-orb orb1" style="width:400px;height:400px;top:-100px;right:-80px;position:absolute"></div>'
         '<div class="hp-hero-orb orb2" style="width:300px;height:300px;bottom:-80px;left:-60px;position:absolute"></div>'
         '<div class="hp-cta-inner">'
-        '<h2>מוכנים להתחיל?<br>ניסיון חינם למשך 30 יום</h2>'
+        '<h2>מוכנים להתחיל?<br>הרשמו חינם ונסו את הפלטפורמה</h2>'
         '<p>הצטרפו ל-Scriptly וגלו איך AI חוסך לכם שעות עבודה כל חודש.<br>ללא כרטיס אשראי. ללא התחייבות.</p>'
         '<a href="/register" class="hp-cta-btn">התחילו בחינם &larr;</a>'
         '<div class="hp-cta-badges">'
         '<span class="hp-cta-badge"><svg viewBox="0 0 20 20" fill="currentColor"><path d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 111.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z"/></svg>ללא כרטיס אשראי</span>'
-        '<span class="hp-cta-badge"><svg viewBox="0 0 20 20" fill="currentColor"><path d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 111.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z"/></svg>30 יום חינם</span>'
+        '<span class="hp-cta-badge"><svg viewBox="0 0 20 20" fill="currentColor"><path d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 111.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z"/></svg>שימוש חינם</span>'
         '<span class="hp-cta-badge"><svg viewBox="0 0 20 20" fill="currentColor"><path d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 111.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z"/></svg>ללא התחייבות</span>'
         '</div></div></section>'
         '<footer class="hp-footer"><div class="hp-footer-inner">'
@@ -10877,8 +10880,15 @@ def dashboard():
         + (report_job_rows if report_job_rows else '<div style="text-align:center;padding:1rem 0;color:#94a3b8">עדיין אין דוחות בעיבוד או דוחות מוכנים להורדה</div>')
         + '</div>'
     )
+    dev_banner = (
+        '<div style="display:inline-flex;align-items:center;gap:8px;background:linear-gradient(90deg,#fef3c7,#fde68a);border:1px solid #f59e0b;color:#92400e;padding:8px 14px;border-radius:999px;font-size:13px;font-weight:700;margin-bottom:.9rem;box-shadow:0 1px 3px rgba(217,119,6,.15)">'
+        '<span>🚧</span>'
+        + ("<span>פלטפורמה בפיתוח — יתכנו באגים ועדכונים שוטפים</span>" if lang == "he" else "<span>Platform in active development — expect ongoing updates</span>")
+        + '</div>'
+    )
     body = (
-        '<h2 style="font-size:clamp(22px,3.5vw,28px);font-weight:800;color:#0f172a;margin-bottom:.4rem;letter-spacing:-0.3px">' + text["dashboard_greeting"]
+        dev_banner
+        + '<h2 style="font-size:clamp(22px,3.5vw,28px);font-weight:800;color:#0f172a;margin-bottom:.4rem;letter-spacing:-0.3px">' + text["dashboard_greeting"]
         + esc(session["name"])
         + ' &#128075;</h2>'
         + ('<p style="font-size:15px;color:#64748b;margin-bottom:1.5rem;line-height:1.7">' + text["dashboard_intro"] + "</p>" if text["dashboard_intro"] else "")
