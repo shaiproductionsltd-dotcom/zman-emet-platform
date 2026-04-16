@@ -3628,6 +3628,603 @@ def run_rimon_home_office_summary(input_path, output_path, extension, options=No
     return {"warnings": build_rimon_mapping_warnings(mapping)}
 
 
+# ---- Office Occupancy Heatmap ----
+
+OFFICE_HEATMAP_EVENT_KEYWORDS = [
+    ("מהבית", "home"),
+    ("מבית", "home"),
+    ("בית", "home"),
+    ("מחלת", "absence"),
+    ("מחלה", "absence"),
+    ("חופשה", "absence"),
+    ("חופש", "absence"),
+    ("היעדר", "absence"),
+    ("מילואים", "absence"),
+    ("חג", "absence"),
+    ("אבל", "absence"),
+    ("פיטור", "absence"),
+    ("התפטר", "absence"),
+    ("עזב", "absence"),
+    ("משרדים", "office"),
+    ("משרד", "office"),
+]
+
+OFFICE_HEATMAP_WEEKDAY_NAMES_HE = ["יום ראשון", "יום שני", "יום שלישי", "יום רביעי", "יום חמישי", "יום שישי", "שבת"]
+OFFICE_HEATMAP_WEEKDAY_SHORT_HE = ["א'", "ב'", "ג'", "ד'", "ה'", "ו'", "שבת"]
+
+
+def classify_event_value(event_value):
+    text = str(event_value or "").strip()
+    if not text:
+        return "office"
+    for keyword, category in OFFICE_HEATMAP_EVENT_KEYWORDS:
+        if keyword in text:
+            return category
+    return "office"
+
+
+def scan_distinct_events(input_path, extension, mapping):
+    workbook_kind, workbook = open_excel_workbook(input_path, extension)
+    distinct = set()
+    try:
+        for sheet in iter_excel_sheets(workbook_kind, workbook):
+            rows, _cols = get_excel_dims(sheet, workbook_kind)
+            header_row = detect_rimon_header_row(sheet, workbook_kind)
+            for row_index in range(header_row + 1, rows):
+                event_value = extract_rimon_mapping_value(sheet, workbook_kind, mapping.get("event_source"), row_index)
+                event_text = stringify_excel_value(event_value).strip()
+                if event_text:
+                    distinct.add(event_text)
+    finally:
+        if workbook_kind == "xlsx":
+            workbook.close()
+    return sorted(distinct)
+
+
+def israeli_weekday_index(date_obj):
+    return (date_obj.weekday() + 1) % 7
+
+
+def parse_office_occupancy_report(input_path, extension, mapping, event_classifications):
+    workbook_kind, workbook = open_excel_workbook(input_path, extension)
+    employee_rows = []
+    daily_rows = []
+    detected_company_name = ""
+    detected_months = []
+    detected_dates = set()
+
+    try:
+        for sheet in iter_excel_sheets(workbook_kind, workbook):
+            rows, _cols = get_excel_dims(sheet, workbook_kind)
+            header_row = detect_rimon_header_row(sheet, workbook_kind)
+            employee_name = extract_rimon_mapping_value(sheet, workbook_kind, mapping.get("employee_name_source"))
+            payroll_number = extract_rimon_mapping_value(sheet, workbook_kind, mapping.get("payroll_number_source"))
+            department = extract_rimon_mapping_value(sheet, workbook_kind, mapping.get("department_source"))
+            if not employee_name:
+                employee_name = getattr(sheet, "name", None) or getattr(sheet, "title", "") or "עובד"
+            if not stringify_excel_value(extract_rimon_mapping_value(sheet, workbook_kind, mapping.get("employee_name_source"))) and not stringify_excel_value(extract_rimon_mapping_value(sheet, workbook_kind, mapping.get("payroll_number_source"))):
+                continue
+            if not detected_company_name:
+                detected_company_name = stringify_excel_value(get_excel_cell(sheet, workbook_kind, 0, 0, "")) or stringify_excel_value(get_excel_cell(sheet, workbook_kind, 1, 42, ""))
+
+            grouped_dates = {}
+            current_date = None
+
+            for row_index in range(header_row + 1, rows):
+                row_date = parse_excel_date_generic(
+                    workbook_kind,
+                    workbook,
+                    extract_rimon_mapping_value(sheet, workbook_kind, mapping.get("date_source"), row_index),
+                )
+                if row_date:
+                    current_date = row_date
+                if current_date is None:
+                    continue
+
+                event_value = extract_rimon_mapping_value(sheet, workbook_kind, mapping.get("event_source"), row_index)
+                error_text = extract_rimon_mapping_value(sheet, workbook_kind, mapping.get("error_text_source"), row_index)
+                day_name = stringify_excel_value(extract_rimon_mapping_value(sheet, workbook_kind, mapping.get("day_name_source"), row_index))
+                entry_time = clean_time_text(stringify_excel_value(extract_rimon_mapping_value(sheet, workbook_kind, mapping.get("entry_time_source"), row_index)))
+                exit_time = clean_time_text(stringify_excel_value(extract_rimon_mapping_value(sheet, workbook_kind, mapping.get("exit_time_source"), row_index)))
+                event_text = stringify_excel_value(event_value).strip()
+                error_text_str = stringify_excel_value(error_text).strip()
+                if not any([row_date, event_text, error_text_str, entry_time, exit_time]):
+                    continue
+
+                day_key = current_date.isoformat()
+                if day_key not in grouped_dates:
+                    grouped_dates[day_key] = {
+                        "date": day_key,
+                        "weekday": israeli_weekday_index(current_date),
+                        "day_name": day_name,
+                        "entries": [],
+                        "exits": [],
+                        "events": [],
+                        "errors": [],
+                    }
+                grouped = grouped_dates[day_key]
+                if entry_time:
+                    grouped["entries"].append(entry_time)
+                if exit_time:
+                    grouped["exits"].append(exit_time)
+                if event_text and event_text not in grouped["events"]:
+                    grouped["events"].append(event_text)
+                if error_text_str and error_text_str not in grouped["errors"]:
+                    grouped["errors"].append(error_text_str)
+                if day_name and not grouped["day_name"]:
+                    grouped["day_name"] = day_name
+
+            office_days_total = 0
+            home_days_total = 0
+            absence_days_total = 0
+            error_days_total = 0
+
+            for day_key in sorted(grouped_dates):
+                grouped = grouped_dates[day_key]
+                events = grouped["events"]
+                entry_hours = [parse_exit_hour(t) for t in grouped["entries"]]
+                exit_hours = [parse_exit_hour(t) for t in grouped["exits"]]
+                entry_hours = [h for h in entry_hours if h is not None]
+                exit_hours = [h for h in exit_hours if h is not None]
+                has_complete_attendance = bool(entry_hours) and bool(exit_hours)
+
+                day_categories = []
+                for ev in events:
+                    cat = event_classifications.get(ev)
+                    if cat not in ("office", "home", "absence"):
+                        cat = classify_event_value(ev)
+                    day_categories.append(cat)
+
+                if "office" in day_categories:
+                    final_category = "office"
+                elif not events and has_complete_attendance:
+                    final_category = "office"
+                elif "home" in day_categories:
+                    final_category = "home"
+                elif "absence" in day_categories:
+                    final_category = "absence"
+                elif has_complete_attendance:
+                    final_category = "office"
+                else:
+                    final_category = "unclassified"
+
+                day_error = False
+                if (entry_hours and not exit_hours) or (exit_hours and not entry_hours):
+                    day_error = True
+                if grouped["errors"]:
+                    day_error = True
+
+                hours_at_office = 0.0
+                entry_str = grouped["entries"][0] if grouped["entries"] else ""
+                exit_str = grouped["exits"][-1] if grouped["exits"] else ""
+                entry_h = min(entry_hours) if entry_hours else None
+                exit_h = max(exit_hours) if exit_hours else None
+                if final_category == "office" and entry_h is not None and exit_h is not None and exit_h > entry_h:
+                    hours_at_office = exit_h - entry_h
+
+                if final_category == "office":
+                    office_days_total += 1
+                elif final_category == "home":
+                    home_days_total += 1
+                elif final_category == "absence":
+                    absence_days_total += 1
+                if day_error:
+                    error_days_total += 1
+
+                detected_dates.add(day_key)
+                detected_months.append(datetime.fromisoformat(day_key).month)
+
+                daily_rows.append({
+                    "employee_name": stringify_excel_value(employee_name),
+                    "payroll_number": stringify_excel_value(payroll_number),
+                    "department": stringify_excel_value(department),
+                    "date": day_key,
+                    "weekday": grouped["weekday"],
+                    "day_name": grouped["day_name"] or OFFICE_HEATMAP_WEEKDAY_SHORT_HE[grouped["weekday"]],
+                    "entry_time": entry_str,
+                    "exit_time": exit_str,
+                    "entry_hour": entry_h,
+                    "exit_hour": exit_h,
+                    "hours_at_office": hours_at_office,
+                    "category": final_category,
+                    "event": " | ".join(events),
+                    "error": day_error,
+                    "error_text": " | ".join(grouped["errors"]),
+                })
+
+            employee_rows.append({
+                "employee_name": stringify_excel_value(employee_name),
+                "payroll_number": stringify_excel_value(payroll_number),
+                "department": stringify_excel_value(department),
+                "office_days": office_days_total,
+                "home_days": home_days_total,
+                "absence_days": absence_days_total,
+                "error_days": error_days_total,
+                "total_days": len(grouped_dates),
+            })
+    finally:
+        if workbook_kind == "xlsx":
+            workbook.close()
+
+    report_month = ""
+    if detected_months:
+        month_names_he = {
+            1: "ינואר", 2: "פברואר", 3: "מרץ", 4: "אפריל", 5: "מאי", 6: "יוני",
+            7: "יולי", 8: "אוגוסט", 9: "ספטמבר", 10: "אוקטובר", 11: "נובמבר", 12: "דצמבר",
+        }
+        month_number = max(set(detected_months), key=detected_months.count)
+        report_month = month_names_he.get(month_number, "")
+    report_meta = {
+        "company_name": detected_company_name,
+        "report_month": report_month,
+        "identified_day_count": len(detected_dates),
+    }
+    return employee_rows, daily_rows, report_meta
+
+
+def build_weekly_heatmap_grid(daily_rows, hour_range=(6, 22)):
+    """Returns dict with:
+      - cells: {(weekday, hour): {"total_employee_hours": float, "distinct_dates": int, "avg_employees": float}}
+      - weekday_dates: {weekday: set(date_iso)} - all distinct dates of each weekday in file
+      - weekday_office_dates: {weekday: set(date_iso)} - dates that had any office attendance
+      - hour_range: tuple
+    """
+    start_h, end_h = hour_range
+    weekday_dates = {wd: set() for wd in range(7)}
+    weekday_office_dates = {wd: set() for wd in range(7)}
+    cell_employee_hours = {(wd, h): 0.0 for wd in range(7) for h in range(start_h, end_h)}
+    cell_per_date_counts = {(wd, h): {} for wd in range(7) for h in range(start_h, end_h)}
+
+    for row in daily_rows:
+        wd = row["weekday"]
+        date_iso = row["date"]
+        weekday_dates[wd].add(date_iso)
+        if row["category"] != "office":
+            continue
+        entry_h = row.get("entry_hour")
+        exit_h = row.get("exit_hour")
+        if entry_h is None or exit_h is None or exit_h <= entry_h:
+            continue
+        weekday_office_dates[wd].add(date_iso)
+        for h in range(start_h, end_h):
+            slot_start = float(h)
+            slot_end = float(h + 1)
+            overlap_start = max(entry_h, slot_start)
+            overlap_end = min(exit_h, slot_end)
+            overlap = overlap_end - overlap_start
+            if overlap <= 0:
+                continue
+            cell_employee_hours[(wd, h)] += overlap
+            counts = cell_per_date_counts[(wd, h)]
+            counts[date_iso] = counts.get(date_iso, 0) + overlap
+
+    cells = {}
+    for (wd, h), total in cell_employee_hours.items():
+        distinct = len(weekday_dates[wd])
+        avg = (total / distinct) if distinct else 0.0
+        cells[(wd, h)] = {
+            "total_employee_hours": total,
+            "distinct_dates": distinct,
+            "avg_employees": avg,
+        }
+    return {
+        "cells": cells,
+        "weekday_dates": weekday_dates,
+        "weekday_office_dates": weekday_office_dates,
+        "hour_range": (start_h, end_h),
+    }
+
+
+def _heatmap_color_for_value(value, max_value):
+    if max_value <= 0 or value <= 0:
+        return "FFFFFF"
+    ratio = value / max_value
+    if ratio < 0.001:
+        return "FFFFFF"
+    # gradient: white -> #DBEAFE -> #3B82F6 -> #1E3A8A
+    stops = [
+        (0.0, (255, 255, 255)),
+        (0.33, (219, 234, 254)),
+        (0.66, (59, 130, 246)),
+        (1.0, (30, 58, 138)),
+    ]
+    if ratio >= 1.0:
+        r, g, b = stops[-1][1]
+        return f"{r:02X}{g:02X}{b:02X}"
+    for i in range(len(stops) - 1):
+        t0, c0 = stops[i]
+        t1, c1 = stops[i + 1]
+        if t0 <= ratio <= t1:
+            span = t1 - t0
+            local = (ratio - t0) / span if span > 0 else 0
+            r = int(round(c0[0] + (c1[0] - c0[0]) * local))
+            g = int(round(c0[1] + (c1[1] - c0[1]) * local))
+            b = int(round(c0[2] + (c1[2] - c0[2]) * local))
+            return f"{r:02X}{g:02X}{b:02X}"
+    return "FFFFFF"
+
+
+def _heatmap_text_color_for_value(value, max_value):
+    if max_value <= 0 or value <= 0:
+        return "0F172A"
+    return "FFFFFF" if (value / max_value) >= 0.55 else "0F172A"
+
+
+def write_office_occupancy_overview(ws, employee_rows, heatmap_grid, report_meta):
+    ws.title = safe_sheet_title("סקירה כוללת", "Overview")
+    ws.sheet_view.rightToLeft = True
+    ws.sheet_view.showGridLines = False
+
+    cells = heatmap_grid["cells"]
+    start_h, end_h = heatmap_grid["hour_range"]
+    weekday_dates = heatmap_grid["weekday_dates"]
+    weekday_office_dates = heatmap_grid["weekday_office_dates"]
+
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=6)
+    ws["A1"] = "מפת עומס משרד — סקירה כוללת"
+    ws["A1"].font = Font(bold=True, size=18, color="0F172A")
+    ws["A1"].fill = PatternFill(fill_type="solid", fgColor="BFDBFE")
+    ws["A1"].alignment = Alignment(horizontal="center")
+
+    company_name = report_meta.get("company_name", "")
+    if company_name:
+        ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=6)
+        ws["A2"] = company_name
+        ws["A2"].font = Font(bold=True, size=13, color="334155")
+        ws["A2"].alignment = Alignment(horizontal="center")
+
+    total_employees = len(employee_rows)
+    total_office_days = sum(row["office_days"] for row in employee_rows)
+    total_home_days = sum(row["home_days"] for row in employee_rows)
+    total_absence_days = sum(row["absence_days"] for row in employee_rows)
+
+    # busiest weekday (avg employees across hours)
+    weekday_avg_total = []
+    for wd in range(7):
+        distinct = len(weekday_dates[wd])
+        if distinct == 0:
+            weekday_avg_total.append((wd, 0.0))
+            continue
+        total_emp_hours = sum(cells[(wd, h)]["total_employee_hours"] for h in range(start_h, end_h))
+        avg = total_emp_hours / distinct  # avg employee-hours per occurrence of this weekday
+        weekday_avg_total.append((wd, avg))
+    busiest_wd = max(weekday_avg_total, key=lambda x: x[1]) if weekday_avg_total else (0, 0.0)
+
+    # busiest hour overall (max avg_employees across all weekday/hour cells)
+    busiest_cell = None
+    busiest_value = 0.0
+    for (wd, h), data in cells.items():
+        if data["avg_employees"] > busiest_value:
+            busiest_value = data["avg_employees"]
+            busiest_cell = (wd, h)
+
+    busiest_day_text = ""
+    if busiest_wd[1] > 0:
+        busiest_day_text = OFFICE_HEATMAP_WEEKDAY_NAMES_HE[busiest_wd[0]]
+    busiest_hour_text = ""
+    if busiest_cell and busiest_value > 0:
+        wd_b, h_b = busiest_cell
+        busiest_hour_text = f"{h_b:02d}:00–{(h_b + 1):02d}:00 ({OFFICE_HEATMAP_WEEKDAY_SHORT_HE[wd_b]}) — ממוצע {busiest_value:.1f} עובדים"
+
+    metrics = [
+        ("חודש הדוח", report_meta.get("report_month", ""), "E0F2FE"),
+        ("סה\"כ ימים שזוהו", report_meta.get("identified_day_count", 0), "E0F2FE"),
+        ("סה\"כ עובדים שנקלטו", total_employees, "E0F2FE"),
+        ("סה\"כ ימי עבודה במשרד", total_office_days, "DCFCE7"),
+        ("סה\"כ ימי עבודה מהבית", total_home_days, "DDD6FE"),
+        ("סה\"כ ימי היעדרות", total_absence_days, "FEF3C7"),
+        ("היום העמוס ביותר", busiest_day_text, "FED7AA"),
+        ("השעה העמוסה ביותר", busiest_hour_text, "FED7AA"),
+    ]
+    for idx, (label, value, fill_color) in enumerate(metrics, start=4):
+        label_cell = ws.cell(row=idx, column=1, value=label)
+        value_cell = ws.cell(row=idx, column=2, value=value)
+        label_cell.font = Font(bold=True, color="334155")
+        value_cell.font = Font(bold=True, color="0F172A")
+        label_cell.fill = PatternFill(fill_type="solid", fgColor=fill_color)
+        value_cell.fill = PatternFill(fill_type="solid", fgColor=fill_color)
+        label_cell.alignment = Alignment(horizontal="right")
+        value_cell.alignment = Alignment(horizontal="right")
+
+    table_start_row = len(metrics) + 6
+    ws.merge_cells(start_row=table_start_row - 1, start_column=1, end_row=table_start_row - 1, end_column=5)
+    ws.cell(row=table_start_row - 1, column=1, value="סיכום לפי יום בשבוע").font = Font(bold=True, size=14, color="1E3A8A")
+    ws.cell(row=table_start_row - 1, column=1).alignment = Alignment(horizontal="right")
+
+    headers = ["יום בשבוע", "מספר תאריכים בקובץ", "סה\"כ ימי עבודה במשרד", "ממוצע עובדים בשעה", "שעת השיא"]
+    for col, h in enumerate(headers, start=1):
+        c = ws.cell(row=table_start_row, column=col, value=h)
+        c.font = Font(bold=True, color="FFFFFF")
+        c.fill = PatternFill(fill_type="solid", fgColor="1E3A8A")
+        c.alignment = Alignment(horizontal="right")
+
+    for wd in range(7):
+        distinct = len(weekday_dates[wd])
+        office_dates_count = len(weekday_office_dates[wd])
+        # avg employees across the active hours of that weekday
+        if distinct > 0:
+            avgs_in_day = [cells[(wd, h)]["avg_employees"] for h in range(start_h, end_h)]
+            non_zero = [a for a in avgs_in_day if a > 0]
+            avg_employees_per_hour = sum(non_zero) / len(non_zero) if non_zero else 0.0
+            peak_hour_idx = max(range(start_h, end_h), key=lambda h: cells[(wd, h)]["avg_employees"])
+            peak_value = cells[(wd, peak_hour_idx)]["avg_employees"]
+            peak_text = f"{peak_hour_idx:02d}:00 ({peak_value:.1f} עובדים)" if peak_value > 0 else "—"
+        else:
+            avg_employees_per_hour = 0.0
+            peak_text = "—"
+        row_idx = table_start_row + 1 + wd
+        values = [
+            OFFICE_HEATMAP_WEEKDAY_NAMES_HE[wd],
+            distinct,
+            office_dates_count,
+            f"{avg_employees_per_hour:.1f}" if avg_employees_per_hour else "0",
+            peak_text,
+        ]
+        for col, value in enumerate(values, start=1):
+            cell = ws.cell(row=row_idx, column=col, value=value)
+            cell.alignment = Alignment(horizontal="right")
+            if row_idx % 2 == 0:
+                cell.fill = PatternFill(fill_type="solid", fgColor="F8FAFC")
+
+    widths = [22, 22, 24, 22, 28, 16]
+    for col, width in enumerate(widths, start=1):
+        ws.column_dimensions[get_column_letter(col)].width = width
+
+
+def write_office_occupancy_heatmap(ws, heatmap_grid):
+    ws.title = safe_sheet_title("מפת חום שבועית", "Weekly Heatmap")
+    ws.sheet_view.rightToLeft = True
+    ws.sheet_view.showGridLines = False
+
+    cells = heatmap_grid["cells"]
+    start_h, end_h = heatmap_grid["hour_range"]
+
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=8)
+    ws["A1"] = "מפת חום שבועית — ממוצע עובדים נוכחים במשרד"
+    ws["A1"].font = Font(bold=True, size=16, color="0F172A")
+    ws["A1"].fill = PatternFill(fill_type="solid", fgColor="BFDBFE")
+    ws["A1"].alignment = Alignment(horizontal="center")
+
+    ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=8)
+    ws["A2"] = "כל תא: ממוצע עובדים נוכחים במשרד באותה שעה ובאותו יום בשבוע"
+    ws["A2"].font = Font(italic=True, size=11, color="64748B")
+    ws["A2"].alignment = Alignment(horizontal="center")
+
+    header_row = 4
+    ws.cell(row=header_row, column=1, value="שעה").font = Font(bold=True, color="FFFFFF")
+    ws.cell(row=header_row, column=1).fill = PatternFill(fill_type="solid", fgColor="1E3A8A")
+    ws.cell(row=header_row, column=1).alignment = Alignment(horizontal="center")
+    for wd in range(7):
+        c = ws.cell(row=header_row, column=2 + wd, value=OFFICE_HEATMAP_WEEKDAY_NAMES_HE[wd])
+        c.font = Font(bold=True, color="FFFFFF")
+        c.fill = PatternFill(fill_type="solid", fgColor="1E3A8A")
+        c.alignment = Alignment(horizontal="center")
+
+    max_value = max((data["avg_employees"] for data in cells.values()), default=0.0)
+
+    thin = Side(border_style="thin", color="E2E8F0")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+    for row_offset, h in enumerate(range(start_h, end_h)):
+        excel_row = header_row + 1 + row_offset
+        hour_cell = ws.cell(row=excel_row, column=1, value=f"{h:02d}:00")
+        hour_cell.font = Font(bold=True, color="0F172A")
+        hour_cell.fill = PatternFill(fill_type="solid", fgColor="F1F5F9")
+        hour_cell.alignment = Alignment(horizontal="center")
+        hour_cell.border = border
+        for wd in range(7):
+            data = cells.get((wd, h), {"avg_employees": 0.0})
+            value = data["avg_employees"]
+            cell = ws.cell(row=excel_row, column=2 + wd, value=round(value, 1) if value > 0 else 0)
+            color = _heatmap_color_for_value(value, max_value)
+            text_color = _heatmap_text_color_for_value(value, max_value)
+            cell.fill = PatternFill(fill_type="solid", fgColor=color)
+            cell.font = Font(bold=value > 0, color=text_color)
+            cell.alignment = Alignment(horizontal="center")
+            cell.border = border
+
+    # Totals row
+    totals_row = header_row + 1 + (end_h - start_h)
+    label_cell = ws.cell(row=totals_row, column=1, value="ממוצע ליום")
+    label_cell.font = Font(bold=True, color="FFFFFF")
+    label_cell.fill = PatternFill(fill_type="solid", fgColor="0F766E")
+    label_cell.alignment = Alignment(horizontal="center")
+    for wd in range(7):
+        avgs = [cells[(wd, h)]["avg_employees"] for h in range(start_h, end_h)]
+        non_zero = [a for a in avgs if a > 0]
+        day_avg = sum(non_zero) / len(non_zero) if non_zero else 0.0
+        c = ws.cell(row=totals_row, column=2 + wd, value=round(day_avg, 1) if day_avg > 0 else 0)
+        c.font = Font(bold=True, color="FFFFFF")
+        c.fill = PatternFill(fill_type="solid", fgColor="0F766E")
+        c.alignment = Alignment(horizontal="center")
+
+    ws.column_dimensions[get_column_letter(1)].width = 12
+    for wd in range(7):
+        ws.column_dimensions[get_column_letter(2 + wd)].width = 16
+
+
+def write_office_occupancy_daily(ws, daily_rows):
+    ws.title = safe_sheet_title("פירוט יומי", "Daily Breakdown")
+    ws.sheet_view.rightToLeft = True
+    ws.sheet_view.showGridLines = False
+    ws.freeze_panes = "A2"
+
+    headers = [
+        "שם עובד",
+        "מספר עובד",
+        "מחלקה",
+        "תאריך",
+        "יום בשבוע",
+        "שעת כניסה",
+        "שעת יציאה",
+        "שעות במשרד",
+        "סיווג סופי",
+        "אירוע (גולמי)",
+        "שגיאה",
+        "פירוט שגיאה",
+    ]
+    for col, header in enumerate(headers, start=1):
+        cell = ws.cell(row=1, column=col, value=header)
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = PatternFill(fill_type="solid", fgColor="0F766E")
+        cell.alignment = Alignment(horizontal="right")
+
+    category_he = {"office": "משרד", "home": "בית", "absence": "היעדרות", "unclassified": "לא סווג"}
+    category_color = {"office": "DCFCE7", "home": "DDD6FE", "absence": "FEF3C7", "unclassified": "F1F5F9"}
+
+    sorted_rows = sorted(daily_rows, key=lambda r: (r["employee_name"], r["date"]))
+    for row_idx, row in enumerate(sorted_rows, start=2):
+        hours_text = format_hours(row["hours_at_office"]) if row["hours_at_office"] else ""
+        values = [
+            row["employee_name"],
+            row["payroll_number"],
+            row["department"],
+            row["date"],
+            OFFICE_HEATMAP_WEEKDAY_SHORT_HE[row["weekday"]],
+            row["entry_time"],
+            row["exit_time"],
+            hours_text,
+            category_he.get(row["category"], row["category"]),
+            row["event"],
+            yes_no(row["error"]),
+            row["error_text"],
+        ]
+        for col, value in enumerate(values, start=1):
+            cell = ws.cell(row=row_idx, column=col, value=value)
+            cell.alignment = Alignment(horizontal="right")
+            if col == 9:
+                cell.fill = PatternFill(fill_type="solid", fgColor=category_color.get(row["category"], "FFFFFF"))
+            elif row_idx % 2 == 0:
+                cell.fill = PatternFill(fill_type="solid", fgColor="F8FAFC")
+
+    widths = [22, 14, 18, 12, 12, 12, 12, 14, 14, 26, 10, 22]
+    for col, width in enumerate(widths, start=1):
+        ws.column_dimensions[get_column_letter(col)].width = width
+
+
+def run_office_occupancy_heatmap(input_path, output_path, extension, options=None):
+    if extension not in {"xls", "xlsx"}:
+        raise ValueError("Office occupancy heatmap currently supports XLS and XLSX uploads only")
+    options = options or {}
+    mapping = default_rimon_mapping()
+    mapping.update({key: value for key, value in options.items() if key.endswith("_source")})
+    classifications_json = options.get("event_classifications_json", "") or "{}"
+    try:
+        classifications = json.loads(classifications_json)
+        if not isinstance(classifications, dict):
+            classifications = {}
+    except (TypeError, ValueError):
+        classifications = {}
+    employee_rows, daily_rows, report_meta = parse_office_occupancy_report(input_path, extension, mapping, classifications)
+    heatmap_grid = build_weekly_heatmap_grid(daily_rows, hour_range=(6, 22))
+    wb = Workbook()
+    write_office_occupancy_overview(wb.active, employee_rows, heatmap_grid, report_meta)
+    write_office_occupancy_heatmap(wb.create_sheet(), heatmap_grid)
+    write_office_occupancy_daily(wb.create_sheet(), daily_rows)
+    wb.save(output_path)
+    return {"warnings": build_rimon_mapping_warnings(mapping)}
+
+
 # ---- Attendance Alerts ----
 
 ATTENDANCE_ALERT_TYPES = [
@@ -6170,6 +6767,33 @@ SCRIPTS["attendance_alerts"] = {
     "icon": "🚨",
 }
 
+SCRIPTS["office_occupancy_heatmap"] = {
+    "id": "office_occupancy_heatmap",
+    "name": "עומס משרד — ימים ושעות",
+    "desc": "מפת חום של נוכחות במשרד — מזהה את הימים והשעות העמוסות ביותר בשבוע, לפי אירועי הנוכחות שלכם",
+    "help_label": "דרישות לקובץ",
+    "help_title": "מה צריך להעלות?",
+    "help_intro": "יש להעלות דוח נוכחות חודשי מפורט (לשונית לכל עובד) — אותו דוח שמשמש את 'סיכום עבודה מהבית והמשרד'.",
+    "help_items": [
+        "המערכת סורקת את עמודת האירוע ומאתרת את כל סוגי האירועים בקובץ",
+        "תוכלו לסווג כל סוג אירוע כעבודה ממשרד / מהבית / היעדרות",
+        "מפיקה מפת חום שבועית של נוכחות במשרד לפי יום ושעה",
+    ],
+    "help_note": "מזהה אוטומטית אירועים כמו 'עבודה מהמשרד', 'עבודה מהבית', 'מחלה', 'חופשה' ועוד — ומאפשרת לכם לתקן את הסיווג לפני ההרצה.",
+    "rules_label": "איך המערכת סופרת נוכחות",
+    "rules_title": "מה נחשב נוכחות במשרד?",
+    "rules_intro": "התא במפת החום מציג ממוצע עובדים הנוכחים במשרד באותה שעה ובאותו יום בשבוע:",
+    "rules_items": [
+        "עבודה במשרד = אירוע המכיל 'משרד' או 'משרדים', או אירוע ריק עם כניסה ויציאה",
+        "עובד נחשב נוכח בכל שעה שבין שעת הכניסה לשעת היציאה",
+        "הממוצע לתא מחושב: סך שעות־עובד באותה משבצת ÷ מספר אותו יום בשבוע בדוח",
+        "אירועים שסווגו כעבודה מהבית או היעדרות — לא נספרים במפה",
+    ],
+    "rules_note": "לפני ההרצה תוצג מסך אישור: לכל סוג אירוע שנמצא בקובץ תבחרו קטגוריה.",
+    "accept": ".xls,.xlsx",
+    "icon": "🔥",
+}
+
 SCRIPTS["dept_payroll"] = {
     "id": "dept_payroll",
     "name": "חיוב לקוחות ותשלום עובדים",
@@ -6330,6 +6954,28 @@ SCRIPT_REGISTRY["attendance_alerts"] = {
     "processing_title": "דוח ההתראות בהכנה",
     "processing_note": "המערכת בודקת חריגות שעות ויציאות מאוחרות. הפעולה עשויה להימשך כמה דקות.",
     "file_picker_label": "בחירת דוח מפורט חודשי",
+}
+
+SCRIPT_REGISTRY["office_occupancy_heatmap"] = {
+    **SCRIPTS["office_occupancy_heatmap"],
+    "processor": run_office_occupancy_heatmap,
+    "output_suffix": "office_occupancy_heatmap",
+    "success_title": "מפת העומס מוכנה",
+    "success_action": "הורדת המפה",
+    "retry_action": "עיבוד קובץ נוסף",
+    "submit_label": "יצירת מפת עומס",
+    "back_label": "חזרה לכלים",
+    "empty_error": "לא נבחר קובץ",
+    "unsupported_error": "יש להעלות דוח נוכחות חודשי מפורט מסוג XLS או XLSX",
+    "invalid_error": "הקובץ שהועלה אינו קובץ אקסל תקין",
+    "empty_file_error": "הקובץ שהועלה ריק",
+    "too_large_error": "הקובץ שהועלה גדול מדי",
+    "processing_error": "לא ניתן היה להפיק את מפת העומס מהקובץ הזה",
+    "processing_title": "מפת העומס בהכנה",
+    "processing_note": "המערכת סופרת נוכחות במשרד לפי ימים ושעות. הפעולה עשויה להימשך כמה דקות.",
+    "file_picker_label": "בחירת דוח נוכחות חודשי",
+    "requires_mapping_confirmation": True,
+    "requires_event_classification": True,
 }
 
 SCRIPT_REGISTRY["dept_payroll"] = {
@@ -9244,6 +9890,80 @@ def build_rimon_mapping_form(script_id, temp_upload_path, temp_upload_ext, inspe
     )
 
 
+def build_event_classification_form(script_id, temp_upload_path, temp_upload_ext, mapping, distinct_events, current_classifications):
+    category_options = [
+        ("office", "עבודה במשרד", "DCFCE7", "166534"),
+        ("home", "עבודה מהבית", "DDD6FE", "5b21b6"),
+        ("absence", "היעדרות", "FEF3C7", "92400e"),
+    ]
+
+    rows_html = ""
+    for idx, event_value in enumerate(distinct_events):
+        current = current_classifications.get(event_value) or classify_event_value(event_value)
+        radios_html = ""
+        for cat_id, cat_label, cat_bg, cat_fg in category_options:
+            checked = " checked" if current == cat_id else ""
+            radios_html += (
+                '<label style="display:inline-flex;align-items:center;gap:6px;padding:8px 14px;border-radius:999px;cursor:pointer;background:#' + cat_bg + ';border:1px solid #cbd5e1;color:#' + cat_fg + ';font-size:13px;font-weight:600;margin-inline-end:8px">'
+                + '<input type="radio" name="event_class__' + esc(event_value) + '" value="' + cat_id + '"' + checked + ' style="margin:0">'
+                + esc(cat_label)
+                + '</label>'
+            )
+        bg_color = "#ffffff" if idx % 2 == 0 else "#f8fafc"
+        rows_html += (
+            '<div style="display:grid;grid-template-columns:minmax(180px,260px) minmax(0,1fr);gap:14px;align-items:center;padding:10px 12px;border-bottom:1px solid #e2e8f0;background:' + bg_color + '">'
+            + '<div style="font-size:14px;font-weight:700;color:#0f172a;word-break:break-word">' + esc(event_value) + '</div>'
+            + '<div style="display:flex;flex-wrap:wrap;align-items:center">' + radios_html + '</div>'
+            + '</div>'
+        )
+
+    if not rows_html:
+        rows_html = '<div style="padding:20px;text-align:center;color:#64748b;font-size:13px">לא נמצאו אירועים בעמודה שנבחרה — כל הימים יסווגו לפי הכלל של "אירוע ריק עם כניסה ויציאה = משרד".</div>'
+
+    mapping_hidden_fields = ""
+    for key, value in (mapping or {}).items():
+        mapping_hidden_fields += '<input type="hidden" name="' + esc(key) + '" value="' + esc(str(value or "")) + '">'
+
+    mapping_json = json.dumps(mapping or {}, ensure_ascii=False)
+
+    return (
+        '<form method="POST" id="eventClassificationForm">'
+        + '<input type="hidden" name="flow_mode" value="confirm_events">'
+        + '<input type="hidden" name="temp_upload_path" value="' + esc(temp_upload_path) + '">'
+        + '<input type="hidden" name="temp_upload_ext" value="' + esc(temp_upload_ext) + '">'
+        + '<input type="hidden" name="mapping_json" value="' + esc(mapping_json) + '">'
+        + mapping_hidden_fields
+        + '<div style="background:#fafcff;border:1px solid #dbeafe;border-radius:14px;padding:1rem;margin-bottom:1rem">'
+        + '<div style="font-size:15px;font-weight:700;color:#1e3a8a;margin-bottom:6px">סיווג אירועים — שלב 2 מתוך 2</div>'
+        + '<div style="font-size:13px;color:#475569;line-height:1.7;margin-bottom:12px">לכל סוג אירוע שנמצא בקובץ, בחרו לאיזו קטגוריה הוא שייך. רק אירועים שסווגו כעבודה במשרד (וכן ימים ללא אירוע אך עם כניסה ויציאה) יספרו במפת החום.</div>'
+        + '<div style="background:#fffbeb;border:1px solid #fcd34d;border-radius:10px;padding:10px 14px;margin-bottom:14px;font-size:12px;color:#92400e;line-height:1.7">'
+        + '<strong>כלל קבוע (לא ניתן לשינוי):</strong> יום ללא אירוע אך עם שעת כניסה <em>וגם</em> שעת יציאה — נחשב אוטומטית כעבודה במשרד.'
+        + '</div>'
+        + '<div style="border:1px solid #e2e8f0;border-radius:12px;overflow:hidden;background:#ffffff;margin-bottom:14px">'
+        + '<div style="display:grid;grid-template-columns:minmax(180px,260px) minmax(0,1fr);gap:14px;padding:10px 12px;background:#1e3a8a;color:#ffffff;font-weight:700;font-size:13px">'
+        + '<div>סוג אירוע (כפי שמופיע בקובץ)</div><div>קטגוריה</div>'
+        + '</div>'
+        + rows_html
+        + '</div>'
+        + '<div style="display:flex;gap:10px;flex-wrap:wrap;justify-content:center">'
+        + '<button type="submit" id="eventClassifyConfirmButton" class="btn btn-blue" style="min-width:240px">אישור והפקת מפת העומס</button>'
+        + '<a href="/run/' + script_id + '" class="btn btn-gray" style="text-decoration:none;display:inline-flex;align-items:center;justify-content:center;min-width:150px">העלאת קובץ חדש</a>'
+        + '</div>'
+        + '</div>'
+        + '<div id="eventClassifyOverlay" style="display:none;position:fixed;inset:0;background:rgba(248,250,252,.78);backdrop-filter:blur(2px);z-index:80;align-items:center;justify-content:center;padding:20px">'
+        + '<div style="width:100%;max-width:320px;background:#ffffff;border:1px solid #dbeafe;border-radius:18px;box-shadow:0 20px 50px rgba(15,23,42,.14);padding:24px 20px;text-align:center">'
+        + '<div style="width:42px;height:42px;border-radius:999px;border:3px solid #bfdbfe;border-top-color:#2563eb;margin:0 auto 14px;animation:mappingSpin .9s linear infinite"></div>'
+        + '<div style="font-size:16px;font-weight:800;color:#1e3a8a;margin-bottom:6px">מפת העומס בהכנה</div>'
+        + '<div style="font-size:13px;line-height:1.7;color:#475569">המערכת מצליבה את הסיווג שלכם עם נתוני הנוכחות. הפעולה עשויה להימשך כמה דקות.</div>'
+        + '</div></div>'
+        + '<script>'
+        + '(function(){var form=document.getElementById("eventClassificationForm");var btn=document.getElementById("eventClassifyConfirmButton");var overlay=document.getElementById("eventClassifyOverlay");if(form){form.addEventListener("submit",function(){if(btn){btn.disabled=true;btn.textContent="הפקת המפה התחילה...";}if(overlay){overlay.style.display="flex";}document.body.style.overflow="hidden";});}})();'
+        + '</script>'
+        + '<style>@keyframes mappingSpin{from{transform:rotate(0deg);}to{transform:rotate(360deg);}}</style>'
+        + '</form>'
+    )
+
+
 def build_attendance_alerts_mapping_options(input_path, extension):
     base = build_rimon_mapping_options(input_path, extension)
     options_by_field = dict(base["options_by_field"])
@@ -11179,6 +11899,10 @@ def run_script(script_id):
                     inspection = build_attendance_alerts_mapping_options(inp, ext)
                     selected_mapping = dict(default_attendance_alerts_mapping())
                     selected_mapping.update(inspection["suggestions"])
+                elif script_id == "office_occupancy_heatmap":
+                    inspection = build_rimon_mapping_options(inp, ext)
+                    selected_mapping = dict(default_rimon_mapping())
+                    selected_mapping.update(inspection["suggestions"])
                 else:
                     inspection = build_rimon_mapping_options(inp, ext)
                     selected_mapping = dict(inspection["suggestions"])
@@ -11904,36 +12628,115 @@ def run_script(script_id):
                             logout_label=text["logout"],
                             show_lang_switch=True,
                         )
+                if scr.get("requires_event_classification"):
+                    if not mapping.get("event_source"):
+                        inspection = build_rimon_mapping_options(inp, ext)
+                        error = '<div class="flash-err">יש לבחור שדה אירוע לפני סיווג סוגי האירועים.</div>'
+                        mapping_confirmation_html = build_rimon_mapping_form(
+                            script_id, inp, ext, inspection, mapping, mapping_templates,
+                            request.form.get("template_name", "").strip() or get_next_mapping_template_name(mapping_templates),
+                        )
+                    else:
+                        try:
+                            distinct_events = scan_distinct_events(inp, ext, mapping)
+                        except (xlrd.biffh.XLRDError, BadZipFile, OSError, ValueError):
+                            error = '<div class="flash-err">' + scr["processing_error"] + '</div>'
+                            distinct_events = None
+                        if distinct_events is not None:
+                            current_classifications = {ev: classify_event_value(ev) for ev in distinct_events}
+                            mapping_confirmation_html = build_event_classification_form(
+                                script_id, inp, ext, mapping, distinct_events, current_classifications,
+                            )
+                            info_message = '<div class="flash" style="background:#eff6ff;border-color:#bfdbfe;color:#1d4ed8">נמצאו ' + str(len(distinct_events)) + ' סוגי אירועים בקובץ. בחרו לכל אחד את הקטגוריה המתאימה ואז הפיקו את מפת העומס.</div>'
+                else:
+                    uid = str(uuid.uuid4())[:8]
+                    options = {key: value for key, value in mapping.items()}
+                    if script_id == "flamingo_payroll":
+                        options["manual_hourly_rate"] = manual_hourly_rate
+                    elif script_id == "dept_payroll":
+                        options["dept_settings_json"] = dept_settings_json
+                        if dept_manual_values.get("manual_hourly_rate"):
+                            options["manual_hourly_rate"] = dept_manual_values["manual_hourly_rate"]
+                        if dept_manual_values.get("manual_housing"):
+                            options["manual_housing"] = dept_manual_values["manual_housing"]
+                        # Handle optional clients file upload
+                        clients_file = request.files.get("clients_file")
+                        if clients_file and clients_file.filename:
+                            clients_ext = get_extension(clients_file.filename)
+                            if clients_ext in ("xls", "xlsx"):
+                                clients_temp_path = str(UPLOAD_FOLDER / f"{uid}_clients.{clients_ext}")
+                                clients_file.save(clients_temp_path)
+                                options["clients_file_path"] = clients_temp_path
+                    elif script_id == "matan_missing":
+                        options.update(matan_filters)
+                    elif script_id == "inactive_workers":
+                        options.update(inactive_filters)
+                    elif script_id == "org_hierarchy_report":
+                        options.update(org_options)
+                    elif script_id == "matan_manual_corrections":
+                        options.update(corrections_filters)
+                    elif script_id == "attendance_alerts":
+                        for a in ATTENDANCE_ALERT_TYPES:
+                            key = "alert_" + a["id"]
+                            options[key] = "1" if request.form.get(key) else "0"
+                    result_name = build_output_filename(scr, uid, options)
+                    out = str(OUTPUT_FOLDER / result_name)
+                    try:
+                        execution_result = execute_script(scr, inp, out, ext, options) or {}
+                        result = result_name
+                        processing_warnings = execution_result.get("warnings", [])
+                        log_user_activity("generate_report", "הפיק דוח", script_id, scr["name"], result_name)
+                        if request.form.get("save_template") == "1":
+                            template_name = request.form.get("template_name", "").strip() or get_next_mapping_template_name(mapping_templates)
+                            template_mapping = dict(mapping)
+                            if script_id == "flamingo_payroll" and manual_hourly_rate:
+                                template_mapping["manual_hourly_rate"] = manual_hourly_rate
+                            if script_id == "dept_payroll" and dept_settings_json:
+                                template_mapping["dept_settings_json"] = dept_settings_json
+                            if script_id == "dept_payroll" and dept_manual_values.get("manual_hourly_rate"):
+                                template_mapping["manual_hourly_rate"] = dept_manual_values["manual_hourly_rate"]
+                            if script_id == "dept_payroll" and dept_manual_values.get("manual_housing"):
+                                template_mapping["manual_housing"] = dept_manual_values["manual_housing"]
+                            save_mapping_template(session["user_id"], script_id, template_name, template_mapping)
+                    except (xlrd.biffh.XLRDError, BadZipFile, OSError, ValueError):
+                        error = '<div class="flash-err">' + scr["processing_error"] + '</div>'
+                    except Exception as e:
+                        error = '<div class="flash-err">' + text["run_unexpected_error_prefix"] + str(e) + "</div>"
+                    finally:
+                        try:
+                            os.remove(inp)
+                        except OSError:
+                            pass
+                        # Clean up clients file if uploaded
+                        clients_temp = options.get("clients_file_path", "")
+                        if clients_temp:
+                            try:
+                                os.remove(clients_temp)
+                            except OSError:
+                                pass
+        elif scr.get("requires_event_classification") and flow_mode == "confirm_events":
+            inp = request.form.get("temp_upload_path", "").strip()
+            ext = request.form.get("temp_upload_ext", "").strip().lower()
+            mapping_json = request.form.get("mapping_json", "").strip() or "{}"
+            try:
+                mapping = json.loads(mapping_json)
+                if not isinstance(mapping, dict):
+                    mapping = {}
+            except (TypeError, ValueError):
+                mapping = {}
+            classifications = {}
+            prefix = "event_class__"
+            for key, val in request.form.items():
+                if key.startswith(prefix):
+                    event_value = key[len(prefix):]
+                    if val in ("office", "home", "absence"):
+                        classifications[event_value] = val
+            if not inp or not os.path.exists(inp):
+                error = '<div class="flash-err">הקובץ הזמני לא נמצא. יש להעלות את הדוח מחדש.</div>'
+            else:
                 uid = str(uuid.uuid4())[:8]
-                options = {key: value for key, value in mapping.items()}
-                if script_id == "flamingo_payroll":
-                    options["manual_hourly_rate"] = manual_hourly_rate
-                elif script_id == "dept_payroll":
-                    options["dept_settings_json"] = dept_settings_json
-                    if dept_manual_values.get("manual_hourly_rate"):
-                        options["manual_hourly_rate"] = dept_manual_values["manual_hourly_rate"]
-                    if dept_manual_values.get("manual_housing"):
-                        options["manual_housing"] = dept_manual_values["manual_housing"]
-                    # Handle optional clients file upload
-                    clients_file = request.files.get("clients_file")
-                    if clients_file and clients_file.filename:
-                        clients_ext = get_extension(clients_file.filename)
-                        if clients_ext in ("xls", "xlsx"):
-                            clients_temp_path = str(UPLOAD_FOLDER / f"{uid}_clients.{clients_ext}")
-                            clients_file.save(clients_temp_path)
-                            options["clients_file_path"] = clients_temp_path
-                elif script_id == "matan_missing":
-                    options.update(matan_filters)
-                elif script_id == "inactive_workers":
-                    options.update(inactive_filters)
-                elif script_id == "org_hierarchy_report":
-                    options.update(org_options)
-                elif script_id == "matan_manual_corrections":
-                    options.update(corrections_filters)
-                elif script_id == "attendance_alerts":
-                    for a in ATTENDANCE_ALERT_TYPES:
-                        key = "alert_" + a["id"]
-                        options[key] = "1" if request.form.get(key) else "0"
+                options = {key: value for key, value in mapping.items() if isinstance(key, str)}
+                options["event_classifications_json"] = json.dumps(classifications, ensure_ascii=False)
                 result_name = build_output_filename(scr, uid, options)
                 out = str(OUTPUT_FOLDER / result_name)
                 try:
@@ -11941,18 +12744,6 @@ def run_script(script_id):
                     result = result_name
                     processing_warnings = execution_result.get("warnings", [])
                     log_user_activity("generate_report", "הפיק דוח", script_id, scr["name"], result_name)
-                    if request.form.get("save_template") == "1":
-                        template_name = request.form.get("template_name", "").strip() or get_next_mapping_template_name(mapping_templates)
-                        template_mapping = dict(mapping)
-                        if script_id == "flamingo_payroll" and manual_hourly_rate:
-                            template_mapping["manual_hourly_rate"] = manual_hourly_rate
-                        if script_id == "dept_payroll" and dept_settings_json:
-                            template_mapping["dept_settings_json"] = dept_settings_json
-                        if script_id == "dept_payroll" and dept_manual_values.get("manual_hourly_rate"):
-                            template_mapping["manual_hourly_rate"] = dept_manual_values["manual_hourly_rate"]
-                        if script_id == "dept_payroll" and dept_manual_values.get("manual_housing"):
-                            template_mapping["manual_housing"] = dept_manual_values["manual_housing"]
-                        save_mapping_template(session["user_id"], script_id, template_name, template_mapping)
                 except (xlrd.biffh.XLRDError, BadZipFile, OSError, ValueError):
                     error = '<div class="flash-err">' + scr["processing_error"] + '</div>'
                 except Exception as e:
@@ -11962,13 +12753,6 @@ def run_script(script_id):
                         os.remove(inp)
                     except OSError:
                         pass
-                    # Clean up clients file if uploaded
-                    clients_temp = options.get("clients_file_path", "")
-                    if clients_temp:
-                        try:
-                            os.remove(clients_temp)
-                        except OSError:
-                            pass
         else:
             file_obj = request.files.get("file")
             validation_error, ext = validate_upload(file_obj)
