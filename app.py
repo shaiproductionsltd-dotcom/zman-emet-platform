@@ -4423,11 +4423,14 @@ def parse_attendance_alerts_report(input_path, extension, mapping, enabled_alert
             else:
                 merged_days.append(dict(day))
 
-        # Detect per-day alerts
+        # Detect per-day alerts (skip summary rows with no date — they contain monthly totals)
         total_alerts = 0
         daily_data = []
         for day in merged_days:
-            alerts = detect_day_alerts(day["exit"], day["total"], enabled, entry_text=day["entry"], date_obj=day["date"])
+            if day["date"]:
+                alerts = detect_day_alerts(day["exit"], day["total"], enabled, entry_text=day["entry"], date_obj=day["date"])
+            else:
+                alerts = []
             total_alerts += len(alerts)
             max_severity = max((a["severity"] for a in alerts), default=0)
             row_color = ""
