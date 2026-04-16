@@ -4318,8 +4318,8 @@ def detect_day_alerts(exit_text, total_text, enabled_alerts=None, entry_text=Non
         night_hit = (entry_hour is not None and entry_hour < 6.0) or (exit_hour is not None and exit_hour >= 22.0)
         if night_hit:
             alerts.append({"id": "night_work_22", "label": "שעות אסורות (22:00-06:00)", "color": "FFEBEE", "severity": 9})
-    # Shabbat work alert
-    if "shabbat_work" in enabled and date_obj is not None and date_obj.weekday() == 5:
+    # Shabbat work alert — only if employee actually clocked in or out
+    if "shabbat_work" in enabled and date_obj is not None and date_obj.weekday() == 5 and (entry_hour is not None or exit_hour is not None):
         alerts.append({"id": "shabbat_work", "label": "עבודת שבת", "color": "FFEBEE", "severity": 10})
     return alerts
 
