@@ -239,6 +239,43 @@ def check_marker_parser():
     return failures
 
 
+def check_marketplace_handling():
+    """Verify marketplace surfacing + name resolution."""
+    print("[5] Marketplace tool surfacing + name resolution")
+    failures = 0
+    fake_installed = [
+        {"id": 101, "name": "מחשבון פיצויים", "description": "חישוב פיצויי פיטורים לעובדים מסיימים"},
+        {"id": 102, "name": "סיכום נסיעות חודשי", "description": "סיכום הוצאות נסיעה לעובדים"},
+    ]
+    block = A.render_tools_knowledge_block(
+        accessible_tool_ids=[],
+        last_user_message="צריך לחשב פיצויי פיטורים לעובד שמסיים השבוע",
+        installed_marketplace=fake_installed,
+    )
+    # The relevant marketplace tool should be highlighted
+    if "כלי שוק מותקנים שנראים רלוונטיים" in block and "מחשבון פיצויים" in block:
+        _passed("relevant marketplace tool surfaced in priority section")
+    else:
+        _failed("marketplace surfacing missed", block[:300])
+        failures += 1
+    # Both tools should appear with [זמין] tag
+    for nm in ("מחשבון פיצויים", "סיכום נסיעות"):
+        if f"{nm}" in block and "[זמין]" in block:
+            _passed(f"marketplace tool '{nm}' tagged as available")
+        else:
+            _failed(f"marketplace tool '{nm}' missing or untagged")
+            failures += 1
+    # Name resolution: invalid id must drop, unknown numeric id must drop, format error must drop
+    for raw in ("marketplace:99999999", "marketplace:abc", "marketplace:"):
+        _, name, url = A._resolve_marketplace_tool(raw)
+        if name is None:
+            _passed(f"invalid marketplace tool_id '{raw}' correctly dropped")
+        else:
+            _failed(f"invalid marketplace tool_id '{raw}' resolved to {name}")
+            failures += 1
+    return failures
+
+
 def check_retention_plumbing():
     print("[5] Retention plumbing")
     failures = 0
@@ -285,6 +322,8 @@ def main():
     total += check_access_invariant()
     print()
     total += check_marker_parser()
+    print()
+    total += check_marketplace_handling()
     print()
     total += check_retention_plumbing()
     print()

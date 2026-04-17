@@ -15702,6 +15702,30 @@ def _render_tool_detail_block(tid, accessible):
     return block
 
 
+def score_marketplace_tools_for_message(user_text, installed_marketplace):
+    """Light keyword-matching for installed marketplace tools.
+    Marketplace tools don't carry structured ai_keywords yet, so we use the
+    tool's name + description tokens. Returns the input list re-ordered:
+    matching tools first (with a 'match' flag), non-matching after."""
+    if not installed_marketplace:
+        return []
+    if not user_text:
+        return [dict(t, _match=False) for t in installed_marketplace]
+    low = user_text.lower()
+    enriched = []
+    for t in installed_marketplace:
+        name = (t.get("name") or "").lower()
+        desc = (t.get("description") or "").lower()
+        score = 0
+        # name tokens >= 3 chars
+        for tok in re.findall(r"[\w\u0590-\u05FF]{3,}", name + " " + desc):
+            if tok in low:
+                score += len(tok)
+        enriched.append(dict(t, _match=score > 0, _score=score))
+    enriched.sort(key=lambda t: (-t.get("_score", 0), (t.get("name") or "")))
+    return enriched
+
+
 def render_tools_knowledge_block(accessible_tool_ids, last_user_message="", installed_marketplace=None):
     """Build the tools-knowledge section of the system prompt from the live catalog.
     Every tool entry carries its own access status line; the section headers
@@ -15743,11 +15767,21 @@ def render_tools_knowledge_block(accessible_tool_ids, last_user_message="", inst
             section += f"- `{tid}` [{status}] — {reg.get('name', tid)}: {meta.get('summary', reg.get('desc', ''))}\n"
 
     if installed_marketplace:
-        section += "\n### כלי שוק מותקנים של המשתמש (זמינים לשימוש)\n"
-        for t in installed_marketplace:
-            tid = f"marketplace:{t['id']}" if t.get("id") is not None else "marketplace"
-            section += f"- `{tid}` [זמין] — {t.get('name', '')}: {t.get('description', '') or ''}\n"
-        section += "- להמלצה על כלי שוק השתמש ב-`tool_id: marketplace:<id>` (או שם הכלי אם ID לא ידוע).\n"
+        ranked = score_marketplace_tools_for_message(last_user_message, installed_marketplace)
+        relevant = [t for t in ranked if t.get("_match")]
+        rest = [t for t in ranked if not t.get("_match")]
+        if relevant:
+            section += "\n### כלי שוק מותקנים שנראים רלוונטיים לבקשה הנוכחית (זמינים לשימוש)\n"
+            for t in relevant:
+                tid = f"marketplace:{t['id']}" if t.get("id") is not None else "marketplace"
+                section += f"- `{tid}` [זמין] — {t.get('name', '')}: {t.get('description', '') or ''}\n"
+            section += "- אם אחד מהם מתאים לבקשה — המלץ עליו עם המבנה `tool_id: marketplace:<id>`. הוא מותקן ופעיל.\n"
+        if rest:
+            section += "\n### כלי שוק מותקנים נוספים של המשתמש (זמינים לשימוש)\n"
+            for t in rest:
+                tid = f"marketplace:{t['id']}" if t.get("id") is not None else "marketplace"
+                section += f"- `{tid}` [זמין] — {t.get('name', '')}: {t.get('description', '') or ''}\n"
+        section += "- להמלצה על כלי שוק השתמש ב-`tool_id: marketplace:<id>`.\n"
 
     section += "\n### בניית כלי חדש\n"
     section += "- אם אף כלי לעיל לא מתאים — הצע ליצור כלי חדש, אבל רק לאחר שציינת באיזה כלי/ים קיימים שקלת ומדוע הם לא עונים על הצורך.\n"
@@ -15847,6 +15881,31 @@ def _parse_marker_body(body):
     return out
 
 
+def _resolve_marketplace_tool(raw_tool_id):
+    """For a `marketplace:<id>` tool_id, look up the real tool name from DB.
+    Returns (numeric_id_str, display_name, url) or (None, None, None) if invalid.
+    Used to give the recommendation CTA a real, readable tool name."""
+    if not raw_tool_id or not raw_tool_id.startswith("marketplace:"):
+        return None, None, None
+    suffix = raw_tool_id.split(":", 1)[1].strip()
+    if not suffix.isdigit():
+        return None, None, None
+    try:
+        with get_db() as db:
+            row = db.execute(
+                "SELECT id, name, status FROM marketplace_tools WHERE id=? LIMIT 1",
+                (int(suffix),),
+            ).fetchone()
+            if not row:
+                return None, None, None
+            # Only surface approved tools — never recommend a draft/rejected one
+            if row["status"] != "approved":
+                return None, None, None
+            return suffix, (row["name"] or f"כלי שוק #{suffix}"), f"/marketplace/tool/{suffix}"
+    except Exception:
+        return None, None, None
+
+
 def parse_assistant_output(text):
     """Extract structured recommendation/build markers from the assistant output.
     Returns (clean_text, recommend_dict_or_None, suggest_build_dict_or_None)."""
@@ -15864,12 +15923,15 @@ def parse_assistant_output(text):
         # Validate tool_id maps to something real
         if raw_tool_id:
             if raw_tool_id.startswith("marketplace:"):
-                recommend = {
-                    "tool_id": raw_tool_id,
-                    "tool_name": raw_tool_id,
-                    "tool_url": f"/marketplace/tool/{raw_tool_id.split(':', 1)[1]}",
-                    "reason": reason,
-                }
+                _, name, url = _resolve_marketplace_tool(raw_tool_id)
+                if name and url:
+                    recommend = {
+                        "tool_id": raw_tool_id,
+                        "tool_name": name,
+                        "tool_url": url,
+                        "reason": reason,
+                    }
+                # else: marketplace id invalid / unapproved — drop silently
             elif raw_tool_id in SCRIPT_REGISTRY:
                 reg = SCRIPT_REGISTRY.get(raw_tool_id) or {}
                 recommend = {
