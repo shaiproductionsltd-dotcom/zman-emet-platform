@@ -15559,12 +15559,20 @@ def shortlist_tools_for_message(user_text, tool_ids=None, limit=4):
     return [tid for _, tid in scored[:limit]]
 
 
-def _render_tool_detail_block(tid):
-    """Render one tool's full detail block in Hebrew for the system prompt."""
+def _render_tool_detail_block(tid, accessible):
+    """Render one tool's full detail block in Hebrew for the system prompt.
+    Access status is carried on EACH tool (not on a section header) so the
+    model never has to infer it from document structure."""
     reg = SCRIPT_REGISTRY.get(tid) or {}
     meta = AI_TOOL_METADATA.get(tid) or {}
     name = reg.get("name", tid)
-    block = f"\n### {name} (`{tid}`)\n"
+    access_line = (
+        "- סטטוס גישה: זמין לשימוש (למשתמש יש הרשאה — המלץ ישירות, אל תבקש לפנות למנהל)"
+        if accessible
+        else "- סטטוס גישה: אין הרשאה (אם הכלי מתאים, ציין שצריך לבקש הרשאה ממנהל המערכת)"
+    )
+    block = f"\n#### {name} (`{tid}`)\n"
+    block += access_line + "\n"
     if meta.get("summary"):
         block += f"- מה עושה: {meta['summary']}\n"
     if meta.get("inputs"):
@@ -15582,11 +15590,8 @@ def _render_tool_detail_block(tid):
 
 def render_tools_knowledge_block(accessible_tool_ids, last_user_message="", installed_marketplace=None):
     """Build the tools-knowledge section of the system prompt from the live catalog.
-    - Accessible tools get full detail.
-    - A shortlist of top keyword matches (even if not accessible) get full detail too,
-      so the assistant can say 'קיים כלי X — פנה למנהל לקבלת הרשאה'.
-    - All remaining tools get name-only entries.
-    """
+    Every tool entry carries its own access status line; the section headers
+    are for readability only and do NOT convey access information."""
     accessible_set = set(accessible_tool_ids or [])
     all_ids = list(AI_TOOL_METADATA.keys())
 
@@ -15596,34 +15601,38 @@ def render_tools_knowledge_block(accessible_tool_ids, last_user_message="", inst
 
     section = "\n\n## כלים מובנים בפלטפורמה\n"
     section += "רשימת כל הכלים — השתמש אך ורק ב-`script_id` מהרשימה הזו בהמלצות.\n"
+    section += "**כלל חובה לגישה:** מקור האמת היחיד לגישת המשתמש הוא השדה ״סטטוס גישה״ המופיע לצד כל כלי למטה.\n"
+    section += "- אם כתוב ״זמין לשימוש״ — המשתמש כבר יכול להפעיל את הכלי. אל תאמר לו לבקש הרשאה. פשוט המלץ.\n"
+    section += "- אם כתוב ״אין הרשאה״ — רק אז ציין שצריך לפנות למנהל.\n"
+    section += "- אל תסיק גישה מכותרות או מהקשר אחר. רק ״סטטוס גישה״ קובע.\n"
 
     if accessible_set:
-        section += "\n### הכלים הזמינים לך כרגע (פרטים מלאים)\n"
+        section += "\n### כלים עם גישה\n"
         for tid in all_ids:
             if tid in accessible_set:
-                section += _render_tool_detail_block(tid)
+                section += _render_tool_detail_block(tid, accessible=True)
 
     highlighted_not_accessible = [tid for tid in shortlisted if tid not in accessible_set]
     if highlighted_not_accessible:
-        section += "\n### כלים שככל הנראה רלוונטיים לשאלה הנוכחית (המשתמש אינו בעל הרשאה אליהם)\n"
+        section += "\n### כלים ללא גישה שנראים רלוונטיים לשאלה הנוכחית\n"
         for tid in all_ids:
             if tid in highlighted_not_accessible:
-                section += _render_tool_detail_block(tid)
-        section += "- אם אחד מאלה מתאים — המלץ עליו, וציין שהמשתמש צריך לפנות למנהל כדי לקבל הרשאה.\n"
+                section += _render_tool_detail_block(tid, accessible=False)
 
     others = [tid for tid in all_ids if tid not in full_detail_ids]
     if others:
-        section += "\n### כלים נוספים במערכת (בשורה אחת — להזכיר רק אם אין התאמה טובה למעלה)\n"
+        section += "\n### כלים נוספים במערכת (שורה אחת — להזכיר רק אם אין התאמה טובה למעלה)\n"
         for tid in others:
             reg = SCRIPT_REGISTRY.get(tid) or {}
             meta = AI_TOOL_METADATA.get(tid) or {}
-            section += f"- `{tid}` — {reg.get('name', tid)}: {meta.get('summary', reg.get('desc', ''))}\n"
+            status = "זמין" if tid in accessible_set else "אין הרשאה"
+            section += f"- `{tid}` [{status}] — {reg.get('name', tid)}: {meta.get('summary', reg.get('desc', ''))}\n"
 
     if installed_marketplace:
-        section += "\n### כלי שוק מותקנים של המשתמש\n"
+        section += "\n### כלי שוק מותקנים של המשתמש (זמינים לשימוש)\n"
         for t in installed_marketplace:
             tid = f"marketplace:{t['id']}" if t.get("id") is not None else "marketplace"
-            section += f"- `{tid}` — {t.get('name', '')}: {t.get('description', '') or ''}\n"
+            section += f"- `{tid}` [זמין] — {t.get('name', '')}: {t.get('description', '') or ''}\n"
         section += "- להמלצה על כלי שוק השתמש ב-`tool_id: marketplace:<id>` (או שם הכלי אם ID לא ידוע).\n"
 
     section += "\n### בניית כלי חדש\n"
