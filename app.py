@@ -6330,6 +6330,8 @@ def write_dept_payroll_output_v2(output_path, worker_rows, dept_settings, client
     total_assigned_hours = round(sum(sum(wc.get("client_hours", {}).values()) for wc in worker_calculations), 2)
     expected_profit = round(grand_charge_total - grand_total_net, 2)
 
+    total_notes_deductions = round(sum(wc.get("notes_deductions", 0) for wc in worker_calculations), 2)
+
     kpi_items = [
         ("סה\"כ חיוב ללקוחות", round(grand_charge_total, 2), "15803D"),
         ("סה\"כ שולם לעובדים (נטו)", round(grand_total_net, 2), "1E3A8A"),
@@ -6338,6 +6340,8 @@ def write_dept_payroll_output_v2(output_path, worker_rows, dept_settings, client
         ("סה\"כ שעות משויכות ללקוחות", total_assigned_hours, "115E59"),
         ("סה\"כ שעות ללא שיוך לקוח", total_unassigned_hours, "991B1B" if total_unassigned_hours > 0 else "475569"),
     ]
+    if has_notes_deductions:
+        kpi_items.append(("סה\"כ ניכויים מהערות", total_notes_deductions, "991B1B" if total_notes_deductions > 0 else "475569"))
     # KPI header
     kpi_header_fill = PatternFill(start_color="1E3A8A", end_color="1E3A8A", fill_type="solid")
     ws3.merge_cells(start_row=row, start_column=1, end_row=row, end_column=2)
@@ -6417,16 +6421,20 @@ def write_dept_payroll_output_v2(output_path, worker_rows, dept_settings, client
     row += 2
 
     # ── Per-worker breakdown ──
-    ws3.merge_cells(start_row=row, start_column=1, end_row=row, end_column=5)
+    worker_col_count = 6 if has_notes_deductions else 5
+    ws3.merge_cells(start_row=row, start_column=1, end_row=row, end_column=worker_col_count)
     cell = ws3.cell(row=row, column=1, value="פירוט לפי עובד")
     cell.font = Font(bold=True, size=13, color="FFFFFF")
     cell.fill = header_fill
     cell.alignment = Alignment(horizontal="center", vertical="center")
-    for c in range(2, 6):
+    for c in range(2, worker_col_count + 1):
         ws3.cell(row=row, column=c).fill = header_fill
     ws3.row_dimensions[row].height = 30
     row += 1
-    worker_breakdown_headers = ["שם עובד", "שעות נוכחות", "ברוטו", "נטו", "מצב"]
+    worker_breakdown_headers = ["שם עובד", "שעות נוכחות", "ברוטו"]
+    if has_notes_deductions:
+        worker_breakdown_headers.append("ניכויים מהערות")
+    worker_breakdown_headers += ["נטו", "מצב"]
     style_header_row(ws3, row, worker_breakdown_headers)
     row += 1
 
@@ -6435,23 +6443,38 @@ def write_dept_payroll_output_v2(output_path, worker_rows, dept_settings, client
         status_ok = wc.get("status") == "OK"
         status_txt = "תקין" if status_ok else wc.get("status", "—")
         status_color = "15803D" if status_ok else "991B1B"
-        write_cell(ws3, row, 1, wc["worker_name"], fill=rf, font=Font(bold=True, size=10), align="right")
-        write_cell(ws3, row, 2, wc.get("payable_hours") or 0, fmt=num_fmt, fill=rf)
-        write_cell(ws3, row, 3, wc.get("gross", 0), fmt=num_fmt, fill=rf)
-        write_cell(ws3, row, 4, wc.get("net", 0), fmt=num_fmt, fill=rf, font=Font(bold=True, size=10, color="1E3A8A"))
-        write_cell(ws3, row, 5, status_txt, fill=rf, font=Font(bold=True, size=10, color=status_color))
+        col = 1
+        write_cell(ws3, row, col, wc["worker_name"], fill=rf, font=Font(bold=True, size=10), align="right"); col += 1
+        write_cell(ws3, row, col, wc.get("payable_hours") or 0, fmt=num_fmt, fill=rf); col += 1
+        write_cell(ws3, row, col, wc.get("gross", 0), fmt=num_fmt, fill=rf); col += 1
+        if has_notes_deductions:
+            nd = wc.get("notes_deductions", 0)
+            nd_font = Font(bold=True, size=10, color="991B1B") if nd else None
+            write_cell(ws3, row, col, nd, fmt=num_fmt, fill=rf, font=nd_font); col += 1
+        write_cell(ws3, row, col, wc.get("net", 0), fmt=num_fmt, fill=rf, font=Font(bold=True, size=10, color="1E3A8A")); col += 1
+        write_cell(ws3, row, col, status_txt, fill=rf, font=Font(bold=True, size=10, color=status_color))
         row += 1
 
     # Worker grand total — dark indigo
-    write_cell(ws3, row, 1, f"סה\"כ {len(worker_calculations)} עובדים", font=grand_font, fill=grand_fill, align="right")
-    write_cell(ws3, row, 2, round(sum(wc.get("payable_hours") or 0 for wc in worker_calculations), 2), font=grand_font, fill=grand_fill, fmt=num_fmt)
-    write_cell(ws3, row, 3, round(grand_total_gross, 2), font=grand_font, fill=grand_fill, fmt=num_fmt)
-    write_cell(ws3, row, 4, round(grand_total_net, 2), font=grand_font, fill=grand_fill, fmt=num_fmt)
-    write_cell(ws3, row, 5, "", fill=grand_fill)
+    col = 1
+    write_cell(ws3, row, col, f"סה\"כ {len(worker_calculations)} עובדים", font=grand_font, fill=grand_fill, align="right"); col += 1
+    write_cell(ws3, row, col, round(sum(wc.get("payable_hours") or 0 for wc in worker_calculations), 2), font=grand_font, fill=grand_fill, fmt=num_fmt); col += 1
+    write_cell(ws3, row, col, round(grand_total_gross, 2), font=grand_font, fill=grand_fill, fmt=num_fmt); col += 1
+    if has_notes_deductions:
+        write_cell(ws3, row, col, round(total_notes_deductions, 2), font=grand_font, fill=grand_fill, fmt=num_fmt); col += 1
+    write_cell(ws3, row, col, round(grand_total_net, 2), font=grand_font, fill=grand_fill, fmt=num_fmt); col += 1
+    write_cell(ws3, row, col, "", fill=grand_fill)
     ws3.row_dimensions[row].height = 32
 
     # Column widths
-    tab3_widths = {1: 24, 2: 16, 3: 16, 4: 18, 5: 14}
+    tab3_widths = {1: 24, 2: 16, 3: 16}
+    if has_notes_deductions:
+        tab3_widths[4] = 18
+        tab3_widths[5] = 18
+        tab3_widths[6] = 14
+    else:
+        tab3_widths[4] = 18
+        tab3_widths[5] = 14
     for col_idx, w in tab3_widths.items():
         ws3.column_dimensions[get_column_letter(col_idx)].width = w
 
@@ -13204,7 +13227,7 @@ def run_script(script_id):
                 else:
                     # ── Notes classification interception (dept_payroll) ──
                     notes_form_shown = False
-                    if scr.get("requires_notes_classification") and mapping.get("notes_source"):
+                    if scr.get("requires_notes_classification"):
                         try:
                             note_types_data = scan_dept_notes_types(inp, ext, mapping)
                         except Exception:
