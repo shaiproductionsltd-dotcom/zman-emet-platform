@@ -5110,6 +5110,7 @@ def default_dept_payroll_mapping():
         "total_hours_source": "meta:סה\"כ",
         "hourly_rate_source": "meta:תעריף שעתי",
         "housing_source": "__auto__",
+        "notes_source": "",
     }
 
 
@@ -5219,6 +5220,7 @@ def extract_dept_payroll_worker(detail_sheet, summary_sheet, workbook_kind, mapp
         "event_source": "client_name",
         "total_hours_source": "total_hours",
         "hourly_rate_source": "hourly_rate",
+        "notes_source": "notes_text",
     }
     if daily_header_row >= 0:
         for c in range(cols):
@@ -5245,6 +5247,8 @@ def extract_dept_payroll_worker(detail_sheet, summary_sheet, workbook_kind, mapp
                 col_positions.setdefault("total_hours", c)
             if "hourly_rate" not in col_positions and header_val in ("תעריףשעתי", "תעריף"):
                 col_positions.setdefault("hourly_rate", c)
+            if "notes_text" not in col_positions and header_val in ("הערות", "הערה"):
+                col_positions.setdefault("notes_text", c)
 
     # Also try to find יום column for day name
     if daily_header_row >= 0:
@@ -5336,6 +5340,7 @@ def extract_dept_payroll_worker(detail_sheet, summary_sheet, workbook_kind, mapp
                     total_hours = parse_hours_value(total_hours_raw)
                 except (ValueError, TypeError):
                     total_hours = 0
+            notes_text = stringify_excel_value(get_flamingo_sheet_cell(detail_sheet, workbook_kind, r, col_positions.get("notes_text", 0))) if "notes_text" in col_positions else ""
             # Include any row that has meaningful data
             # A real daily row must have a date — rows without dates are summary/total rows
             has_any_data = client_name or total_hours or entry_time or exit_time
@@ -5357,6 +5362,7 @@ def extract_dept_payroll_worker(detail_sheet, summary_sheet, workbook_kind, mapp
                     "exit_time": exit_time,
                     "client_name": client_name,
                     "total_hours": total_hours,
+                    "notes_text": notes_text,
                     "missing": missing,
                 })
 
@@ -5401,6 +5407,99 @@ def extract_dept_payroll_worker(detail_sheet, summary_sheet, workbook_kind, mapp
         "status": status,
         "notes": " | ".join(notes),
     }
+
+
+def parse_note_items(note_text):
+    """Parse a notes cell into list of (type_text, amount) tuples.
+
+    Handles comma-separated items like "מפרעה 2500, חיוב 349".
+    The number is always at the end of each item.
+    Returns only items where a number was found.
+    """
+    if not note_text or not str(note_text).strip():
+        return []
+    results = []
+    # Split by comma+space, semicolon, or pipe (not bare comma — that may be thousands separator)
+    parts = re.split(r',\s+|[;|]', str(note_text))
+    for part in parts:
+        part = part.strip()
+        if not part:
+            continue
+        # Match: text followed by number at end (number may contain commas for thousands)
+        m = re.match(r'^(.+?)\s+([\d,]+(?:\.\d+)?)\s*$', part)
+        if m:
+            type_text = m.group(1).strip()
+            amount_str = m.group(2).replace(",", "")
+            try:
+                amount = float(amount_str)
+                if amount > 0 and type_text:
+                    results.append((type_text, amount))
+            except (ValueError, TypeError):
+                pass
+    return results
+
+
+def scan_dept_notes_types(input_path, extension, mapping):
+    """Scan all workers in the file and return distinct note types with stats.
+
+    Returns list of dicts sorted by type:
+      [{"type": "מפרעה", "count": 5, "total": 12500,
+        "samples": ["מפרעה 2500", "מפרעה 2000"], "workers": 3}, ...]
+    """
+    workbook_kind, workbook = open_excel_workbook(input_path, extension)
+    type_stats = {}  # {type_text: {"count": N, "total": F, "samples": [...], "worker_names": set()}}
+    try:
+        for detail_sheet, summary_sheet in iter_flamingo_worker_blocks(workbook_kind, workbook):
+            worker_name = stringify_excel_value(extract_flamingo_mapping_value(detail_sheet, summary_sheet, workbook_kind, mapping.get("worker_name_source")))
+            worker_name = worker_name or get_flamingo_sheet_name(detail_sheet, workbook_kind)
+            rows, cols = get_flamingo_sheet_dims(detail_sheet, workbook_kind)
+            daily_header_row = find_sheet_label_row(detail_sheet, workbook_kind, "תאריך")
+            if daily_header_row < 0:
+                continue
+            # Find notes column position
+            notes_col = -1
+            notes_source = mapping.get("notes_source", "")
+            for c in range(cols):
+                header_val = normalize_token(get_flamingo_sheet_cell(detail_sheet, workbook_kind, daily_header_row, c))
+                if not header_val:
+                    continue
+                if notes_source and notes_source.startswith("meta:"):
+                    source_label = normalize_token(notes_source.split(":", 1)[1])
+                    if source_label and source_label == header_val:
+                        notes_col = c
+                        break
+                if header_val in ("הערות", "הערה"):
+                    notes_col = c
+                    break
+            if notes_col < 0:
+                continue
+            for r in range(daily_header_row + 1, min(rows, daily_header_row + 35)):
+                cell_val = stringify_excel_value(get_flamingo_sheet_cell(detail_sheet, workbook_kind, r, notes_col))
+                if not cell_val:
+                    continue
+                items = parse_note_items(cell_val)
+                for type_text, amount in items:
+                    if type_text not in type_stats:
+                        type_stats[type_text] = {"count": 0, "total": 0.0, "samples": [], "worker_names": set()}
+                    type_stats[type_text]["count"] += 1
+                    type_stats[type_text]["total"] += amount
+                    type_stats[type_text]["worker_names"].add(worker_name or "")
+                    if len(type_stats[type_text]["samples"]) < 3:
+                        type_stats[type_text]["samples"].append(f"{type_text} {amount:g}")
+    finally:
+        if workbook_kind == "xlsx":
+            workbook.close()
+    results = []
+    for type_text in sorted(type_stats.keys()):
+        stats = type_stats[type_text]
+        results.append({
+            "type": type_text,
+            "count": stats["count"],
+            "total": round(stats["total"], 2),
+            "samples": stats["samples"],
+            "workers": len(stats["worker_names"]),
+        })
+    return results
 
 
 def parse_dept_settings_json(dept_settings_json):
@@ -5535,11 +5634,16 @@ def write_dept_payroll_output(output_path, worker_rows, dept_settings):
         bottom=Side(style="thin", color="E2E8F0"),
     )
 
+    # Check if any worker has note deductions
+    has_notes_deductions = any(w.get("notes_deductions", 0) for w in worker_rows)
     worker_headers = [
         "שם עובד", "מספר נייד", "מספר פספורט", "ת.ז / דרכון",
         "שעות", "שכר שעתי", "ברוטו", "3% מיסים", "280 ביטוח",
-        "חיוב דירה", "נטו לתשלום", "תעריף גביה", "חיוב ללקוח",
+        "חיוב דירה",
     ]
+    if has_notes_deductions:
+        worker_headers.append("ניכויים מהערות")
+    worker_headers.extend(["נטו לתשלום", "תעריף גביה", "חיוב ללקוח"])
     dept_info_headers = [
         "מנהל אזור", "כתובת העסק", "שם לקוח", "איש קשר", "טלפון איש קשר",
     ]
@@ -5593,9 +5697,10 @@ def write_dept_payroll_output(output_path, worker_rows, dept_settings):
                 hours = 0
             hourly_rate = w.get("hourly_rate") or 0
             housing = w.get("housing_charge") or 0
+            notes_ded = w.get("notes_deductions") or 0
             gross = round(hours * hourly_rate, 2) if hourly_rate else 0
             taxes = round(gross * 0.03, 2)
-            net = round(gross - taxes - INSURANCE - housing, 2) if gross else 0
+            net = round(gross - taxes - INSURANCE - housing - notes_ded, 2) if gross else 0
             charge_total = 0
 
             values = [
@@ -5609,10 +5714,10 @@ def write_dept_payroll_output(output_path, worker_rows, dept_settings):
                 taxes,
                 INSURANCE if gross else 0,
                 housing if gross else 0,
-                net,
-                0,
-                charge_total,
             ]
+            if has_notes_deductions:
+                values.append(notes_ded if gross else 0)
+            values.extend([net, 0, charge_total])
             for col_idx, val in enumerate(values, 1):
                 cell = ws.cell(row=row, column=col_idx, value=val)
                 cell.border = thin_border
@@ -5774,14 +5879,17 @@ def write_dept_payroll_output_v2(output_path, worker_rows, dept_settings, client
     client_workers = {}  # {client_display_name: [{worker, daily_rows_for_client, subtotal_hours}]}
     worker_calculations = []  # enriched worker data with calculations
 
+    has_notes_deductions = any(w.get("notes_deductions", 0) for w in worker_rows)
+
     for w in worker_rows:
         hours = w.get("payable_hours") or 0
         hourly_rate = w.get("hourly_rate") or 0
         housing = w.get("housing_charge") or 0
+        notes_ded = w.get("notes_deductions") or 0
 
         gross = round(hours * hourly_rate, 2) if hourly_rate and hours else 0
         taxes = round(gross * 0.03, 2)
-        net = round(gross - taxes - INSURANCE - housing, 2) if gross else 0
+        net = round(gross - taxes - INSURANCE - housing - notes_ded, 2) if gross else 0
 
         # Group daily rows by client
         client_daily = {}
@@ -5821,6 +5929,7 @@ def write_dept_payroll_output_v2(output_path, worker_rows, dept_settings, client
             **w,
             "hourly_rate": hourly_rate,
             "housing_charge": housing,
+            "notes_deductions": notes_ded,
             "gross": gross,
             "taxes": taxes,
             "insurance": INSURANCE if gross else 0,
@@ -6092,10 +6201,12 @@ def write_dept_payroll_output_v2(output_path, worker_rows, dept_settings, client
                 hrs = dr.get("total_hours", 0)
                 write_cell(ws2, row, 6, hrs, fmt=num_fmt, fill=rf, font=rfont)
                 daily_hours_sum += hrs if isinstance(hrs, (int, float)) else 0
+                notes_display = dr.get("notes_text", "")
                 if missing:
-                    write_cell(ws2, row, 7, " | ".join(missing), fill=rf, font=Font(size=9, color="991B1B"))
+                    notes_display = " | ".join(missing) + ((" | " + notes_display) if notes_display else "")
+                    write_cell(ws2, row, 7, notes_display, fill=rf, font=Font(size=9, color="991B1B"))
                 else:
-                    write_cell(ws2, row, 7, "", fill=rf)
+                    write_cell(ws2, row, 7, notes_display, fill=rf)
                 row += 1
 
             # ── Daily total row — teal ──
@@ -6146,7 +6257,10 @@ def write_dept_payroll_output_v2(output_path, worker_rows, dept_settings, client
 
         # ── Payment calculation block — slate header ──
         row += 1
-        calc_headers = ["שעות לתשלום", "תעריף שעתי", "ברוטו", "3% מיסים", "ביטוח (280)", "חיוב דירה", "נטו לתשלום"]
+        calc_headers = ["שעות לתשלום", "תעריף שעתי", "ברוטו", "3% מיסים", "ביטוח (280)", "חיוב דירה"]
+        if has_notes_deductions:
+            calc_headers.append("ניכויים מהערות")
+        calc_headers.append("נטו לתשלום")
         for col_idx, h in enumerate(calc_headers, 1):
             cell = ws2.cell(row=row, column=col_idx, value=h)
             cell.font = calc_header_font
@@ -6158,7 +6272,11 @@ def write_dept_payroll_output_v2(output_path, worker_rows, dept_settings, client
 
         hours = wc.get("payable_hours") or 0
         net_val = wc.get("net", 0)
-        for col_idx, val in enumerate([hours, wc.get("hourly_rate", 0), wc.get("gross", 0), wc.get("taxes", 0), wc.get("insurance", 0), wc.get("housing_charge", 0), net_val], 1):
+        calc_values = [hours, wc.get("hourly_rate", 0), wc.get("gross", 0), wc.get("taxes", 0), wc.get("insurance", 0), wc.get("housing_charge", 0)]
+        if has_notes_deductions:
+            calc_values.append(wc.get("notes_deductions", 0))
+        calc_values.append(net_val)
+        for col_idx, val in enumerate(calc_values, 1):
             cf = calc_value_fill
             cfo = calc_value_font
             if wc["status"] != "OK":
@@ -6174,15 +6292,19 @@ def write_dept_payroll_output_v2(output_path, worker_rows, dept_settings, client
     # Grand total for employees — dark indigo
     write_cell(ws2, row, 1, f"סה\"כ תשלום לכל העובדים ({len(worker_calculations)} עובדים)", font=grand_font, fill=grand_fill, align="right")
     write_cell(ws2, row, 2, "", fill=grand_fill)
+    net_col = 8 if has_notes_deductions else 7  # last column in calc block
     write_cell(ws2, row, 3, round(grand_total_gross, 2), font=grand_font, fill=grand_fill, fmt=num_fmt)
-    for col_idx in range(4, 7):
+    for col_idx in range(4, net_col):
         write_cell(ws2, row, col_idx, "", fill=grand_fill)
-    write_cell(ws2, row, 7, round(grand_total_net, 2), font=grand_font, fill=grand_fill, fmt=num_fmt)
+    write_cell(ws2, row, net_col, round(grand_total_net, 2), font=grand_font, fill=grand_fill, fmt=num_fmt)
     ws2.merge_cells(start_row=row, start_column=1, end_row=row, end_column=2)
     ws2.row_dimensions[row].height = 32
 
     # Column widths
     tab2_widths = {1: 16, 2: 12, 3: 10, 4: 10, 5: 18, 6: 12, 7: 26}
+    if has_notes_deductions:
+        # Extra column for notes deductions in calc block
+        tab2_widths[8] = 18
     for col_idx, w in tab2_widths.items():
         ws2.column_dimensions[get_column_letter(col_idx)].width = w
 
@@ -6520,6 +6642,32 @@ def run_dept_payroll(input_path, output_path, extension, options=None):
         if manual_housing:
             for w in worker_rows:
                 w["housing_charge"] = manual_housing
+
+    # ── Apply note deductions per worker ──
+    note_classifications_json = options.get("note_classifications_json", "")
+    note_classifications = {}
+    if note_classifications_json:
+        try:
+            note_classifications = json.loads(note_classifications_json)
+            if not isinstance(note_classifications, dict):
+                note_classifications = {}
+        except (TypeError, ValueError):
+            note_classifications = {}
+    for w in worker_rows:
+        total_deductions = 0.0
+        deduction_details = []
+        for dr in w.get("daily_rows", []):
+            notes_text = dr.get("notes_text", "")
+            if not notes_text:
+                continue
+            items = parse_note_items(notes_text)
+            for type_text, amount in items:
+                classification = note_classifications.get(type_text, "ignore")
+                if classification == "deduct":
+                    total_deductions += amount
+                    deduction_details.append({"type": type_text, "amount": amount, "date": dr.get("date", "")})
+        w["notes_deductions"] = round(total_deductions, 2)
+        w["notes_deduction_details"] = deduction_details
 
     # Parse clients Excel if provided
     clients_info = ({}, {})
@@ -7288,6 +7436,7 @@ SCRIPT_REGISTRY["dept_payroll"] = {
     "processing_title": "דוח השכר לפי מחלקות בהכנה",
     "processing_note": "המערכת מחשבת שכר לכל עובד לפי מחלקה. הפעולה עשויה להימשך כמה דקות.",
     "file_picker_label": "בחירת דוח נוכחות מפורט חודשי",
+    "requires_notes_classification": True,
 }
 
 SCRIPT_REGISTRY["org_hierarchy_report"] = {
@@ -8109,6 +8258,7 @@ DEPT_PAYROLL_MAPPING_FIELDS = [
     {"name": "total_hours_source", "label": 'סה"כ שעות', "required": True, "critical": True},
     {"name": "hourly_rate_source", "label": "תעריף שעתי", "required": False, "has_manual": True},
     {"name": "housing_source", "label": "חיוב דירה", "required": False, "has_manual": True},
+    {"name": "notes_source", "label": "הערות יומיות", "required": False},
 ]
 
 DEPT_PAYROLL_SUGGESTION_KEYWORDS = {
@@ -8125,7 +8275,8 @@ DEPT_PAYROLL_SUGGESTION_KEYWORDS = {
     "date_source": ["תאריך", "date"],
     "total_hours_source": ["סהכ", "סה\"כ", "total", "hours", "שעות"],
     "hourly_rate_source": ["תעריףשעתי", "תעריף", "rate", "hourly"],
-    "housing_source": ["חיובדירה", "דירה", "housing", "הערות"],
+    "housing_source": ["חיובדירה", "דירה", "housing"],
+    "notes_source": ["הערות", "הערה", "notes"],
 }
 
 
@@ -10255,6 +10406,82 @@ def build_event_classification_form(script_id, temp_upload_path, temp_upload_ext
     )
 
 
+def build_notes_classification_form(script_id, temp_upload_path, temp_upload_ext, mapping, note_types_data, dept_settings_json, dept_manual_values, clients_file_path=""):
+    """Build HTML form for confirming which note types should be deducted from pay."""
+    rows_html = ""
+    for idx, nt in enumerate(note_types_data):
+        type_text = nt["type"]
+        count = nt["count"]
+        total = nt["total"]
+        workers = nt["workers"]
+        samples_str = ", ".join(nt.get("samples", [])[:3])
+        bg_color = "#ffffff" if idx % 2 == 0 else "#f8fafc"
+        rows_html += (
+            '<div style="display:grid;grid-template-columns:minmax(140px,220px) minmax(0,1fr) auto;gap:14px;align-items:center;padding:10px 12px;border-bottom:1px solid #e2e8f0;background:' + bg_color + '">'
+            + '<div>'
+            + '<div style="font-size:14px;font-weight:700;color:#0f172a;word-break:break-word">' + esc(type_text) + '</div>'
+            + '<div style="font-size:11px;color:#64748b;margin-top:2px">' + str(count) + ' רשומות | ' + str(workers) + ' עובדים | סה"כ ' + f'{total:,.0f}' + '</div>'
+            + '<div style="font-size:11px;color:#94a3b8;margin-top:1px">דוגמאות: ' + esc(samples_str) + '</div>'
+            + '</div>'
+            + '<div style="display:flex;flex-wrap:wrap;align-items:center;gap:6px">'
+            + '<label style="display:inline-flex;align-items:center;gap:6px;padding:8px 14px;border-radius:999px;cursor:pointer;background:#FEE2E2;border:1px solid #FECACA;color:#991B1B;font-size:13px;font-weight:600">'
+            + '<input type="radio" name="note_class__' + esc(type_text) + '" value="deduct" checked style="margin:0">'
+            + 'לקזז מהשכר'
+            + '</label>'
+            + '<label style="display:inline-flex;align-items:center;gap:6px;padding:8px 14px;border-radius:999px;cursor:pointer;background:#F1F5F9;border:1px solid #E2E8F0;color:#475569;font-size:13px;font-weight:600">'
+            + '<input type="radio" name="note_class__' + esc(type_text) + '" value="ignore" style="margin:0">'
+            + 'להתעלם'
+            + '</label>'
+            + '</div>'
+            + '</div>'
+        )
+
+    if not rows_html:
+        rows_html = '<div style="padding:20px;text-align:center;color:#64748b;font-size:13px">לא נמצאו הערות עם סכומים בקובץ.</div>'
+
+    mapping_json = json.dumps(mapping or {}, ensure_ascii=False)
+    dept_manual_json = json.dumps(dept_manual_values or {}, ensure_ascii=False)
+
+    return (
+        '<form method="POST" id="notesClassificationForm">'
+        + '<input type="hidden" name="flow_mode" value="confirm_notes">'
+        + '<input type="hidden" name="temp_upload_path" value="' + esc(temp_upload_path) + '">'
+        + '<input type="hidden" name="temp_upload_ext" value="' + esc(temp_upload_ext) + '">'
+        + '<input type="hidden" name="mapping_json" value="' + esc(mapping_json) + '">'
+        + '<input type="hidden" name="dept_settings_json" value="' + esc(dept_settings_json or "[]") + '">'
+        + '<input type="hidden" name="dept_manual_json" value="' + esc(dept_manual_json) + '">'
+        + '<input type="hidden" name="clients_file_path" value="' + esc(clients_file_path or "") + '">'
+        + '<div style="background:#fafcff;border:1px solid #dbeafe;border-radius:14px;padding:1rem;margin-bottom:1rem">'
+        + '<div style="font-size:15px;font-weight:700;color:#1e3a8a;margin-bottom:6px">סיווג הערות — אישור ניכויים</div>'
+        + '<div style="font-size:13px;color:#475569;line-height:1.7;margin-bottom:12px">המערכת זיהתה סוגי הערות עם סכומים בקובץ. לכל סוג, בחרו האם לקזז את הסכום משכר העובד או להתעלם.</div>'
+        + '<div style="background:#fffbeb;border:1px solid #fcd34d;border-radius:10px;padding:10px 14px;margin-bottom:14px;font-size:12px;color:#92400e;line-height:1.7">'
+        + '<strong>שימו לב:</strong> סכומים שנבחרו לקיזוז יופחתו מהנטו של העובד (בנוסף ל-3% מיסים, 280 ביטוח וחיוב דירה). הסכום מופיע בעמודה "ניכויים מהערות" בדוח.'
+        + '</div>'
+        + '<div style="border:1px solid #e2e8f0;border-radius:12px;overflow:hidden;background:#ffffff;margin-bottom:14px">'
+        + '<div style="display:grid;grid-template-columns:minmax(140px,220px) minmax(0,1fr) auto;gap:14px;padding:10px 12px;background:#1e3a8a;color:#ffffff;font-weight:700;font-size:13px">'
+        + '<div>סוג הערה</div><div>פעולה</div>'
+        + '</div>'
+        + rows_html
+        + '</div>'
+        + '<div style="display:flex;gap:10px;flex-wrap:wrap;justify-content:center">'
+        + '<button type="submit" id="notesClassifyConfirmButton" class="btn btn-blue" style="min-width:240px">אישור והפקת הדוח</button>'
+        + '<a href="/run/' + script_id + '" class="btn btn-gray" style="text-decoration:none;display:inline-flex;align-items:center;justify-content:center;min-width:150px">העלאת קובץ חדש</a>'
+        + '</div>'
+        + '</div>'
+        + '<div id="notesClassifyOverlay" style="display:none;position:fixed;inset:0;background:rgba(248,250,252,.78);backdrop-filter:blur(2px);z-index:80;align-items:center;justify-content:center;padding:20px">'
+        + '<div style="width:100%;max-width:320px;background:#ffffff;border:1px solid #dbeafe;border-radius:18px;box-shadow:0 20px 50px rgba(15,23,42,.14);padding:24px 20px;text-align:center">'
+        + '<div style="width:42px;height:42px;border-radius:999px;border:3px solid #bfdbfe;border-top-color:#2563eb;margin:0 auto 14px;animation:notesSpin .9s linear infinite"></div>'
+        + '<div style="font-size:16px;font-weight:800;color:#1e3a8a;margin-bottom:6px">הדוח בהכנה</div>'
+        + '<div style="font-size:13px;line-height:1.7;color:#475569">המערכת מחשבת ניכויים ומפיקה את הדוח. הפעולה עשויה להימשך כמה דקות.</div>'
+        + '</div></div>'
+        + '<script>'
+        + '(function(){var form=document.getElementById("notesClassificationForm");var btn=document.getElementById("notesClassifyConfirmButton");var overlay=document.getElementById("notesClassifyOverlay");if(form){form.addEventListener("submit",function(){if(btn){btn.disabled=true;btn.textContent="הפקת הדוח התחילה...";}if(overlay){overlay.style.display="flex";}document.body.style.overflow="hidden";});}})();'
+        + '</script>'
+        + '<style>@keyframes notesSpin{from{transform:rotate(0deg);}to{transform:rotate(360deg);}}</style>'
+        + '</form>'
+    )
+
+
 def build_attendance_alerts_mapping_options(input_path, extension):
     base = build_rimon_mapping_options(input_path, extension)
     options_by_field = dict(base["options_by_field"])
@@ -12181,7 +12408,7 @@ def run_script(script_id):
 
     if request.method == "POST":
         flow_mode = request.form.get("flow_mode", "").strip()
-        if scr.get("requires_mapping_confirmation") and flow_mode not in ("confirm_mapping", "confirm_events"):
+        if scr.get("requires_mapping_confirmation") and flow_mode not in ("confirm_mapping", "confirm_events", "confirm_notes"):
             file_obj = request.files.get("file")
             validation_error, ext = validate_upload(file_obj)
             if validation_error == "missing":
@@ -12975,71 +13202,95 @@ def run_script(script_id):
                             )
                             info_message = '<div class="flash" style="background:#eff6ff;border-color:#bfdbfe;color:#1d4ed8">נמצאו ' + str(len(distinct_events)) + ' סוגי אירועים בקובץ. בחרו לכל אחד את הקטגוריה המתאימה ואז הפיקו את מפת העומס.</div>'
                 else:
-                    uid = str(uuid.uuid4())[:8]
-                    options = {key: value for key, value in mapping.items()}
-                    if script_id == "flamingo_payroll":
-                        options["manual_hourly_rate"] = manual_hourly_rate
-                    elif script_id == "dept_payroll":
-                        options["dept_settings_json"] = dept_settings_json
-                        if dept_manual_values.get("manual_hourly_rate"):
-                            options["manual_hourly_rate"] = dept_manual_values["manual_hourly_rate"]
-                        if dept_manual_values.get("manual_housing"):
-                            options["manual_housing"] = dept_manual_values["manual_housing"]
-                        # Handle optional clients file upload
-                        clients_file = request.files.get("clients_file")
-                        if clients_file and clients_file.filename:
-                            clients_ext = get_extension(clients_file.filename)
-                            if clients_ext in ("xls", "xlsx"):
-                                clients_temp_path = str(UPLOAD_FOLDER / f"{uid}_clients.{clients_ext}")
-                                clients_file.save(clients_temp_path)
-                                options["clients_file_path"] = clients_temp_path
-                    elif script_id == "matan_missing":
-                        options.update(matan_filters)
-                    elif script_id == "inactive_workers":
-                        options.update(inactive_filters)
-                    elif script_id == "org_hierarchy_report":
-                        options.update(org_options)
-                    elif script_id == "matan_manual_corrections":
-                        options.update(corrections_filters)
-                    elif script_id == "attendance_alerts":
-                        for a in ATTENDANCE_ALERT_TYPES:
-                            key = "alert_" + a["id"]
-                            options[key] = "1" if request.form.get(key) else "0"
-                    result_name = build_output_filename(scr, uid, options)
-                    out = str(OUTPUT_FOLDER / result_name)
-                    try:
-                        execution_result = execute_script(scr, inp, out, ext, options) or {}
-                        result = result_name
-                        processing_warnings = execution_result.get("warnings", [])
-                        log_user_activity("generate_report", "הפיק דוח", script_id, scr["name"], result_name)
-                        if request.form.get("save_template") == "1":
-                            template_name = request.form.get("template_name", "").strip() or get_next_mapping_template_name(mapping_templates)
-                            template_mapping = dict(mapping)
-                            if script_id == "flamingo_payroll" and manual_hourly_rate:
-                                template_mapping["manual_hourly_rate"] = manual_hourly_rate
-                            if script_id == "dept_payroll" and dept_settings_json:
-                                template_mapping["dept_settings_json"] = dept_settings_json
-                            if script_id == "dept_payroll" and dept_manual_values.get("manual_hourly_rate"):
-                                template_mapping["manual_hourly_rate"] = dept_manual_values["manual_hourly_rate"]
-                            if script_id == "dept_payroll" and dept_manual_values.get("manual_housing"):
-                                template_mapping["manual_housing"] = dept_manual_values["manual_housing"]
-                            save_mapping_template(session["user_id"], script_id, template_name, template_mapping)
-                    except (xlrd.biffh.XLRDError, BadZipFile, OSError, ValueError):
-                        error = '<div class="flash-err">' + scr["processing_error"] + '</div>'
-                    except Exception as e:
-                        error = '<div class="flash-err">' + text["run_unexpected_error_prefix"] + str(e) + "</div>"
-                    finally:
+                    # ── Notes classification interception (dept_payroll) ──
+                    notes_form_shown = False
+                    if scr.get("requires_notes_classification") and mapping.get("notes_source"):
                         try:
-                            os.remove(inp)
-                        except OSError:
-                            pass
-                        # Clean up clients file if uploaded
-                        clients_temp = options.get("clients_file_path", "")
-                        if clients_temp:
+                            note_types_data = scan_dept_notes_types(inp, ext, mapping)
+                        except Exception:
+                            note_types_data = []
+                        if note_types_data:
+                            notes_form_shown = True
+                            clients_temp_path_notes = ""
+                            clients_file_obj = request.files.get("clients_file")
+                            if clients_file_obj and clients_file_obj.filename:
+                                c_ext = get_extension(clients_file_obj.filename)
+                                if c_ext in ("xls", "xlsx"):
+                                    uid_c = str(uuid.uuid4())[:8]
+                                    clients_temp_path_notes = str(UPLOAD_FOLDER / f"{uid_c}_clients.{c_ext}")
+                                    clients_file_obj.save(clients_temp_path_notes)
+                            mapping_confirmation_html = build_notes_classification_form(
+                                script_id, inp, ext, mapping, note_types_data,
+                                dept_settings_json, dept_manual_values, clients_temp_path_notes,
+                            )
+                            info_message = '<div class="flash" style="background:#eff6ff;border-color:#bfdbfe;color:#1d4ed8">נמצאו ' + str(len(note_types_data)) + ' סוגי הערות עם סכומים בקובץ. אשרו את הסיווג לפני הפקת הדוח.</div>'
+
+                    if not notes_form_shown:
+                        uid = str(uuid.uuid4())[:8]
+                        options = {key: value for key, value in mapping.items()}
+                        if script_id == "flamingo_payroll":
+                            options["manual_hourly_rate"] = manual_hourly_rate
+                        elif script_id == "dept_payroll":
+                            options["dept_settings_json"] = dept_settings_json
+                            if dept_manual_values.get("manual_hourly_rate"):
+                                options["manual_hourly_rate"] = dept_manual_values["manual_hourly_rate"]
+                            if dept_manual_values.get("manual_housing"):
+                                options["manual_housing"] = dept_manual_values["manual_housing"]
+                            # Handle optional clients file upload
+                            clients_file = request.files.get("clients_file")
+                            if clients_file and clients_file.filename:
+                                clients_ext = get_extension(clients_file.filename)
+                                if clients_ext in ("xls", "xlsx"):
+                                    clients_temp_path = str(UPLOAD_FOLDER / f"{uid}_clients.{clients_ext}")
+                                    clients_file.save(clients_temp_path)
+                                    options["clients_file_path"] = clients_temp_path
+                        elif script_id == "matan_missing":
+                            options.update(matan_filters)
+                        elif script_id == "inactive_workers":
+                            options.update(inactive_filters)
+                        elif script_id == "org_hierarchy_report":
+                            options.update(org_options)
+                        elif script_id == "matan_manual_corrections":
+                            options.update(corrections_filters)
+                        elif script_id == "attendance_alerts":
+                            for a in ATTENDANCE_ALERT_TYPES:
+                                key = "alert_" + a["id"]
+                                options[key] = "1" if request.form.get(key) else "0"
+                        result_name = build_output_filename(scr, uid, options)
+                        out = str(OUTPUT_FOLDER / result_name)
+                        try:
+                            execution_result = execute_script(scr, inp, out, ext, options) or {}
+                            result = result_name
+                            processing_warnings = execution_result.get("warnings", [])
+                            log_user_activity("generate_report", "הפיק דוח", script_id, scr["name"], result_name)
+                            if request.form.get("save_template") == "1":
+                                template_name = request.form.get("template_name", "").strip() or get_next_mapping_template_name(mapping_templates)
+                                template_mapping = dict(mapping)
+                                if script_id == "flamingo_payroll" and manual_hourly_rate:
+                                    template_mapping["manual_hourly_rate"] = manual_hourly_rate
+                                if script_id == "dept_payroll" and dept_settings_json:
+                                    template_mapping["dept_settings_json"] = dept_settings_json
+                                if script_id == "dept_payroll" and dept_manual_values.get("manual_hourly_rate"):
+                                    template_mapping["manual_hourly_rate"] = dept_manual_values["manual_hourly_rate"]
+                                if script_id == "dept_payroll" and dept_manual_values.get("manual_housing"):
+                                    template_mapping["manual_housing"] = dept_manual_values["manual_housing"]
+                                save_mapping_template(session["user_id"], script_id, template_name, template_mapping)
+                        except (xlrd.biffh.XLRDError, BadZipFile, OSError, ValueError):
+                            error = '<div class="flash-err">' + scr["processing_error"] + '</div>'
+                        except Exception as e:
+                            error = '<div class="flash-err">' + text["run_unexpected_error_prefix"] + str(e) + "</div>"
+                        finally:
                             try:
-                                os.remove(clients_temp)
+                                os.remove(inp)
                             except OSError:
                                 pass
+                            # Clean up clients file if uploaded
+                            clients_temp = options.get("clients_file_path", "")
+                            if clients_temp:
+                                try:
+                                    os.remove(clients_temp)
+                                except OSError:
+                                    pass
         elif scr.get("requires_event_classification") and flow_mode == "confirm_events":
             inp = request.form.get("temp_upload_path", "").strip()
             ext = request.form.get("temp_upload_ext", "").strip().lower()
@@ -13079,6 +13330,66 @@ def run_script(script_id):
                         os.remove(inp)
                     except OSError:
                         pass
+        elif scr.get("requires_notes_classification") and flow_mode == "confirm_notes":
+            inp = request.form.get("temp_upload_path", "").strip()
+            ext = request.form.get("temp_upload_ext", "").strip().lower()
+            mapping_json = request.form.get("mapping_json", "").strip() or "{}"
+            try:
+                mapping = json.loads(mapping_json)
+                if not isinstance(mapping, dict):
+                    mapping = {}
+            except (TypeError, ValueError):
+                mapping = {}
+            dept_settings_json = request.form.get("dept_settings_json", "[]").strip()
+            dept_manual_json = request.form.get("dept_manual_json", "{}").strip()
+            try:
+                dept_manual_values = json.loads(dept_manual_json)
+                if not isinstance(dept_manual_values, dict):
+                    dept_manual_values = {}
+            except (TypeError, ValueError):
+                dept_manual_values = {}
+            clients_file_path = request.form.get("clients_file_path", "").strip()
+            note_classifications = {}
+            prefix = "note_class__"
+            for key, val in request.form.items():
+                if key.startswith(prefix):
+                    note_type = key[len(prefix):]
+                    if val in ("deduct", "ignore"):
+                        note_classifications[note_type] = val
+            if not inp or not os.path.exists(inp):
+                error = '<div class="flash-err">הקובץ הזמני לא נמצא. יש להעלות את הדוח מחדש.</div>'
+            else:
+                uid = str(uuid.uuid4())[:8]
+                options = {key: value for key, value in mapping.items() if isinstance(key, str)}
+                options["dept_settings_json"] = dept_settings_json
+                if dept_manual_values.get("manual_hourly_rate"):
+                    options["manual_hourly_rate"] = dept_manual_values["manual_hourly_rate"]
+                if dept_manual_values.get("manual_housing"):
+                    options["manual_housing"] = dept_manual_values["manual_housing"]
+                if clients_file_path and os.path.exists(clients_file_path):
+                    options["clients_file_path"] = clients_file_path
+                options["note_classifications_json"] = json.dumps(note_classifications, ensure_ascii=False)
+                result_name = build_output_filename(scr, uid, options)
+                out = str(OUTPUT_FOLDER / result_name)
+                try:
+                    execution_result = execute_script(scr, inp, out, ext, options) or {}
+                    result = result_name
+                    processing_warnings = execution_result.get("warnings", [])
+                    log_user_activity("generate_report", "הפיק דוח", script_id, scr["name"], result_name)
+                except (xlrd.biffh.XLRDError, BadZipFile, OSError, ValueError):
+                    error = '<div class="flash-err">' + scr["processing_error"] + '</div>'
+                except Exception as e:
+                    error = '<div class="flash-err">' + text["run_unexpected_error_prefix"] + str(e) + "</div>"
+                finally:
+                    try:
+                        os.remove(inp)
+                    except OSError:
+                        pass
+                    if clients_file_path:
+                        try:
+                            os.remove(clients_file_path)
+                        except OSError:
+                            pass
         else:
             file_obj = request.files.get("file")
             validation_error, ext = validate_upload(file_obj)
