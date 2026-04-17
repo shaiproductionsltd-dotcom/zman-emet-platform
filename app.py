@@ -8393,7 +8393,7 @@ DEPT_PAYROLL_MAPPING_FIELDS = [
     {"name": "exit_time_source", "label": "יציאה", "required": False},
     {"name": "date_source", "label": "תאריך", "required": False},
     {"name": "total_hours_source", "label": 'סה"כ שעות', "required": True, "critical": True},
-    {"name": "hourly_rate_source", "label": "תעריף שעתי", "required": False, "has_manual": True},
+    {"name": "hourly_rate_source", "label": "תעריף שעתי", "required": True, "has_manual": True},
     {"name": "housing_source", "label": "חיוב דירה", "required": False, "has_manual": True},
     {"name": "notes_source", "label": "הערות יומיות", "required": False},
 ]
