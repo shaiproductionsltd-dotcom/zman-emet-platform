@@ -6003,13 +6003,28 @@ def write_dept_payroll_output_v2(output_path, worker_rows, dept_settings, client
                     "charge_rate": ds.get("charge_rate", 0),
                 }
 
-        # Client header
+        # Client header — red if charge_rate is missing/zero
+        missing_charge_rate = not charge_rate
         ws1.merge_cells(start_row=row, start_column=1, end_row=row, end_column=8)
         cell = ws1.cell(row=row, column=1, value=f"לקוח: {client_info.get('name', client_name)}")
-        cell.font = section_font
-        cell.fill = section_fill
+        if missing_charge_rate:
+            cell.font = Font(bold=True, size=11, color="991B1B")
+            cell.fill = PatternFill(start_color="FEE2E2", end_color="FEE2E2", fill_type="solid")
+        else:
+            cell.font = section_font
+            cell.fill = section_fill
         cell.alignment = Alignment(horizontal="right")
         row += 1
+
+        # Warning line when charge_rate is missing or zero
+        if missing_charge_rate:
+            ws1.merge_cells(start_row=row, start_column=1, end_row=row, end_column=8)
+            warn_cell = ws1.cell(row=row, column=1, value="\u26a0 חסר תעריף גביה — לא ניתן לחשב חיוב ללקוח זה")
+            warn_cell.font = Font(bold=True, size=10, color="991B1B")
+            warn_cell.fill = PatternFill(start_color="FEF2F2", end_color="FEF2F2", fill_type="solid")
+            warn_cell.alignment = Alignment(horizontal="right", vertical="center")
+            ws1.row_dimensions[row].height = 22
+            row += 1
 
         # Client info line
         info_parts = []
