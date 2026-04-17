@@ -11705,9 +11705,10 @@ def render_assistant_widget():
         '    <textarea id="ast-input" rows="1" placeholder="\u05e9\u05d0\u05dc \u05d0\u05d5\u05ea\u05d9 \u05de\u05e9\u05d4\u05d5..." onkeydown="if(event.key===\'Enter\'&&!event.shiftKey){event.preventDefault();astSendMessage()}"></textarea>'
         '    <button id="ast-send" onclick="astSendMessage()" title="\u05e9\u05dc\u05d7">&#10148;</button>'
         '  </div>'
+        '  <div class="ast-retention" title="\u05e7\u05d1\u05e6\u05d9\u05dd \u05e0\u05de\u05d7\u05e7\u05d9\u05dd \u05de\u05d9\u05d3 \u05dc\u05d0\u05d7\u05e8 \u05d4\u05e0\u05d9\u05ea\u05d5\u05d7. \u05d4\u05e9\u05d9\u05d7\u05d4 \u05e2\u05e6\u05de\u05d4 \u05de\u05ea\u05d0\u05e4\u05e1\u05ea \u05d0\u05d5\u05d8\u05d5\u05de\u05d8\u05d9\u05ea \u05dc\u05e9\u05de\u05d9\u05e8\u05ea \u05e4\u05e8\u05d8\u05d9\u05d5\u05ea\u05d9\u05d5\u05ea.">&#128274; \u05d4\u05e7\u05d1\u05e6\u05d9\u05dd \u05e9\u05dc\u05da \u05dc\u05d0 \u05e0\u05e9\u05de\u05e8\u05d9\u05dd. \u05d4\u05e0\u05d9\u05ea\u05d5\u05d7 \u05d4\u05d6\u05de\u05e0\u05d9 \u05e0\u05de\u05d7\u05e7 \u05ea\u05d5\u05da \u05de\u05e1\u05e4\u05e8 \u05e9\u05e2\u05d5\u05ea.</div>'
         '</div>'
         '<script>'
-        'var astSessionId=null,astLoading=false,astArtifactIds=[],astMsgCount=0;'
+        'var astSessionId=null,astLoading=false,astArtifactIds=[],astMsgCount=0,astLastCtaKey="";'
         'function toggleAssistantPanel(){'
         '  var p=document.getElementById("ast-panel"),f=document.getElementById("ast-fab");'
         '  if(p.classList.contains("ast-open")){'
@@ -11735,7 +11736,7 @@ def render_assistant_widget():
         '  .then(function(r){return r.json()})'
         '  .then(function(d){'
         '    if(d.ok&&d.session_id){'
-        '      astSessionId=d.session_id;astMsgCount=0;astArtifactIds=[];'
+        '      astSessionId=d.session_id;astMsgCount=0;astArtifactIds=[];astLastCtaKey="";'
         '      var c=document.getElementById("ast-messages");c.innerHTML="";'
         '      var w=document.createElement("div");w.className="ast-welcome";'
         '      w.textContent="\\u05e9\\u05d9\\u05d7\\u05d4 \\u05d7\\u05d3\\u05e9\\u05d4 \\u05e0\\u05e4\\u05ea\\u05d7\\u05d4. \\u05d0\\u05e4\\u05e9\\u05e8 \\u05dc\\u05e9\\u05d0\\u05d5\\u05dc.";'
@@ -11746,6 +11747,9 @@ def render_assistant_widget():
         'function astEscape(s){return String(s==null?"":s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")}'
         'function astAddRecommendationCTA(rec,sessionId){'
         '  if(!rec||!rec.tool_url)return;'
+        '  var key="rec:"+(rec.tool_id||rec.tool_url);'
+        '  if(key===astLastCtaKey)return;'
+        '  astLastCtaKey=key;'
         '  var c=document.getElementById("ast-messages");'
         '  var wrap=document.createElement("div");wrap.className="ast-cta-wrap";'
         '  var a=document.createElement("a");a.className="ast-cta";a.href=rec.tool_url;'
@@ -11758,6 +11762,9 @@ def render_assistant_widget():
         '}'
         'function astAddBuildCTA(sb,sessionId){'
         '  if(!sb||!sb.url)return;'
+        '  var key="build:"+(sb.brief||"");'
+        '  if(key===astLastCtaKey)return;'
+        '  astLastCtaKey=key;'
         '  var c=document.getElementById("ast-messages");'
         '  var wrap=document.createElement("div");wrap.className="ast-cta-wrap";'
         '  var a=document.createElement("a");a.className="ast-cta ast-cta-build";a.href=sb.url;'
@@ -15742,6 +15749,12 @@ def score_marketplace_tools_for_message(user_text, installed_marketplace):
     return enriched
 
 
+# Soft cap on the entire tool-catalog section. If we ever blow past this
+# (catalog grows or many marketplace tools), the function trims the lowest-
+# priority sections gracefully rather than ballooning the prompt.
+TOOLS_BLOCK_SOFT_CAP_CHARS = 18000
+
+
 def render_tools_knowledge_block(accessible_tool_ids, last_user_message="", installed_marketplace=None):
     """Build the tools-knowledge section of the system prompt from the live catalog.
     Every tool entry carries its own access status line; the section headers
@@ -15802,6 +15815,19 @@ def render_tools_knowledge_block(accessible_tool_ids, last_user_message="", inst
     section += "\n### בניית כלי חדש\n"
     section += "- אם אף כלי לעיל לא מתאים — הצע ליצור כלי חדש, אבל רק לאחר שציינת באיזה כלי/ים קיימים שקלת ומדוע הם לא עונים על הצורך.\n"
     section += "- יצירת כלי נעשית על ידי המשתמש דרך תפריט ״יצירת כלי״ (`/tools/create`).\n"
+
+    # Soft cap: if the section is huge, trim the lowest-priority "others" /
+    # "additional marketplace" lines before they bloat the prompt.
+    if len(section) > TOOLS_BLOCK_SOFT_CAP_CHARS:
+        # Drop everything between the relevant-marketplace section and the
+        # build-new section if the tail is too long.
+        marker_end = section.rfind("\n### בניית כלי חדש")
+        marker_others = section.find("\n### כלים נוספים במערכת")
+        if marker_others > 0 and marker_end > marker_others:
+            head = section[:marker_others]
+            tail = section[marker_end:]
+            note = "\n### כלים נוספים במערכת (קוצרו לחיסכון בהקשר — שאל את המשתמש אם הוא צריך כלי שאינו מופיע למעלה)\n"
+            section = head + note + tail
     return section
 
 
