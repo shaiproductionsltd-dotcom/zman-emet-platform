@@ -5851,6 +5851,10 @@ def write_dept_payroll_output_v2(output_path, worker_rows, dept_settings, client
     ignored_note_font = Font(size=9, italic=True, color="9CA3AF")
     # Note classification styling — deducted notes (red to highlight active deduction)
     deducted_note_font = Font(size=9, color="DC2626")
+    # Premium grand-total row — deep navy, larger bold white text
+    grand_total_font = Font(bold=True, size=13, color="FFFFFF")
+    grand_total_label_font = Font(bold=True, size=13, color="FFFFFF")
+    grand_total_fill = PatternFill(start_color="1E3A8A", end_color="1E3A8A", fill_type="solid")
 
     num_fmt = '#,##0.00'
     thin_border = Border(
@@ -5858,6 +5862,12 @@ def write_dept_payroll_output_v2(output_path, worker_rows, dept_settings, client
         right=Side(style="thin", color="CBD5E1"),
         top=Side(style="thin", color="CBD5E1"),
         bottom=Side(style="thin", color="CBD5E1"),
+    )
+    grand_total_border = Border(
+        left=Side(style="thin", color="1E3A8A"),
+        right=Side(style="thin", color="1E3A8A"),
+        top=Side(style="medium", color="0F172A"),
+        bottom=Side(style="thin", color="1E3A8A"),
     )
 
     def style_header_row(ws, row, headers):
@@ -6325,7 +6335,7 @@ def write_dept_payroll_output_v2(output_path, worker_rows, dept_settings, client
             write_cell(ws2, row, 7, "", fill=attn_fill)
             row += 1
 
-        # ── Payment calculation block — slate header ──
+        # ── Payment calculation block — dark navy header ──
         row += 1
         calc_headers = ["שעות לתשלום", "תעריף שעתי", "ברוטו", "3% מיסים", "ביטוח (280)", "חיוב דירה"]
         if has_notes_deductions:
@@ -6333,11 +6343,11 @@ def write_dept_payroll_output_v2(output_path, worker_rows, dept_settings, client
         calc_headers.append("נטו לתשלום")
         for col_idx, h in enumerate(calc_headers, 1):
             cell = ws2.cell(row=row, column=col_idx, value=h)
-            cell.font = calc_header_font
-            cell.fill = calc_header_fill
+            cell.font = Font(bold=True, size=11, color="FFFFFF")
+            cell.fill = PatternFill(start_color="334155", end_color="334155", fill_type="solid")
             cell.alignment = Alignment(horizontal="center", vertical="center")
             cell.border = thin_border
-        ws2.row_dimensions[row].height = 26
+        ws2.row_dimensions[row].height = 28
         row += 1
 
         hours = wc.get("payable_hours") or 0
@@ -6364,26 +6374,30 @@ def write_dept_payroll_output_v2(output_path, worker_rows, dept_settings, client
         grand_total_housing += wc.get("housing_charge", 0)
         grand_total_notes_ded += wc.get("notes_deductions", 0)
 
-    # Grand total for employees — dark indigo
+    # Grand total for employees — premium deep navy styling
     # Label row (merged across all columns)
     net_col = 8 if has_notes_deductions else 7  # last column in calc block
     ws2.merge_cells(start_row=row, start_column=1, end_row=row, end_column=net_col)
-    write_cell(ws2, row, 1, f"סה\"כ תשלום לכל העובדים ({len(worker_calculations)} עובדים)", font=grand_font, fill=grand_fill, align="right")
-    for col_idx in range(2, net_col + 1):
-        write_cell(ws2, row, col_idx, "", fill=grand_fill)
-    ws2.row_dimensions[row].height = 30
+    write_cell(ws2, row, 1, f"סה\"כ תשלום לכל העובדים ({len(worker_calculations)} עובדים)", font=grand_total_label_font, fill=grand_total_fill, align="right")
+    for col_idx in range(1, net_col + 1):
+        c = ws2.cell(row=row, column=col_idx)
+        c.fill = grand_total_fill
+        c.border = grand_total_border
+    ws2.row_dimensions[row].height = 34
     row += 1
     # Values row — sums aligned with calc-block columns
-    write_cell(ws2, row, 1, round(grand_total_hours, 2), font=grand_font, fill=grand_fill, fmt=num_fmt)
-    write_cell(ws2, row, 2, "", fill=grand_fill)  # rate varies — no total
-    write_cell(ws2, row, 3, round(grand_total_gross, 2), font=grand_font, fill=grand_fill, fmt=num_fmt)
-    write_cell(ws2, row, 4, round(grand_total_taxes, 2), font=grand_font, fill=grand_fill, fmt=num_fmt)
-    write_cell(ws2, row, 5, round(grand_total_insurance, 2), font=grand_font, fill=grand_fill, fmt=num_fmt)
-    write_cell(ws2, row, 6, round(grand_total_housing, 2), font=grand_font, fill=grand_fill, fmt=num_fmt)
+    write_cell(ws2, row, 1, round(grand_total_hours, 2), font=grand_total_font, fill=grand_total_fill, fmt=num_fmt)
+    write_cell(ws2, row, 2, "", fill=grand_total_fill)  # rate varies — no total
+    write_cell(ws2, row, 3, round(grand_total_gross, 2), font=grand_total_font, fill=grand_total_fill, fmt=num_fmt)
+    write_cell(ws2, row, 4, round(grand_total_taxes, 2), font=grand_total_font, fill=grand_total_fill, fmt=num_fmt)
+    write_cell(ws2, row, 5, round(grand_total_insurance, 2), font=grand_total_font, fill=grand_total_fill, fmt=num_fmt)
+    write_cell(ws2, row, 6, round(grand_total_housing, 2), font=grand_total_font, fill=grand_total_fill, fmt=num_fmt)
     if has_notes_deductions:
-        write_cell(ws2, row, 7, round(grand_total_notes_ded, 2), font=grand_font, fill=grand_fill, fmt=num_fmt)
-    write_cell(ws2, row, net_col, round(grand_total_net, 2), font=grand_font, fill=grand_fill, fmt=num_fmt)
-    ws2.row_dimensions[row].height = 32
+        write_cell(ws2, row, 7, round(grand_total_notes_ded, 2), font=grand_total_font, fill=grand_total_fill, fmt=num_fmt)
+    write_cell(ws2, row, net_col, round(grand_total_net, 2), font=grand_total_font, fill=grand_total_fill, fmt=num_fmt)
+    for col_idx in range(1, net_col + 1):
+        ws2.cell(row=row, column=col_idx).border = grand_total_border
+    ws2.row_dimensions[row].height = 34
 
     # Column widths
     tab2_widths = {1: 16, 2: 12, 3: 10, 4: 10, 5: 18, 6: 12, 7: 26}
