@@ -11749,8 +11749,10 @@ def render_assistant_widget():
         '  var c=document.getElementById("ast-messages");'
         '  var wrap=document.createElement("div");wrap.className="ast-cta-wrap";'
         '  var a=document.createElement("a");a.className="ast-cta";a.href=rec.tool_url;'
+        '  var name=rec.tool_name||rec.tool_id;'
         '  var reasonHtml=rec.reason?"<div class=\\"ast-cta-sub\\">"+astEscape(rec.reason)+"</div>":"";'
-        '  a.innerHTML="<div><div>\\u05e4\\u05ea\\u05d7 \\u05d0\\u05ea \\u05d4\\u05db\\u05dc\\u05d9: "+astEscape(rec.tool_name||rec.tool_id)+"</div>"+reasonHtml+"</div><span>\\u2190</span>";'
+        '  a.innerHTML="<div><div><span style=\\"opacity:.85;font-weight:500\\">\\u05de\\u05d4 \\u05d0\\u05e4\\u05e9\\u05e8 \\u05dc\\u05e2\\u05e9\\u05d5\\u05ea \\u05e2\\u05db\\u05e9\\u05d9\\u05d5</span><br>\\u05d4\\u05e4\\u05e2\\u05dc\\u05ea \\u05d4\\u05db\\u05dc\\u05d9 ' + "\u00BB" + ' "+astEscape(name)+"</div>"+reasonHtml+"</div><span aria-hidden=\\"true\\">\\u2190</span>";'
+        '  a.setAttribute("aria-label","\\u05d4\\u05e4\\u05e2\\u05dc \\u05d0\\u05ea "+name);'
         '  a.onclick=function(){try{fetch("/assistant/recommendation/clicked",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({session_id:sessionId,tool_id:rec.tool_id})})}catch(e){}};'
         '  wrap.appendChild(a);c.appendChild(wrap);c.scrollTop=c.scrollHeight;'
         '}'
@@ -11760,7 +11762,8 @@ def render_assistant_widget():
         '  var wrap=document.createElement("div");wrap.className="ast-cta-wrap";'
         '  var a=document.createElement("a");a.className="ast-cta ast-cta-build";a.href=sb.url;'
         '  var briefHtml=sb.brief?"<div class=\\"ast-cta-sub\\">"+astEscape(sb.brief)+"</div>":"";'
-        '  a.innerHTML="<div><div>\\u05d1\\u05e0\\u05d4 \\u05db\\u05dc\\u05d9 \\u05d7\\u05d3\\u05e9 \\u05e2\\u05dd AI</div>"+briefHtml+"</div><span>\\u2190</span>";'
+        '  a.innerHTML="<div><div><span style=\\"opacity:.85;font-weight:500\\">\\u05d0\\u05d9\\u05df \\u05db\\u05dc\\u05d9 \\u05de\\u05ea\\u05d0\\u05d9\\u05dd \\u2014 \\u05d0\\u05e4\\u05e9\\u05e8 \\u05dc\\u05d1\\u05e0\\u05d5\\u05ea \\u05d0\\u05d7\\u05d3</span><br>\\u05d1\\u05e0\\u05d4 \\u05db\\u05dc\\u05d9 \\u05d7\\u05d3\\u05e9 \\u05e2\\u05dd AI ' + "\u00BB" + '</div>"+briefHtml+"</div><span aria-hidden=\\"true\\">\\u2190</span>";'
+        '  a.setAttribute("aria-label","\\u05d1\\u05e0\\u05d4 \\u05db\\u05dc\\u05d9 \\u05d7\\u05d3\\u05e9");'
         '  a.onclick=function(){try{fetch("/assistant/recommendation/clicked",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({session_id:sessionId})})}catch(e){}};'
         '  wrap.appendChild(a);c.appendChild(wrap);c.scrollTop=c.scrollHeight;'
         '}'
@@ -15590,23 +15593,38 @@ ASSISTANT_CHAT_SYSTEM_PROMPT = """אתה יועץ בכיר בנושאי HR, שכ
 ## כללי המלצת כלים (חובה)
 - לפני שאתה מציע לבנות כלי חדש — עבור על רשימת הכלים המובנים שמופיעה למטה ובדוק אם יש התאמה.
 - אם יש כלי קיים שמתאים — המלץ עליו ישירות. עדיפות לכלי מובנה ברור על פני הצעה לבנייה.
-- רק אם אין אף כלי מתאים — הצע ליצור כלי חדש, והסבר בקצרה למה הכלים הקיימים לא עונים על הצורך.
+- רק אם אין אף כלי מתאים — הצע ליצור כלי חדש, וציין במפורש איזה 1-3 כלים קיימים שקלת ולמה כל אחד מהם לא עונה על הצורך.
 - אל תמציא כלים שלא מופיעים ברשימה. השתמש רק ב-`script_id` שמופיע ברשימת הכלים למטה.
 
-## פלט מובנה להמלצה (חובה כשממליץ)
-כשאתה מזהה כלי קיים מתאים, סיים את התשובה שלך במבנה הבא בדיוק:
+## איך נראית תשובה טובה
+- קצרה. 2-4 שורות לרוב, אלא אם המשתמש ביקש פירוט.
+- ממוקדת בצעד הבא. אל תתאר את הכלי באריכות לפני שאמרת מה לעשות.
+- שיקוף: ציין במילה או שתיים את הצורך של המשתמש (״חיוב לקוחות״, ״חוסר שעות״) כדי שיראה שהבנת.
+- ללא פתיחות מנומסות (״אני מבין״, ״כמובן״, ״בשמחה״) וללא סיומים מעורפלים (״אם תרצה אוכל לעזור עוד״).
+- מבנה מומלץ כשממליצים על כלי:
+  שורה 1: שיקוף הצורך + שם הכלי בעברית.
+  שורה 2-3: למה הכלי הזה (קישור לפרט קונקרטי בבקשה של המשתמש).
+  שורה 4 (אופציונלי): מה צריך להעלות / שלב אחד שצריך לעשות עכשיו.
+
+## פלט מובנה להמלצה (חובה כשממליצים)
+כשמזהים כלי קיים מתאים — סיים את התשובה במבנה הבא בדיוק (אחרי שורה ריקה):
 ---RECOMMEND---
 tool_id: <script_id מדויק מהרשימה>
-reason: <משפט קצר בעברית, למה דווקא הכלי הזה>
+reason: <משפט קצר אחד בעברית. הזכר משהו מהבקשה של המשתמש כדי שיהיה ברור למה דווקא הכלי הזה>
 ---END---
 
-כשאין כלי קיים מתאים והמשתמש בוודאות צריך כלי חדש, סיים במבנה:
+כשאין כלי קיים מתאים והמשתמש בבירור צריך כלי חדש — סיים במבנה:
 ---SUGGEST_BUILD---
-brief: <2-3 משפטים קצרים בעברית שמתארים את הכלי החסר — קלט, פלט, מטרה>
+brief: <מבנה: שורה 1 — מטרת הכלי במשפט. שורה 2 — קלט (סוג קובץ ועמודות מרכזיות). שורה 3 — פלט (פורמט ועמודות עיקריות). שורה 4 — אילו כלים קיימים שקלת ולמה הם לא מספיקים>
 ---END---
 
-אל תוסיף את הסימונים האלה כשהתשובה היא שאלה, הבהרה, או ייעוץ כללי שאינו המלצת כלי.
-אל תהפוך את הסימונים לחלק מהתשובה המוצגת — הם נועדו לצורך הממשק בלבד.
+מתי לא להשתמש בסימונים האלה:
+- שאלות הבהרה ("מה הכוונה?", "באיזה חודש?")
+- ייעוץ כללי על חוקי עבודה, מס, פנסיה וכו' שאינו קשור להפעלת כלי
+- שיחה חברתית או הסבר שאינו מוביל לפעולה
+- כשהמשתמש מבקש מידע ולא פעולה (״תסביר לי מה זה...״)
+
+אל תכלול את הסימונים בתוך התשובה המוצגת — הם נקראים על ידי המערכת ומוסתרים מהמשתמש.
 
 ## פרטיות ושמירת מידע (חובה)
 - אל תבקש שמות עובדים, תעודות זהות, או מידע אישי מעבר למה שכבר הועלה.
