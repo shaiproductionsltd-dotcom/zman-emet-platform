@@ -7616,6 +7616,134 @@ SCRIPT_REGISTRY["org_hierarchy_report"] = {
 SCRIPTS = SCRIPT_REGISTRY
 
 
+# ─────────────────────────────────────────────────────────────
+# AI_TOOL_METADATA — single source of truth for the assistant's
+# knowledge about built-in tools. Each tool entry mirrors the
+# shape the assistant needs: short summary, inputs, outputs,
+# when to use it, and Hebrew trigger phrases. Adding a new tool
+# = adding a new entry here (no prompt surgery required).
+# ─────────────────────────────────────────────────────────────
+AI_TOOL_METADATA = {
+    "nikuy": {
+        "summary": "ניקוי אוטומטי של סימני כוכביות, סימני שאלה ותווים מיותרים מדוח נוכחות גולמי.",
+        "inputs": "קובץ XLS או XLSX — דוח נוכחות מפורט חודשי (גולמי, מלוכלך)",
+        "outputs": "קובץ Excel נקי ומוכן לעיבוד נוסף",
+        "when_to_use": [
+            "הדוח מכיל כוכביות, סימני שאלה או תווים חריגים",
+            "צריך לנקות את הדוח לפני חישוב שכר או עיבוד אחר",
+            "המשתמש אומר ״הדוח מלוכלך״ או ״צריך לנקות״",
+        ],
+        "keywords": ["נקיון", "לנקות", "ניקוי", "כוכביות", "סימני שאלה", "מלוכלך", "תווים מיותרים", "דוח גולמי"],
+    },
+    "flamingo_payroll": {
+        "summary": "חישוב שכר לכל עובד לפי שעות לתשלום × תעריף שעתי, עם זיהוי שדות אוטומטי ואישור לפני ההרצה.",
+        "inputs": "קובץ XLS או XLSX — דוח מפורט חודשי הכולל אזור סיכום שעות",
+        "outputs": "דוח Excel עם סיכום שכר לכל עובד",
+        "when_to_use": [
+            "צריך לחשב שכר לפי שעות × תעריף קבוע",
+            "סיכום שכר חודשי פשוט (ללא ניכויים מתקדמים)",
+            "המשתמש אומר ״חישוב שכר״, ״סיכום שכר לפי תעריף״, ״שכר שעתי״",
+        ],
+        "keywords": ["חישוב שכר", "סיכום שכר", "תעריף שעתי", "תעריף", "שעות לתשלום", "שכר לפי שעות", "משכורת שעתית"],
+    },
+    "dept_payroll": {
+        "summary": "3 גיליונות: חיוב ללקוח, תשלום לעובד, סיכום חברה. כולל ברוטו, מיסים, ביטוח, ניכוי דירה ונטו. תומך בתעריפי גביה.",
+        "inputs": "דוח נוכחות חודשי מפורט + אופציונלי קובץ לקוחות עם תעריפי גביה",
+        "outputs": "Excel עם 3 גיליונות (חיוב / תשלום / סיכום)",
+        "when_to_use": [
+            "חברת כוח אדם שצריכה לחייב לקוחות וגם לשלם לעובדים",
+            "דוח מחלקתי עם ניכויים, חיובי דירה ותעריפי גביה שונים ללקוחות",
+            "המשתמש אומר ״חיוב לקוחות״, ״כוח אדם״, ״ניכויים״, ״סיכום מחלקה״",
+        ],
+        "keywords": ["חיוב לקוחות", "חיוב ללקוח", "כוח אדם", "מחלקות", "ניכויים", "ניכוי דירה", "תעריף גביה", "סיכום חברה", "תשלום לעובד"],
+    },
+    "matan_missing": {
+        "summary": "מסנן עובדים לפי כמות שעות חוסר חודשיות ומפיק סיכום עם שדות משלימים (חופשה, מחלה, היעדרות).",
+        "inputs": "קובץ XLS — דוח מרוכז של חוסר מול תקן",
+        "outputs": "Excel מסונן לפי סף החוסר שנבחר",
+        "when_to_use": [
+            "צריך למצוא עובדים עם חוסר מעל סף מסוים",
+            "בקרה על מי עבד פחות מהתקן",
+            "המשתמש אומר ״חוסר״, ״מול תקן״, ״מי עבד פחות״",
+        ],
+        "keywords": ["חוסר", "מול תקן", "תקן שעות", "עבד פחות", "חוסר שעות", "פחות מתקן", "מתחת לתקן"],
+    },
+    "inactive_workers": {
+        "summary": "מאתר עובדים ללא פעילות בטווח ימים/חודשים נבחר, עם תאריך הפעילות האחרון.",
+        "inputs": "קובץ XLS או XLSX — דוח יומי (מומלץ 3+ חודשים)",
+        "outputs": "Excel עם רשימת עובדים לא פעילים + תאריך אחרון",
+        "when_to_use": [
+            "ניקוי רשימת עובדים — מי הפסיק לעבוד",
+            "בקרה על כוח אדם רדום",
+            "המשתמש אומר ״לא פעילים״, ״עזבו״, ״הפסיקו לעבוד״, ״מי לא עובד״",
+        ],
+        "keywords": ["לא פעילים", "לא פעיל", "עזבו", "עזב", "הפסיקו", "הפסיק", "לא עובדים", "כוח אדם רדום", "מי עזב", "שלא מגיעים", "רדומים", "לא מגיע", "לא מגיעים לעבודה", "הפסיק לעבוד"],
+    },
+    "matan_manual_corrections": {
+        "summary": "מזהה תיקוני כניסה ויציאה ידניים (לפי סימן כוכבית) עם סיכום לפי עובד ולפי מחלקה.",
+        "inputs": "קובץ XLS — דוח מפורט חודשי",
+        "outputs": "Excel עם פירוט יומי + סיכום מחלקות",
+        "when_to_use": [
+            "בקרה על תיקונים ידניים של שעון הנוכחות",
+            "חשד לשינויים לא מורשים בנוכחות",
+            "המשתמש אומר ״תיקונים ידניים״, ״כוכביות״, ״שינויים ידניים״",
+        ],
+        "keywords": ["תיקונים ידניים", "תיקון ידני", "כוכביות", "שינויים ידניים", "תיקוני כניסה", "תיקוני יציאה", "שעון ידני"],
+    },
+    "rimon_home_office_summary": {
+        "summary": "סיכום ימי עבודה מהבית, מהמשרד, היעדרויות, עזיבות ושגיאות, כולל שעות תקן וחוסר.",
+        "inputs": "קובץ XLS או XLSX — דוח מפורט חודשי",
+        "outputs": "Excel עם סיכום כולל + פירוט יומי",
+        "when_to_use": [
+            "מעקב אחר מדיניות עבודה היברידית",
+            "בקרה על עבודה מהבית לעומת משרד",
+            "המשתמש אומר ״עבודה מהבית״, ״היברידי״, ״home office״",
+        ],
+        "keywords": ["עבודה מהבית", "מהבית", "היברידי", "home office", "hybrid", "משרד", "רמון", "מהמשרד"],
+    },
+    "attendance_alerts": {
+        "summary": "מזהה חריגות נוכחות — ימים ארוכים, יציאות מאוחרות, מנוחה שבועית קצרה, שעות לילה ועבודת שבת לבני נוער. כל חריגה מסומנת בצבע לפי חומרה.",
+        "inputs": "קובץ XLS או XLSX — דוח מפורט חודשי (לשונית לכל עובד)",
+        "outputs": "Excel עם לשונית סיכום + לשונית לכל עובד (שורות צבעוניות)",
+        "when_to_use": [
+            "ציות לחוקי עבודה — שעות נוספות, מנוחה שבועית, עבודת בני נוער",
+            "בדיקת יציאות מאוחרות וימים ארוכים",
+            "המשתמש אומר ״חריגות״, ״שעות נוספות״, ״התראות״, ״מנוחה שבועית״, ״בני נוער״",
+        ],
+        "keywords": ["חריגות", "התראות", "שעות נוספות", "מנוחה שבועית", "בני נוער", "יציאות מאוחרות", "ימים ארוכים", "שעות לילה", "עבודת שבת", "חוקי עבודה"],
+    },
+    "office_occupancy_heatmap": {
+        "summary": "מפת חום שבועית של נוכחות במשרד לפי יום ושעה, לתכנון מקומות ישיבה ו-hot-desking.",
+        "inputs": "קובץ XLS או XLSX — דוח נוכחות חודשי מפורט (לשונית לכל עובד)",
+        "outputs": "Excel עם מפת חום של עומס לפי ימים ושעות",
+        "when_to_use": [
+            "תכנון מקומות ישיבה ושטחי משרד",
+            "הבנת דפוסי נוכחות במשרד",
+            "המשתמש אומר ״עומס משרד״, ״מפת חום״, ״מקומות ישיבה״, ״hot desk״",
+        ],
+        "keywords": ["עומס משרד", "עומס", "עמוס", "עומס במשרד", "מפת חום", "heatmap", "hot desk", "hot-desk", "מקומות ישיבה", "תכנון משרד", "נוכחות במשרד", "שטחי משרד", "דפוס נוכחות"],
+    },
+    "org_hierarchy_report": {
+        "summary": "בונה מבנה ארגוני מקובץ CSV עם היררכיה, סיכום מנהלים ומחלקות. פלט Excel + PowerPoint + ZIP.",
+        "inputs": "קובץ CSV עם עמודות: שם עובד, מנהל ישיר, מחלקה",
+        "outputs": "Excel + PowerPoint + ZIP לפי הבחירה",
+        "when_to_use": [
+            "הפקת מבנה ארגוני להנהלה",
+            "הצגת היררכיה וסיכום מנהלים",
+            "המשתמש אומר ״מבנה ארגוני״, ״היררכיה״, ״תרשים ארגוני״, ״אורגנוגרם״",
+        ],
+        "keywords": ["מבנה ארגוני", "היררכיה", "תרשים ארגוני", "אורגנוגרם", "מנהלים", "מחלקות", "org chart", "ארגון"],
+    },
+}
+
+
+# Tools that are explicitly approved to keep customer working
+# data longer than the default retention policy. Empty by default.
+# Add entries here ONLY via a reviewed code change.
+# Shape: {script_id: {"reason": str, "keep_outputs_days": int, "keep_inputs_days": int}}
+RETENTION_EXCEPTIONS = {}
+
+
 def get_script(script_id):
     return SCRIPT_REGISTRY.get(script_id)
 
@@ -7954,6 +8082,38 @@ def init_db():
             created_at TEXT NOT NULL)"""
         )
         db.execute("CREATE INDEX IF NOT EXISTS idx_chat_token_usage_user ON chat_token_usage(user_id)")
+        # ── Session artifacts (file analyses with their own TTL) ──
+        # Content stored here is sensitive working data (extracted rows,
+        # column samples). It has a hard TTL independent of the chat
+        # session so "analyze → generate → forget" holds even if the
+        # session stays active for weeks.
+        db.execute(
+            """CREATE TABLE IF NOT EXISTS session_artifacts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id INTEGER,
+            user_id INTEGER NOT NULL,
+            kind TEXT NOT NULL DEFAULT 'file_analysis',
+            label TEXT,
+            content TEXT,
+            created_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL)"""
+        )
+        db.execute("CREATE INDEX IF NOT EXISTS idx_session_artifacts_session ON session_artifacts(session_id)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_session_artifacts_expires ON session_artifacts(expires_at)")
+        # ── Assistant recommendations (analytics; no PII, no content) ──
+        db.execute(
+            """CREATE TABLE IF NOT EXISTS assistant_recommendations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            session_id INTEGER,
+            rec_type TEXT NOT NULL,
+            tool_id TEXT,
+            clicked INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            clicked_at TEXT)"""
+        )
+        db.execute("CREATE INDEX IF NOT EXISTS idx_assistant_recs_user ON assistant_recommendations(user_id)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_assistant_recs_tool ON assistant_recommendations(tool_id)")
         # ── End marketplace tables ────────────────────────────────
 
         existing_columns = get_table_columns(db, "users")
@@ -11417,6 +11577,18 @@ def render_assistant_widget():
         '#ast-send:disabled{opacity:.4;cursor:default}'
         '.ast-typing{color:#64748b;font-size:12px;padding:6px 14px;font-style:italic;direction:rtl}'
         '.ast-file-badge{background:#1e3a5f;color:#93c5fd;padding:4px 10px;border-radius:8px;font-size:11px;margin-bottom:4px;direction:rtl}'
+        '.ast-cta-wrap{display:flex;flex-direction:column;gap:6px;margin-top:8px;direction:rtl}'
+        '.ast-cta{'
+        '  background:linear-gradient(135deg,#10b981,#059669);color:#fff;border:none;'
+        '  padding:9px 14px;border-radius:10px;font-size:13px;font-weight:600;cursor:pointer;'
+        '  display:flex;align-items:center;justify-content:space-between;gap:8px;text-decoration:none;'
+        '  transition:transform .15s,box-shadow .15s;font-family:inherit;direction:rtl;text-align:right;'
+        '}'
+        '.ast-cta:hover{transform:translateY(-1px);box-shadow:0 4px 14px rgba(16,185,129,.35)}'
+        '.ast-cta-build{background:linear-gradient(135deg,#8b5cf6,#6d28d9)}'
+        '.ast-cta-build:hover{box-shadow:0 4px 14px rgba(139,92,246,.35)}'
+        '.ast-cta-sub{font-size:11px;font-weight:400;opacity:.85;margin-top:2px}'
+        '.ast-retention{color:#64748b;font-size:10px;text-align:center;padding:4px;direction:rtl;line-height:1.4}'
         '@media(max-width:480px){'
         '  #ast-panel{width:calc(100vw - 24px);right:12px;bottom:84px;height:60vh}'
         '  #ast-fab{bottom:16px;right:16px}'
@@ -11450,7 +11622,7 @@ def render_assistant_widget():
         '  </div>'
         '</div>'
         '<script>'
-        'var astSessionId=null,astLoading=false,astFileContext="",astMsgCount=0;'
+        'var astSessionId=null,astLoading=false,astArtifactIds=[],astMsgCount=0;'
         'function toggleAssistantPanel(){'
         '  var p=document.getElementById("ast-panel"),f=document.getElementById("ast-fab");'
         '  if(p.classList.contains("ast-open")){'
@@ -11478,13 +11650,34 @@ def render_assistant_widget():
         '  .then(function(r){return r.json()})'
         '  .then(function(d){'
         '    if(d.ok&&d.session_id){'
-        '      astSessionId=d.session_id;astMsgCount=0;astFileContext="";'
+        '      astSessionId=d.session_id;astMsgCount=0;astArtifactIds=[];'
         '      var c=document.getElementById("ast-messages");c.innerHTML="";'
         '      var w=document.createElement("div");w.className="ast-welcome";'
         '      w.textContent="\\u05e9\\u05d9\\u05d7\\u05d4 \\u05d7\\u05d3\\u05e9\\u05d4 \\u05e0\\u05e4\\u05ea\\u05d7\\u05d4. \\u05d0\\u05e4\\u05e9\\u05e8 \\u05dc\\u05e9\\u05d0\\u05d5\\u05dc.";'
         '      c.appendChild(w);'
         '    }'
         '  }).catch(function(){});'
+        '}'
+        'function astEscape(s){return String(s==null?"":s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")}'
+        'function astAddRecommendationCTA(rec,sessionId){'
+        '  if(!rec||!rec.tool_url)return;'
+        '  var c=document.getElementById("ast-messages");'
+        '  var wrap=document.createElement("div");wrap.className="ast-cta-wrap";'
+        '  var a=document.createElement("a");a.className="ast-cta";a.href=rec.tool_url;'
+        '  var reasonHtml=rec.reason?"<div class=\\"ast-cta-sub\\">"+astEscape(rec.reason)+"</div>":"";'
+        '  a.innerHTML="<div><div>\\u05e4\\u05ea\\u05d7 \\u05d0\\u05ea \\u05d4\\u05db\\u05dc\\u05d9: "+astEscape(rec.tool_name||rec.tool_id)+"</div>"+reasonHtml+"</div><span>\\u2190</span>";'
+        '  a.onclick=function(){try{fetch("/assistant/recommendation/clicked",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({session_id:sessionId,tool_id:rec.tool_id})})}catch(e){}};'
+        '  wrap.appendChild(a);c.appendChild(wrap);c.scrollTop=c.scrollHeight;'
+        '}'
+        'function astAddBuildCTA(sb,sessionId){'
+        '  if(!sb||!sb.url)return;'
+        '  var c=document.getElementById("ast-messages");'
+        '  var wrap=document.createElement("div");wrap.className="ast-cta-wrap";'
+        '  var a=document.createElement("a");a.className="ast-cta ast-cta-build";a.href=sb.url;'
+        '  var briefHtml=sb.brief?"<div class=\\"ast-cta-sub\\">"+astEscape(sb.brief)+"</div>":"";'
+        '  a.innerHTML="<div><div>\\u05d1\\u05e0\\u05d4 \\u05db\\u05dc\\u05d9 \\u05d7\\u05d3\\u05e9 \\u05e2\\u05dd AI</div>"+briefHtml+"</div><span>\\u2190</span>";'
+        '  a.onclick=function(){try{fetch("/assistant/recommendation/clicked",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({session_id:sessionId})})}catch(e){}};'
+        '  wrap.appendChild(a);c.appendChild(wrap);c.scrollTop=c.scrollHeight;'
         '}'
         'function astRenderHistory(msgs){'
         '  var c=document.getElementById("ast-messages");'
@@ -11521,7 +11714,7 @@ def render_assistant_widget():
         'function astSendMessage(){'
         '  if(astLoading)return;'
         '  var inp=document.getElementById("ast-input");'
-        '  var text=inp.value.trim();if(!text&&!astFileContext)return;'
+        '  var text=inp.value.trim();if(!text&&!(astArtifactIds&&astArtifactIds.length))return;'
         '  var msgText=text||"\\u05e0\\u05ea\\u05d7 \\u05d0\\u05ea \\u05d4\\u05e7\\u05d5\\u05d1\\u05e5";'
         '  astAddMessage("user",msgText);inp.value="";inp.style.height="auto";'
         '  astMsgCount++;'
@@ -11530,12 +11723,17 @@ def render_assistant_widget():
         '  astLoading=true;document.getElementById("ast-send").disabled=true;'
         '  astShowTyping();'
         '  var body={session_id:astSessionId,message:msgText};'
-        '  if(astFileContext){body.file_context=astFileContext;astFileContext=""}'
+        '  if(astArtifactIds&&astArtifactIds.length){body.artifact_ids=astArtifactIds.slice();astArtifactIds=[]}'
+        '  var currentSession=astSessionId;'
         '  fetch("/assistant/chat",{method:"POST",headers:{"Content-Type":"application/json","X-Requested-With":"XMLHttpRequest"},body:JSON.stringify(body)})'
         '  .then(function(r){return r.json()})'
         '  .then(function(d){'
         '    astRemoveTyping();astMsgCount++;'
-        '    if(d.ok){astAddMessage("assistant",d.assistant_message)}'
+        '    if(d.ok){'
+        '      astAddMessage("assistant",d.assistant_message);'
+        '      if(d.recommend){astAddRecommendationCTA(d.recommend,currentSession)}'
+        '      if(d.suggest_build){astAddBuildCTA(d.suggest_build,currentSession)}'
+        '    }'
         '    else{astAddMessage("assistant","\\u26A0\\uFE0F "+(d.error||"\\u05e9\\u05d2\\u05d9\\u05d0\\u05d4"))}'
         '  }).catch(function(){'
         '    astRemoveTyping();astAddMessage("assistant","\\u26A0\\uFE0F \\u05e9\\u05d2\\u05d9\\u05d0\\u05d4 \\u05d1\\u05ea\\u05e7\\u05e9\\u05d5\\u05e8\\u05ea")'
@@ -11543,7 +11741,8 @@ def render_assistant_widget():
         '}'
         'function astHandleFileSelect(input){'
         '  if(!input.files||!input.files.length)return;'
-        '  var fd=new FormData();fd.append("session_id",astSessionId||"");'
+        '  if(!astSessionId){astAddMessage("assistant","\\u26A0\\uFE0F \\u05d4\\u05de\\u05ea\\u05df \\u05e8\\u05d2\\u05e2 \\u05d5\\u05e0\\u05e1\\u05d4 \\u05e9\\u05d5\\u05d1");setTimeout(function(){astHandleFileSelect(input)},400);return}'
+        '  var fd=new FormData();fd.append("session_id",astSessionId);'
         '  for(var i=0;i<input.files.length;i++){fd.append("sample_file",input.files[i])}'
         '  var names=Array.from(input.files).map(function(f){return f.name}).join(", ");'
         '  var badge=document.createElement("div");badge.className="ast-file-badge";'
@@ -11554,7 +11753,11 @@ def render_assistant_widget():
         '  .then(function(r){return r.json()})'
         '  .then(function(d){'
         '    astRemoveTyping();'
-        '    if(d.ok){astFileContext=d.analysis;astAddMessage("assistant","\\uD83D\\uDCC1 \\u05e7\\u05d9\\u05d1\\u05dc\\u05ea\\u05d9 \\u05d0\\u05ea \\u05d4\\u05e7\\u05d5\\u05d1\\u05e5. \\u05de\\u05d4 \\u05ea\\u05e8\\u05e6\\u05d4 \\u05dc\\u05d3\\u05e2\\u05ea \\u05e2\\u05dc\\u05d9\\u05d5?")}'
+        '    if(d.ok){'
+        '      if(d.artifact_ids&&d.artifact_ids.length){astArtifactIds=astArtifactIds.concat(d.artifact_ids)}'
+        '      var retLine=d.retention_hours?" (\\u05d4\\u05e7\\u05d5\\u05d1\\u05e5 \\u05e2\\u05e6\\u05de\\u05d5 \\u05dc\\u05d0 \\u05e0\\u05e9\\u05de\\u05e8 \\u2014 \\u05d4\\u05e0\\u05d9\\u05ea\\u05d5\\u05d7 \\u05d4\\u05d6\\u05de\\u05e0\\u05d9 \\u05d1\\u05dc\\u05d1\\u05d3, \\u05e2\\u05d3 "+d.retention_hours+" \\u05e9\\u05e2\\u05d5\\u05ea)":"";'
+        '      astAddMessage("assistant","\\uD83D\\uDCC1 \\u05e7\\u05d9\\u05d1\\u05dc\\u05ea\\u05d9 \\u05d0\\u05ea \\u05d4\\u05e7\\u05d5\\u05d1\\u05e5"+retLine+". \\u05de\\u05d4 \\u05ea\\u05e8\\u05e6\\u05d4 \\u05dc\\u05d3\\u05e2\\u05ea \\u05e2\\u05dc\\u05d9\\u05d5?")'
+        '    }'
         '    else{astAddMessage("assistant","\\u26A0\\uFE0F "+(d.error||"\\u05e9\\u05d2\\u05d9\\u05d0\\u05d4 \\u05d1\\u05d4\\u05e2\\u05dc\\u05d0\\u05d4"))}'
         '  }).catch(function(){astRemoveTyping();astAddMessage("assistant","\\u26A0\\uFE0F \\u05e9\\u05d2\\u05d9\\u05d0\\u05d4 \\u05d1\\u05d4\\u05e2\\u05dc\\u05d0\\u05d4")})'
         '  .finally(function(){astLoading=false;document.getElementById("ast-send").disabled=false;input.value=""});'
@@ -15299,94 +15502,143 @@ ASSISTANT_CHAT_SYSTEM_PROMPT = """אתה יועץ בכיר בנושאי HR, שכ
 
 חשוב: כשעונים על שאלות משפטיות/שכר — ציין: "מדובר בהערכה כללית. מומלץ לאמת מול יועץ מוסמך."
 
-## כלים מובנים בפלטפורמה — מידע מפורט
+## כללי המלצת כלים (חובה)
+- לפני שאתה מציע לבנות כלי חדש — עבור על רשימת הכלים המובנים שמופיעה למטה ובדוק אם יש התאמה.
+- אם יש כלי קיים שמתאים — המלץ עליו ישירות. עדיפות לכלי מובנה ברור על פני הצעה לבנייה.
+- רק אם אין אף כלי מתאים — הצע ליצור כלי חדש, והסבר בקצרה למה הכלים הקיימים לא עונים על הצורך.
+- אל תמציא כלים שלא מופיעים ברשימה. השתמש רק ב-`script_id` שמופיע ברשימת הכלים למטה.
 
-### 1. ניקוי דוח נוכחות (nikuy)
-- **מה עושה**: מנקה סימני כוכביות, סימני שאלה ותווים מיותרים מדוח נוכחות גולמי. מחזיר קובץ נקי ומוכן לעבודה.
-- **קלט**: קובץ XLS או XLSX — דוח נוכחות מפורט חודשי
-- **פלט**: קובץ Excel נקי
-- **מתי להמליץ**: כשמשתמש אומר שהדוח "מלוכלך", מכיל כוכביות, סימנים מיותרים, או שצריך לנקות אותו לפני עיבוד נוסף
+## פלט מובנה להמלצה (חובה כשממליץ)
+כשאתה מזהה כלי קיים מתאים, סיים את התשובה שלך במבנה הבא בדיוק:
+---RECOMMEND---
+tool_id: <script_id מדויק מהרשימה>
+reason: <משפט קצר בעברית, למה דווקא הכלי הזה>
+---END---
 
-### 2. סיכום שכר לפי תעריף שעתי (flamingo_payroll)
-- **מה עושה**: מחשב שכר לכל עובד לפי שעות לתשלום × תעריף שעתי. המערכת מזהה שדות אוטומטית ומבקשת אישור לפני החישוב.
-- **קלט**: קובץ XLS או XLSX — דוח מפורט חודשי עם אזור סיכום
-- **פלט**: דוח Excel עם סיכום שכר לכל עובד
-- **מתי להמליץ**: חישוב שכר לפי שעות ותעריף קבוע, סיכום תשלומים חודשי
+כשאין כלי קיים מתאים והמשתמש בוודאות צריך כלי חדש, סיים במבנה:
+---SUGGEST_BUILD---
+brief: <2-3 משפטים קצרים בעברית שמתארים את הכלי החסר — קלט, פלט, מטרה>
+---END---
 
-### 3. חיוב לקוחות ותשלום עובדים (dept_payroll)
-- **מה עושה**: מפיק 3 גיליונות — חיוב ללקוח, תשלום לעובד, סיכום חברה. כולל חישוב ברוטו, מיסים (3%), ביטוח (280 ש"ח), ניכוי דירה, ונטו. תומך בתעריפי גביה ללקוחות.
-- **קלט**: קובץ XLS או XLSX — דוח נוכחות חודשי מפורט. אופציונלי: קובץ לקוחות עם תעריפי גביה ופרטי קשר.
-- **פלט**: דוח Excel עם 3 גיליונות (חיוב לקוח / תשלום עובד / סיכום חברה)
-- **מתי להמליץ**: חברות כוח אדם שצריכות לחייב לקוחות ולשלם לעובדים, דוח מחלקתי עם ניכויים, חיובי דירה, תעריפי גביה
+אל תוסיף את הסימונים האלה כשהתשובה היא שאלה, הבהרה, או ייעוץ כללי שאינו המלצת כלי.
+אל תהפוך את הסימונים לחלק מהתשובה המוצגת — הם נועדו לצורך הממשק בלבד.
 
-### 4. דוח חוסר מול תקן (matan_missing)
-- **מה עושה**: מסנן עובדים לפי כמות שעות חוסר חודשיות. מציג סיכום ברור עם שדות משלימים (חופשה, מחלה, היעדרות, שעות נוכחות).
-- **קלט**: קובץ XLS — דוח מרוכז חוסר מול תקן
-- **פלט**: דוח Excel מסונן לפי סף חוסר
-- **מתי להמליץ**: כשצריך למצוא עובדים עם חוסר מעל סף מסוים, להבין מי עובד פחות מהתקן
-
-### 5. איתור עובדים לא פעילים (inactive_workers)
-- **מה עושה**: מאתר עובדים שלא זוהתה אצלם פעילות בטווח ימים/חודשים אחרונים. מציג תאריך פעילות אחרון.
-- **קלט**: קובץ XLS או XLSX — דוח יומי (רצוי 3+ חודשים)
-- **פלט**: דוח Excel עם רשימת עובדים לא פעילים
-- **מתי להמליץ**: כשצריך למצוא עובדים שהפסיקו לעבוד, ניקוי רשימות, בקרה על כוח אדם רדום
-
-### 6. דוח תיקונים ידניים (matan_manual_corrections)
-- **מה עושה**: מזהה תיקוני כניסה/יציאה ידניים (לפי סימן כוכבית) ומפיק סיכום לפי עובד ולפי מחלקה.
-- **קלט**: קובץ XLS — דוח מפורט חודשי
-- **פלט**: דוח Excel עם פירוט יומי + סיכום מחלקות
-- **מתי להמליץ**: בקרה על תיקונים ידניים, חשד לשינויים לא מורשים, סיכום תיקונים למנהלים
-
-### 7. סיכום עבודה מהבית והמשרד (rimon_home_office_summary)
-- **מה עושה**: מסכם ימי עבודה מהבית, עבודה מהמשרד, היעדרויות, עזיבות ושגיאות. כולל שעות תקן וחוסר.
-- **קלט**: קובץ XLS או XLSX — דוח מפורט חודשי
-- **פלט**: דוח Excel עם סיכום כולל + פירוט יומי
-- **מתי להמליץ**: מעקב אחר מדיניות עבודה היברידית, בקרה על עבודה מהבית, סיכום נוכחות לפי סוג
-
-### 8. התראות נוכחות (attendance_alerts)
-- **מה עושה**: מזהה חריגות — ימים ארוכים (מעל 8/9/12 שעות), יציאות מאוחרות (20:00/21:00/22:00), מנוחה שבועית קצרה, שעות לילה ועבודת שבת לבני נוער. כל חריגה מסומנת בצבע לפי חומרה.
-- **קלט**: קובץ XLS או XLSX — דוח מפורט חודשי (לשונית לכל עובד)
-- **פלט**: דוח Excel עם לשונית סיכום + לשונית לכל עובד עם שורות צבעוניות
-- **מתי להמליץ**: ציות לחוקי עבודה, בדיקת שעות נוספות, מעקב אחר מנוחה שבועית, בקרה על עבודת בני נוער
-
-### 9. עומס משרד — מפת חום (office_occupancy_heatmap)
-- **מה עושה**: יוצר מפת חום שבועית של נוכחות במשרד לפי יום ושעה. מזהה אוטומטית אירועים ומאפשר סיווג ידני (משרד/בית/היעדרות).
-- **קלט**: קובץ XLS או XLSX — דוח נוכחות חודשי מפורט (לשונית לכל עובד)
-- **פלט**: דוח Excel עם מפת חום של עומס לפי ימים ושעות
-- **מתי להמליץ**: תכנון מקומות ישיבה, ניהול שטחי משרד, הבנת דפוסי נוכחות במשרד, hot-desking
-
-### 10. תרשים מבנה ארגוני (org_hierarchy_report)
-- **מה עושה**: בונה מבנה ארגוני מקובץ CSV — כולל היררכיה, סיכום לפי מנהלים ומחלקות.
-- **קלט**: קובץ CSV עם עמודות: שם עובד, מנהל ישיר, מחלקה
-- **פלט**: Excel + PowerPoint + ZIP
-- **מתי להמליץ**: הפקת מבנה ארגוני להנהלה, הצגת היררכיה, דוח מנהלים
-
-## יכולות נוספות
-- **שוק כלים (Marketplace)**: כלים שנוצרו על ידי משתמשים אחרים — ניתן להתקין, לדרג ולהשתמש
-- **בונה כלים עם AI**: תיאור בעברית של כלי חדש → ה-AI בונה אותו. נגיש מתפריט "יצירת כלי"
-
-## המלצת כלי לפי סיטואציה
-- "צריך לנקות דוח" → nikuy
-- "חישוב שכר" / "סיכום שכר" → flamingo_payroll
-- "חיוב לקוחות" / "כוח אדם" / "ניכויים" / "דוח מחלקות" → dept_payroll
-- "חוסר" / "תקן" / "מי עבד פחות" → matan_missing
-- "עובדים שלא מגיעים" / "לא פעילים" / "הפסיקו לעבוד" → inactive_workers
-- "תיקונים" / "כוכביות" / "שינויים ידניים" → matan_manual_corrections
-- "עבודה מהבית" / "היברידי" / "home office" → rimon_home_office_summary
-- "חריגות" / "שעות נוספות" / "התראות" / "מנוחה שבועית" / "בני נוער" → attendance_alerts
-- "עומס משרד" / "מקומות ישיבה" / "מפת חום" / "hot desk" → office_occupancy_heatmap
-- "מבנה ארגוני" / "היררכיה" / "תרשים" → org_hierarchy_report
-- "כלי מותאם אישית" / "משהו שלא קיים" → הפנה ל"יצירת כלי" בתפריט
-
-## פרטיות
-- אל תבקש שמות עובדים, תעודות זהות, או מידע אישי.
-- השתמש רק בשמות עמודות ומבנה — אף פעם לא בנתונים אמיתיים.
+## פרטיות ושמירת מידע (חובה)
+- אל תבקש שמות עובדים, תעודות זהות, או מידע אישי מעבר למה שכבר הועלה.
+- השתמש רק בשמות עמודות ומבנה — לא בנתונים אמיתיים בתשובה למשתמש.
+- אתה רואה רק את השיחה הנוכחית ואת הניתוחים הפעילים. היסטוריה ישנה נמחקת אוטומטית מטעמי פרטיות.
+- אם המשתמש מפנה לקובץ שכבר אינו זמין — אמור זאת בפשטות ובקש להעלות מחדש.
+- הפלטפורמה אינה שומרת קבצי לקוחות לאורך זמן. דוחות עבודה ותוצרי עיבוד נמחקים אוטומטית לאחר ההורדה או תוך מספר ימים, אלא אם מדובר בכלי ייעודי מאושר.
 """
 
 
-def build_assistant_system_prompt(user_id):
-    """Build the assistant system prompt with dynamic user context injected."""
+def _score_tool_keywords(user_text, keywords):
+    """Count how many distinct catalog keywords appear in the user's text (case-insensitive substring)."""
+    if not user_text or not keywords:
+        return 0
+    low = user_text.lower()
+    hits = 0
+    for kw in keywords:
+        if kw and kw.lower() in low:
+            hits += 1
+    return hits
+
+
+def shortlist_tools_for_message(user_text, tool_ids=None, limit=4):
+    """Return the top-N built-in tool_ids whose keywords best match user_text.
+    Pure substring matching — no embeddings. Used to surface the most relevant
+    tools with full detail while keeping the prompt bounded as the catalog grows."""
+    candidates = list(tool_ids) if tool_ids else list(AI_TOOL_METADATA.keys())
+    scored = []
+    for tid in candidates:
+        meta = AI_TOOL_METADATA.get(tid) or {}
+        score = _score_tool_keywords(user_text, meta.get("keywords", []))
+        if score > 0:
+            scored.append((score, tid))
+    scored.sort(key=lambda t: (-t[0], t[1]))
+    return [tid for _, tid in scored[:limit]]
+
+
+def _render_tool_detail_block(tid):
+    """Render one tool's full detail block in Hebrew for the system prompt."""
+    reg = SCRIPT_REGISTRY.get(tid) or {}
+    meta = AI_TOOL_METADATA.get(tid) or {}
+    name = reg.get("name", tid)
+    block = f"\n### {name} (`{tid}`)\n"
+    if meta.get("summary"):
+        block += f"- מה עושה: {meta['summary']}\n"
+    if meta.get("inputs"):
+        block += f"- קלט: {meta['inputs']}\n"
+    if meta.get("outputs"):
+        block += f"- פלט: {meta['outputs']}\n"
+    when = meta.get("when_to_use") or []
+    if when:
+        block += "- מתי להמליץ:\n"
+        for item in when:
+            block += f"  • {item}\n"
+    block += f"- קישור: /run/{tid}\n"
+    return block
+
+
+def render_tools_knowledge_block(accessible_tool_ids, last_user_message="", installed_marketplace=None):
+    """Build the tools-knowledge section of the system prompt from the live catalog.
+    - Accessible tools get full detail.
+    - A shortlist of top keyword matches (even if not accessible) get full detail too,
+      so the assistant can say 'קיים כלי X — פנה למנהל לקבלת הרשאה'.
+    - All remaining tools get name-only entries.
+    """
+    accessible_set = set(accessible_tool_ids or [])
+    all_ids = list(AI_TOOL_METADATA.keys())
+
+    # Shortlist based on last user message (pre-filter)
+    shortlisted = set(shortlist_tools_for_message(last_user_message, all_ids, limit=4)) if last_user_message else set()
+    full_detail_ids = accessible_set | shortlisted
+
+    section = "\n\n## כלים מובנים בפלטפורמה\n"
+    section += "רשימת כל הכלים — השתמש אך ורק ב-`script_id` מהרשימה הזו בהמלצות.\n"
+
+    if accessible_set:
+        section += "\n### הכלים הזמינים לך כרגע (פרטים מלאים)\n"
+        for tid in all_ids:
+            if tid in accessible_set:
+                section += _render_tool_detail_block(tid)
+
+    highlighted_not_accessible = [tid for tid in shortlisted if tid not in accessible_set]
+    if highlighted_not_accessible:
+        section += "\n### כלים שככל הנראה רלוונטיים לשאלה הנוכחית (המשתמש אינו בעל הרשאה אליהם)\n"
+        for tid in all_ids:
+            if tid in highlighted_not_accessible:
+                section += _render_tool_detail_block(tid)
+        section += "- אם אחד מאלה מתאים — המלץ עליו, וציין שהמשתמש צריך לפנות למנהל כדי לקבל הרשאה.\n"
+
+    others = [tid for tid in all_ids if tid not in full_detail_ids]
+    if others:
+        section += "\n### כלים נוספים במערכת (בשורה אחת — להזכיר רק אם אין התאמה טובה למעלה)\n"
+        for tid in others:
+            reg = SCRIPT_REGISTRY.get(tid) or {}
+            meta = AI_TOOL_METADATA.get(tid) or {}
+            section += f"- `{tid}` — {reg.get('name', tid)}: {meta.get('summary', reg.get('desc', ''))}\n"
+
+    if installed_marketplace:
+        section += "\n### כלי שוק מותקנים של המשתמש\n"
+        for t in installed_marketplace:
+            tid = f"marketplace:{t['id']}" if t.get("id") is not None else "marketplace"
+            section += f"- `{tid}` — {t.get('name', '')}: {t.get('description', '') or ''}\n"
+        section += "- להמלצה על כלי שוק השתמש ב-`tool_id: marketplace:<id>` (או שם הכלי אם ID לא ידוע).\n"
+
+    section += "\n### בניית כלי חדש\n"
+    section += "- אם אף כלי לעיל לא מתאים — הצע ליצור כלי חדש, אבל רק לאחר שציינת באיזה כלי/ים קיימים שקלת ומדוע הם לא עונים על הצורך.\n"
+    section += "- יצירת כלי נעשית על ידי המשתמש דרך תפריט ״יצירת כלי״ (`/tools/create`).\n"
+    return section
+
+
+def build_assistant_system_prompt(user_id, last_user_message=""):
+    """Build the assistant system prompt with dynamic user context + live tool catalog.
+    The tool-knowledge section is generated at runtime from AI_TOOL_METADATA +
+    SCRIPT_REGISTRY, so adding a new tool does not require prompt surgery."""
     prompt = ASSISTANT_CHAT_SYSTEM_PROMPT
+    accessible_ids = []
+    installed_tools = []
     try:
         with get_db() as db:
             # User identity
@@ -15409,37 +15661,21 @@ def build_assistant_system_prompt(user_id):
                     "SELECT script_id FROM permissions WHERE user_id=? LIMIT 20",
                     (user_id,),
                 ).fetchall()
-                if perms:
-                    ctx += "\n### כלים זמינים למשתמש\n"
-                    for p in perms:
-                        sid = p["script_id"]
-                        reg = SCRIPT_REGISTRY.get(sid)
-                        if reg:
-                            ctx += f"- {reg.get('name', sid)} — {reg.get('desc', '')} (נתיב: /run/{sid})\n"
+                accessible_ids = [p["script_id"] for p in perms] if perms else []
 
                 # Installed marketplace tools
-                installed = db.execute(
-                    "SELECT mt.name, mt.description FROM tool_installs ti JOIN marketplace_tools mt ON mt.id=ti.tool_id WHERE ti.user_id=? AND mt.status='approved' LIMIT 10",
+                installed_rows = db.execute(
+                    "SELECT mt.id, mt.name, mt.description FROM tool_installs ti JOIN marketplace_tools mt ON mt.id=ti.tool_id WHERE ti.user_id=? AND mt.status='approved' LIMIT 10",
                     (user_id,),
                 ).fetchall()
-                if installed:
-                    ctx += "\n### כלי שוק מותקנים\n"
-                    for t in installed:
-                        ctx += f"- {t['name']}: {t['description'] or ''}\n"
+                installed_tools = [
+                    {"id": t["id"], "name": t["name"], "description": t["description"]}
+                    for t in (installed_rows or [])
+                ]
 
-                # Recent activity
-                recent_acts = db.execute(
-                    "SELECT action_type, label FROM activity_logs WHERE user_id=? ORDER BY id DESC LIMIT 5",
-                    (user_id,),
-                ).fetchall()
-                if recent_acts:
-                    ctx += "\n### פעילות אחרונה\n"
-                    for a in recent_acts:
-                        ctx += f"- {a['label'] or a['action_type']}\n"
-
-                # Recent report jobs
+                # Recent report jobs (non-PII: script_id, status, timestamps)
                 recent_jobs = db.execute(
-                    "SELECT script_id, status, created_at FROM report_jobs WHERE user_id=? ORDER BY id DESC LIMIT 5",
+                    "SELECT script_id, status, created_at FROM report_jobs WHERE user_id=? ORDER BY id DESC LIMIT 3",
                     (user_id,),
                 ).fetchall()
                 if recent_jobs:
@@ -15451,7 +15687,88 @@ def build_assistant_system_prompt(user_id):
                 prompt += ctx
     except Exception:
         pass
+
+    # Always append the tool catalog — the single source of truth
+    try:
+        prompt += render_tools_knowledge_block(
+            accessible_tool_ids=accessible_ids,
+            last_user_message=last_user_message,
+            installed_marketplace=installed_tools,
+        )
+    except Exception:
+        pass
     return prompt
+
+
+_RECOMMEND_RE = re.compile(r"---RECOMMEND---\s*(.*?)\s*---END---", re.DOTALL)
+_SUGGEST_BUILD_RE = re.compile(r"---SUGGEST_BUILD---\s*(.*?)\s*---END---", re.DOTALL)
+
+
+def _parse_marker_body(body):
+    """Parse 'key: value' lines in a marker block. Last-line values can span multiple lines."""
+    out = {}
+    current_key = None
+    for line in (body or "").splitlines():
+        line = line.rstrip()
+        if not line.strip():
+            continue
+        if ":" in line and not line.startswith(" "):
+            key, _, val = line.partition(":")
+            key = key.strip().lower()
+            val = val.strip()
+            if key:
+                out[key] = val
+                current_key = key
+        elif current_key:
+            out[current_key] = (out[current_key] + " " + line.strip()).strip()
+    return out
+
+
+def parse_assistant_output(text):
+    """Extract structured recommendation/build markers from the assistant output.
+    Returns (clean_text, recommend_dict_or_None, suggest_build_dict_or_None)."""
+    if not text:
+        return text, None, None
+
+    recommend = None
+    build = None
+
+    rec_match = _RECOMMEND_RE.search(text)
+    if rec_match:
+        parsed = _parse_marker_body(rec_match.group(1))
+        raw_tool_id = (parsed.get("tool_id") or "").strip()
+        reason = (parsed.get("reason") or "").strip()
+        # Validate tool_id maps to something real
+        if raw_tool_id:
+            if raw_tool_id.startswith("marketplace:"):
+                recommend = {
+                    "tool_id": raw_tool_id,
+                    "tool_name": raw_tool_id,
+                    "tool_url": f"/marketplace/tool/{raw_tool_id.split(':', 1)[1]}",
+                    "reason": reason,
+                }
+            elif raw_tool_id in SCRIPT_REGISTRY:
+                reg = SCRIPT_REGISTRY.get(raw_tool_id) or {}
+                recommend = {
+                    "tool_id": raw_tool_id,
+                    "tool_name": reg.get("name", raw_tool_id),
+                    "tool_url": f"/run/{raw_tool_id}",
+                    "reason": reason,
+                }
+            # else: invalid tool_id — drop silently, don't show a bad CTA
+
+    build_match = _SUGGEST_BUILD_RE.search(text)
+    if build_match:
+        parsed = _parse_marker_body(build_match.group(1))
+        brief = (parsed.get("brief") or "").strip()
+        if brief:
+            build = {"brief": brief, "url": "/tools/create"}
+
+    # Strip markers from displayed text
+    clean = _RECOMMEND_RE.sub("", text)
+    clean = _SUGGEST_BUILD_RE.sub("", clean)
+    clean = re.sub(r"\n{3,}", "\n\n", clean).strip()
+    return clean, recommend, build
 
 
 def build_tool_creation_system_prompt(user_id, customer_name=""):
@@ -18041,20 +18358,170 @@ def admin_reject_tool(tool_id):
 # Floating AI Assistant endpoints
 # ══════════════════════════════════════════════
 
+# Retention policy constants — single place to tune TTLs
+SESSION_INACTIVITY_WIPE_HOURS = 24      # Wipe messages on active sessions idle for N hours
+SESSION_HARD_CAP_DAYS = 30              # Force-close any session older than N days regardless of activity
+CLOSED_SESSION_PURGE_DAYS = 7           # Hard-delete closed session rows
+ARTIFACT_TTL_HOURS = 48                 # File analysis TTL independent of chat
+TOKEN_USAGE_RETENTION_DAYS = 90         # Token counters, no payload
+ORPHAN_FILE_AGE_HOURS = 24              # Sweep orphan UPLOAD/OUTPUT files older than N hours
+REPORT_JOB_PII_SCRUB_DAYS = 30          # Strip filename/company after N days
+
+
+def _artifact_expiry_text():
+    return (datetime.now() + timedelta(hours=ARTIFACT_TTL_HOURS)).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _hhmm_ago(hours=None, days=None):
+    base = datetime.now()
+    if hours is not None:
+        base = base - timedelta(hours=hours)
+    if days is not None:
+        base = base - timedelta(days=days)
+    return base.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def run_scheduled_cleanup():
+    """Central retention coordinator. Idempotent; safe to run repeatedly.
+    Called lazily from user-facing routes and can also be driven by an
+    external scheduler hitting /internal/cleanup."""
+    stats = {
+        "sessions_wiped_inactivity": 0,
+        "sessions_wiped_hard_cap": 0,
+        "sessions_deleted": 0,
+        "artifacts_expired": 0,
+        "token_rows_purged": 0,
+        "report_jobs_expired": 0,
+        "orphan_files_removed": 0,
+        "report_pii_scrubbed": 0,
+    }
+    cutoff_inactivity = _hhmm_ago(hours=SESSION_INACTIVITY_WIPE_HOURS)
+    cutoff_hard_cap = _hhmm_ago(days=SESSION_HARD_CAP_DAYS)
+    cutoff_closed = _hhmm_ago(days=CLOSED_SESSION_PURGE_DAYS)
+    now_ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    cutoff_tokens = _hhmm_ago(days=TOKEN_USAGE_RETENTION_DAYS)
+    cutoff_report_pii = _hhmm_ago(days=REPORT_JOB_PII_SCRUB_DAYS)
+
+    try:
+        expire_report_jobs()
+    except Exception:
+        pass
+
+    try:
+        with get_db() as db:
+            # 1. Sessions inactive for 24h — wipe content (keep shell)
+            db.execute(
+                "UPDATE tool_chat_sessions SET status='closed', messages_json='[]' "
+                "WHERE status='active' AND updated_at < ?",
+                (cutoff_inactivity,),
+            )
+            # 2. Hard cap — any session older than 30d from creation gets force-closed
+            db.execute(
+                "UPDATE tool_chat_sessions SET status='closed', messages_json='[]', updated_at=? "
+                "WHERE status='active' AND created_at < ?",
+                (now_ts, cutoff_hard_cap),
+            )
+            # 3. Purge old closed/completed sessions
+            db.execute(
+                "DELETE FROM tool_chat_sessions WHERE status IN ('closed','completed') AND updated_at < ?",
+                (cutoff_closed,),
+            )
+            # 4. Expire artifacts past their TTL (content scrubbed, row kept briefly for audit)
+            db.execute(
+                "DELETE FROM session_artifacts WHERE expires_at <= ?",
+                (now_ts,),
+            )
+            # 5. Token usage purge
+            db.execute(
+                "DELETE FROM chat_token_usage WHERE created_at < ?",
+                (cutoff_tokens,),
+            )
+            # 6. report_jobs PII scrub after 30d (keep row + timestamps + script_id for stats)
+            db.execute(
+                "UPDATE report_jobs SET original_filename='', full_name='', company_name='', username='' "
+                "WHERE created_at < ? AND (original_filename<>'' OR full_name<>'' OR company_name<>'')",
+                (cutoff_report_pii,),
+            )
+            db.commit()
+    except Exception:
+        pass
+
+    # 7. Orphan file sweep — UPLOAD and OUTPUT folders
+    try:
+        cutoff_ts = (datetime.now() - timedelta(hours=ORPHAN_FILE_AGE_HOURS)).timestamp()
+        referenced = set()
+        try:
+            with get_db() as db:
+                rows = db.execute(
+                    "SELECT input_path, output_filename FROM report_jobs "
+                    "WHERE status IN ('pending','processing','ready')"
+                ).fetchall()
+                for r in rows or []:
+                    ip = r["input_path"] or ""
+                    of = r["output_filename"] or ""
+                    if ip:
+                        referenced.add(os.path.basename(ip))
+                    if of:
+                        referenced.add(of)
+        except Exception:
+            pass
+        for folder in (UPLOAD_FOLDER, OUTPUT_FOLDER):
+            try:
+                for p in folder.iterdir():
+                    if not p.is_file():
+                        continue
+                    try:
+                        if p.stat().st_mtime > cutoff_ts:
+                            continue
+                        if p.name in referenced:
+                            continue
+                        p.unlink()
+                        stats["orphan_files_removed"] += 1
+                    except OSError:
+                        continue
+            except Exception:
+                continue
+    except Exception:
+        pass
+
+    return stats
+
+
+def get_active_artifacts_for_session(chat_session_id, user_id, artifact_ids=None):
+    """Fetch non-expired artifacts belonging to this session + user.
+    If artifact_ids is provided, filter to those; otherwise return all active for session."""
+    now_ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        with get_db() as db:
+            if artifact_ids:
+                placeholders = ",".join(["?"] * len(artifact_ids))
+                rows = db.execute(
+                    f"SELECT id, kind, label, content FROM session_artifacts "
+                    f"WHERE user_id=? AND session_id=? AND expires_at>? AND id IN ({placeholders})",
+                    (user_id, chat_session_id, now_ts, *artifact_ids),
+                ).fetchall()
+            else:
+                rows = db.execute(
+                    "SELECT id, kind, label, content FROM session_artifacts "
+                    "WHERE user_id=? AND session_id=? AND expires_at>?",
+                    (user_id, chat_session_id, now_ts),
+                ).fetchall()
+            return [dict(r) for r in rows or []]
+    except Exception:
+        return []
+
 
 @app.route("/assistant/session", methods=["POST"])
 @login_required
 def assistant_session():
     """Create or retrieve an active assistant chat session."""
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    cutoff_24h = (datetime.now() - timedelta(hours=24)).strftime("%Y-%m-%d %H:%M:%S")
+    # Centralized cleanup (runs cheap; only deletes/updates)
+    try:
+        run_scheduled_cleanup()
+    except Exception:
+        pass
     with get_db() as db:
-        # Auto-close stale assistant sessions (24h inactivity)
-        db.execute(
-            "UPDATE tool_chat_sessions SET status='closed', messages_json='[]' WHERE session_type='assistant' AND status='active' AND updated_at < ?",
-            (cutoff_24h,),
-        )
-        db.commit()
         # Find existing active assistant session for this user
         existing = db.execute(
             "SELECT id, messages_json FROM tool_chat_sessions WHERE user_id=? AND session_type='assistant' AND status='active' ORDER BY created_at DESC LIMIT 1",
@@ -18082,23 +18549,37 @@ def assistant_session():
 @app.route("/assistant/session/reset", methods=["POST"])
 @login_required
 def assistant_session_reset():
-    """Close current assistant session and create a fresh one."""
+    """Close current assistant session and create a fresh one.
+    Wipes messages + drops every artifact attached to closed sessions."""
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    user_id = session["user_id"]
     with get_db() as db:
-        # Close all active assistant sessions for this user
+        # Identify old active sessions to drop their artifacts
+        old_rows = db.execute(
+            "SELECT id FROM tool_chat_sessions WHERE user_id=? AND session_type='assistant' AND status='active'",
+            (user_id,),
+        ).fetchall()
+        old_ids = [r["id"] for r in old_rows or []]
+        if old_ids:
+            placeholders = ",".join(["?"] * len(old_ids))
+            db.execute(
+                f"DELETE FROM session_artifacts WHERE user_id=? AND session_id IN ({placeholders})",
+                (user_id, *old_ids),
+            )
+        # Close + blank
         db.execute(
             "UPDATE tool_chat_sessions SET status='closed', messages_json='[]', updated_at=? WHERE user_id=? AND session_type='assistant' AND status='active'",
-            (now, session["user_id"]),
+            (now, user_id),
         )
         # Create new empty session
         db.execute(
             "INSERT INTO tool_chat_sessions(user_id, messages_json, status, session_type, created_at, updated_at) VALUES (?,?,?,?,?,?)",
-            (session["user_id"], "[]", "active", "assistant", now, now),
+            (user_id, "[]", "active", "assistant", now, now),
         )
         db.commit()
         new_id = db.execute(
             "SELECT id FROM tool_chat_sessions WHERE user_id=? AND session_type='assistant' ORDER BY id DESC LIMIT 1",
-            (session["user_id"],),
+            (user_id,),
         ).fetchone()["id"]
     return jsonify({"ok": True, "session_id": new_id})
 
@@ -18106,19 +18587,28 @@ def assistant_session_reset():
 @app.route("/assistant/chat", methods=["POST"])
 @login_required
 def assistant_chat():
-    """Process a chat message in the floating assistant."""
+    """Process a chat message in the floating assistant. Returns structured
+    output with optional tool recommendation + build-suggestion CTAs."""
     data = request.get_json(silent=True) or {}
     chat_session_id = data.get("session_id", "")
-    user_message = data.get("message", "").strip()
-    file_context = data.get("file_context", "")
+    user_message = (data.get("message") or "").strip()
+    file_context = data.get("file_context") or ""
+    raw_artifact_ids = data.get("artifact_ids") or []
+    artifact_ids = []
+    for a in raw_artifact_ids if isinstance(raw_artifact_ids, list) else []:
+        try:
+            artifact_ids.append(int(a))
+        except (TypeError, ValueError):
+            continue
 
     if not user_message:
         return jsonify({"error": "הודעה ריקה"}), 400
 
+    user_id = session["user_id"]
     with get_db() as db:
         chat_data = db.execute(
             "SELECT * FROM tool_chat_sessions WHERE id=? AND user_id=? AND session_type='assistant'",
-            (chat_session_id, session["user_id"]),
+            (chat_session_id, user_id),
         ).fetchone()
         if not chat_data:
             return jsonify({"error": "שיחה לא נמצאה"}), 404
@@ -18127,65 +18617,157 @@ def assistant_chat():
         except (json.JSONDecodeError, TypeError):
             messages = []
 
-    # Prepend file analysis to user message if provided
-    if file_context and isinstance(file_context, str) and file_context.strip():
-        user_message = f"[קובץ שהעליתי]\n{file_context}\n\n[השאלה שלי]\n{user_message}"
+    # Resolve artifacts — expand into the user message for the API call ONLY.
+    # The persisted transcript keeps a compact label, not the PII-rich analysis.
+    expansion = ""
+    display_prefix = ""
+    active_artifacts = get_active_artifacts_for_session(chat_session_id, user_id, artifact_ids) if artifact_ids else []
+    if active_artifacts:
+        labels = [a.get("label") or "קובץ" for a in active_artifacts]
+        display_prefix = f"[קבצים מצורפים: {', '.join(labels)}]\n"
+        expansion_parts = []
+        for a in active_artifacts:
+            expansion_parts.append(f"--- {a.get('label') or 'קובץ'} ---\n{a.get('content') or ''}")
+        expansion = "[קבצים שהועלו לניתוח זמני]\n" + "\n\n".join(expansion_parts) + "\n\n"
+    # Back-compat: if older client still sends file_context inline, use it — but
+    # still only for the API call; persist a compact note.
+    if not expansion and file_context and isinstance(file_context, str) and file_context.strip():
+        expansion = f"[קובץ זמני לניתוח]\n{file_context}\n\n"
+        display_prefix = "[קובץ מצורף]\n"
 
-    messages.append({"role": "user", "content": user_message})
+    api_user_text = expansion + user_message if expansion else user_message
+    persisted_user_text = (display_prefix + user_message) if display_prefix else user_message
 
-    # Sliding window: keep first 4 + last 12
+    messages.append({"role": "user", "content": persisted_user_text})
+
+    # Sliding window for API call: keep first 4 + last 12
     MAX_RECENT = 12
     KEEP_FIRST = 4
-    all_msgs = [{"role": m["role"], "content": m["content"]} for m in messages]
-    if len(all_msgs) > KEEP_FIRST + MAX_RECENT:
-        head = all_msgs[:KEEP_FIRST]
-        tail = all_msgs[-MAX_RECENT:]
+    # Build API message list from persisted transcript, then replace the last
+    # user turn with the expanded version that carries artifact content.
+    api_msgs_full = [{"role": m["role"], "content": m["content"]} for m in messages]
+    if api_msgs_full:
+        api_msgs_full[-1] = {"role": "user", "content": api_user_text}
+    if len(api_msgs_full) > KEEP_FIRST + MAX_RECENT:
+        head = api_msgs_full[:KEEP_FIRST]
+        tail = api_msgs_full[-MAX_RECENT:]
         head.append({"role": "user", "content": "[הערת מערכת: חלק מההודעות הישנות קוצרו.]"})
         head.append({"role": "assistant", "content": "הבנתי, ממשיך."})
         api_messages = head + tail
     else:
-        api_messages = all_msgs
+        api_messages = api_msgs_full
 
-    # Call Claude with assistant prompt (shorter max_tokens)
-    assistant_response, _in_tok, _out_tok = call_claude_chat(
+    assistant_response_raw, _in_tok, _out_tok = call_claude_chat(
         api_messages,
-        system_prompt=build_assistant_system_prompt(session["user_id"]),
-        user_id=session["user_id"],
+        system_prompt=build_assistant_system_prompt(user_id, last_user_message=user_message),
+        user_id=user_id,
         session_id=int(chat_session_id) if chat_session_id else None,
         max_tokens=2048,
     )
 
-    messages.append({"role": "assistant", "content": assistant_response})
+    clean_text, recommend, suggest_build = parse_assistant_output(assistant_response_raw or "")
+    display_text = clean_text or assistant_response_raw or ""
 
-    # Save updated messages
+    # Persist clean text only (markers stripped from transcript)
+    messages.append({"role": "assistant", "content": display_text})
+
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     with get_db() as db:
         db.execute(
             "UPDATE tool_chat_sessions SET messages_json=?, updated_at=? WHERE id=?",
             (json.dumps(messages, ensure_ascii=False), now, chat_session_id),
         )
+        # Analytics — store outcome, no content
+        rec_type = None
+        rec_tool_id = None
+        if recommend:
+            rec_type = "recommend"
+            rec_tool_id = recommend.get("tool_id")
+        elif suggest_build:
+            rec_type = "suggest_build"
+        if rec_type:
+            try:
+                db.execute(
+                    "INSERT INTO assistant_recommendations(user_id, session_id, rec_type, tool_id, clicked, created_at) VALUES (?,?,?,?,?,?)",
+                    (user_id, int(chat_session_id) if chat_session_id else None, rec_type, rec_tool_id, 0, now),
+                )
+            except Exception:
+                pass
         db.commit()
 
+    # Do not log filenames — PII-minimal activity entry
     log_user_activity("assistant_chat", "שיחה עם העוזר", "", "", f"session={chat_session_id}")
 
-    return jsonify({"ok": True, "assistant_message": assistant_response})
+    return jsonify({
+        "ok": True,
+        "assistant_message": display_text,
+        "recommend": recommend,
+        "suggest_build": suggest_build,
+    })
+
+
+@app.route("/assistant/recommendation/clicked", methods=["POST"])
+@login_required
+def assistant_recommendation_clicked():
+    """Mark the most recent recommendation for this user+session as clicked.
+    Used purely for analytics of funnel conversion; content-free."""
+    data = request.get_json(silent=True) or {}
+    chat_session_id = data.get("session_id")
+    tool_id = (data.get("tool_id") or "").strip() or None
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        with get_db() as db:
+            if tool_id:
+                db.execute(
+                    "UPDATE assistant_recommendations SET clicked=1, clicked_at=? "
+                    "WHERE user_id=? AND session_id=? AND tool_id=? AND clicked=0",
+                    (now, session["user_id"], chat_session_id, tool_id),
+                )
+            else:
+                db.execute(
+                    "UPDATE assistant_recommendations SET clicked=1, clicked_at=? "
+                    "WHERE user_id=? AND session_id=? AND clicked=0",
+                    (now, session["user_id"], chat_session_id),
+                )
+            db.commit()
+    except Exception:
+        pass
+    return jsonify({"ok": True})
 
 
 @app.route("/assistant/upload", methods=["POST"])
 @login_required
 def assistant_upload():
-    """Upload and analyze files for the floating assistant. Returns analysis only."""
+    """Upload and analyze files for the floating assistant.
+    The raw file is deleted immediately after analysis.
+    The analysis text is stored in session_artifacts with a hard 48h TTL,
+    independent of the chat session's lifetime — so sensitive working data
+    expires even inside long-running active conversations."""
     chat_session_id = request.form.get("session_id", "")
 
     file_list = request.files.getlist("sample_file")
     if not file_list or all(not f.filename for f in file_list):
         return jsonify({"error": "לא נבחר קובץ"}), 400
 
-    temp_paths = []
-    analyses = []
+    user_id = session["user_id"]
+    # Validate session ownership before creating artifacts
+    try:
+        with get_db() as db:
+            owns = db.execute(
+                "SELECT id FROM tool_chat_sessions WHERE id=? AND user_id=? AND session_type='assistant'",
+                (chat_session_id, user_id),
+            ).fetchone()
+            if not owns and chat_session_id:
+                return jsonify({"error": "שיחה לא נמצאה"}), 404
+    except Exception:
+        pass
+
+    created_artifacts = []
     file_names = []
     file_types = []
     errors = []
+    now_ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    expires_ts = _artifact_expiry_text()
 
     for file_obj in file_list:
         if not file_obj or not file_obj.filename:
@@ -18198,46 +18780,84 @@ def assistant_upload():
         uid = str(uuid.uuid4())[:8]
         safe_name = file_obj.filename.replace(" ", "_")
         temp_path = str(UPLOAD_FOLDER / f"{uid}_{safe_name}")
-        file_obj.save(temp_path)
-        temp_paths.append(temp_path)
-        file_names.append(file_obj.filename)
-
-        if ext in IMAGE_EXTENSIONS:
-            file_types.append("image")
-            analysis = analyze_image_for_chat(temp_path, file_obj.filename)
-        elif ext in DOC_EXTENSIONS:
-            file_types.append("document")
-            analysis = analyze_document_for_chat(temp_path, file_obj.filename, ext)
-        else:
-            file_types.append("data")
-            analysis = analyze_sample_file_for_chat(temp_path, ext)
-        analyses.append(f"--- {file_obj.filename} ---\n{analysis}")
-
-    for tp in temp_paths:
         try:
-            os.remove(tp)
-        except OSError:
-            pass
+            file_obj.save(temp_path)
+        except Exception:
+            errors.append(f"{file_obj.filename}: שמירה נכשלה")
+            continue
 
-    if not analyses and errors:
+        try:
+            if ext in IMAGE_EXTENSIONS:
+                kind = "image"
+                analysis = analyze_image_for_chat(temp_path, file_obj.filename)
+            elif ext in DOC_EXTENSIONS:
+                kind = "document"
+                analysis = analyze_document_for_chat(temp_path, file_obj.filename, ext)
+            else:
+                kind = "data"
+                analysis = analyze_sample_file_for_chat(temp_path, ext)
+        finally:
+            # Always delete the raw file — policy: analyze → forget
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
+
+        file_names.append(file_obj.filename)
+        file_types.append(kind)
+
+        try:
+            with get_db() as db:
+                if db.is_postgres:
+                    row = db.execute(
+                        "INSERT INTO session_artifacts(session_id, user_id, kind, label, content, created_at, expires_at) "
+                        "VALUES (?,?,?,?,?,?,?) RETURNING id",
+                        (chat_session_id or None, user_id, kind, file_obj.filename, analysis, now_ts, expires_ts),
+                    ).fetchone()
+                    artifact_id = int(row["id"])
+                else:
+                    db.execute(
+                        "INSERT INTO session_artifacts(session_id, user_id, kind, label, content, created_at, expires_at) "
+                        "VALUES (?,?,?,?,?,?,?)",
+                        (chat_session_id or None, user_id, kind, file_obj.filename, analysis, now_ts, expires_ts),
+                    )
+                    artifact_id = int(db.execute("SELECT last_insert_rowid() AS id").fetchone()["id"])
+                db.commit()
+                created_artifacts.append({"id": artifact_id, "label": file_obj.filename, "kind": kind})
+        except Exception:
+            errors.append(f"{file_obj.filename}: שגיאה בשמירת הניתוח")
+            continue
+
+    if not created_artifacts and errors:
         return jsonify({"error": "שגיאה בקבצים: " + "; ".join(errors)}), 400
 
-    if len(analyses) == 1:
-        combined = analyses[0].split("---\n", 1)[-1]
-    else:
-        combined = "\n\n".join(analyses)
-    if errors:
-        combined += "\n\n(שגיאות: " + "; ".join(errors) + ")"
-
-    log_user_activity("assistant_upload", "העלאת קובץ לעוזר", "", "", f"session={chat_session_id}, files={','.join(file_names)}")
+    # PII-minimal activity log: file count only, no filenames
+    log_user_activity("assistant_upload", "העלאת קובץ לעוזר", "", "", f"session={chat_session_id}, files_count={len(created_artifacts)}")
 
     return jsonify({
         "ok": True,
-        "analysis": combined,
+        "artifacts": created_artifacts,
+        "artifact_ids": [a["id"] for a in created_artifacts],
         "file_names": file_names,
         "file_types": file_types,
         "errors": errors,
+        "retention_hours": ARTIFACT_TTL_HOURS,
     })
+
+
+@app.route("/internal/cleanup", methods=["POST"])
+def internal_cleanup():
+    """Run retention cleanup out-of-band. Guarded by CLEANUP_TOKEN env var.
+    Intended for an external cron (e.g. Render scheduled job)."""
+    token = os.environ.get("CLEANUP_TOKEN", "").strip()
+    provided = (request.headers.get("X-Cleanup-Token") or request.args.get("token") or "").strip()
+    if not token or provided != token:
+        return jsonify({"error": "unauthorized"}), 401
+    try:
+        stats = run_scheduled_cleanup()
+        return jsonify({"ok": True, "stats": stats})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
 
 
 if __name__ == "__main__":
