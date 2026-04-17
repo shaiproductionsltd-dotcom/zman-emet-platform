@@ -5341,9 +5341,9 @@ def extract_dept_payroll_worker(detail_sheet, summary_sheet, workbook_kind, mapp
                 except (ValueError, TypeError):
                     total_hours = 0
             notes_text = stringify_excel_value(get_flamingo_sheet_cell(detail_sheet, workbook_kind, r, col_positions.get("notes_text", 0))) if "notes_text" in col_positions else ""
-            # Include any row that has meaningful data
+            # Include any row that has meaningful data (including notes for deductions)
             # A real daily row must have a date — rows without dates are summary/total rows
-            has_any_data = client_name or total_hours or entry_time or exit_time
+            has_any_data = client_name or total_hours or entry_time or exit_time or notes_text
             if has_any_data and date_val:
                 # Track what's missing for red-highlighting in output
                 missing = []
