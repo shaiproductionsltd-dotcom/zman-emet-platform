@@ -14712,6 +14712,12 @@ def admin():
         '<div style="font-size:13px;color:#475569">בדיקה ואישור כלים שנוצרו על ידי משתמשים</div></div>'
         '<a href="/admin/tools" class="btn btn-blue" style="text-decoration:none;display:inline-flex;align-items:center;justify-content:center;min-width:160px;background:#047857">ניהול כלים</a>'
         '</div></div>'
+        '<div class="card" style="background:linear-gradient(135deg,#f1f5f9 0%,#f8fafc 100%);border:1px solid #cbd5e1" dir="rtl">'
+        '<div style="display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap">'
+        '<div><div style="font-size:18px;font-weight:800;color:#334155;margin-bottom:4px">🧹 שימור מידע ופרטיות</div>'
+        '<div style="font-size:13px;color:#475569">מצב נוכחי של נתוני עבודה זמניים, ריצה אחרונה של ניקוי, ומדיניות פעילה</div></div>'
+        '<a href="/admin/retention" class="btn btn-gray" style="text-decoration:none;display:inline-flex;align-items:center;justify-content:center;min-width:160px">פתח דשבורד</a>'
+        '</div></div>'
         '<details class="card" id="adminSupport" style="padding:0;overflow:hidden" dir="rtl">'
         '<summary class="admin-collapsible-summary">'
         '<div><div style="font-size:22px;font-weight:800;color:#0f172a;margin-bottom:4px">&#128172; פניות שירות לקוחות</div><div class="admin-collapsible-sub">'
@@ -19110,33 +19116,9 @@ def assistant_upload():
     })
 
 
-@app.route("/internal/cleanup", methods=["POST"])
-def internal_cleanup():
-    """Run retention cleanup out-of-band. Guarded by CLEANUP_TOKEN env var.
-    Intended for an external cron (e.g. Render scheduled job)."""
-    token = os.environ.get("CLEANUP_TOKEN", "").strip()
-    provided = (request.headers.get("X-Cleanup-Token") or request.args.get("token") or "").strip()
-    if not token or provided != token:
-        return jsonify({"error": "unauthorized"}), 401
-    try:
-        stats = run_scheduled_cleanup()
-        return jsonify({"ok": True, "stats": stats, "errors": _LAST_CLEANUP.get("errors", [])})
-    except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 500
-
-
-@app.route("/internal/cleanup/status", methods=["GET"])
-def internal_cleanup_status():
-    """Operator visibility: last cleanup run + a live snapshot of what's
-    currently in the retention-relevant tables and folders.
-    Same CLEANUP_TOKEN gating as /internal/cleanup."""
-    token = os.environ.get("CLEANUP_TOKEN", "").strip()
-    provided = (request.headers.get("X-Cleanup-Token") or request.args.get("token") or "").strip()
-    if not token or provided != token:
-        return jsonify({"error": "unauthorized"}), 401
-
+def _build_retention_snapshot():
+    """Shared logic for the cleanup-status JSON and the admin HTML view."""
     snapshot = {}
-    # Live counts of what's currently held
     try:
         with get_db() as db:
             for label, sql in (
@@ -19166,8 +19148,6 @@ def internal_cleanup_status():
                     snapshot[label] = f"error: {e!r}"
     except Exception as e:
         snapshot["_db_error"] = repr(e)
-
-    # File system counts
     try:
         snapshot["upload_folder_files"] = sum(1 for p in UPLOAD_FOLDER.iterdir() if p.is_file())
     except Exception:
@@ -19176,20 +19156,108 @@ def internal_cleanup_status():
         snapshot["output_folder_files"] = sum(1 for p in OUTPUT_FOLDER.iterdir() if p.is_file())
     except Exception:
         snapshot["output_folder_files"] = -1
+    return snapshot
 
+
+def _retention_policy_dict():
+    return {
+        "session_inactivity_wipe_hours": SESSION_INACTIVITY_WIPE_HOURS,
+        "session_hard_cap_days": SESSION_HARD_CAP_DAYS,
+        "closed_session_purge_days": CLOSED_SESSION_PURGE_DAYS,
+        "artifact_ttl_hours": ARTIFACT_TTL_HOURS,
+        "token_usage_retention_days": TOKEN_USAGE_RETENTION_DAYS,
+        "orphan_file_age_hours": ORPHAN_FILE_AGE_HOURS,
+        "report_job_pii_scrub_days": REPORT_JOB_PII_SCRUB_DAYS,
+    }
+
+
+@app.route("/admin/retention", methods=["GET", "POST"])
+@login_required
+@admin_required
+def admin_retention():
+    """Admin-visible retention dashboard. Shows live snapshot + last cleanup
+    run + lets the admin trigger a cleanup pass without needing the token."""
+    if request.method == "POST" and request.form.get("action") == "run_cleanup":
+        try:
+            run_scheduled_cleanup()
+            add_flash("ניקוי הושלם בהצלחה")
+        except Exception as e:
+            add_flash(f"שגיאה בניקוי: {e}")
+        return redirect("/admin/retention")
+
+    snapshot = _build_retention_snapshot()
+    policy = _retention_policy_dict()
+    last = dict(_LAST_CLEANUP)
+
+    def row(label, value):
+        return f'<tr><td style="padding:8px 12px;color:#475569;font-size:13px">{esc(str(label))}</td><td style="padding:8px 12px;font-weight:600;font-size:13px;text-align:left;font-family:monospace">{esc(str(value))}</td></tr>'
+
+    snap_rows = "".join(row(k, v) for k, v in snapshot.items())
+    pol_rows = "".join(row(k, v) for k, v in policy.items())
+    last_stats = last.get("stats") or {}
+    last_rows = "".join(row(k, v) for k, v in last_stats.items()) or row("(טרם הופעל)", "—")
+    err_list = last.get("errors") or []
+    err_html = ""
+    if err_list:
+        err_html = '<div style="margin-top:1rem;padding:12px;background:#fef2f2;border:1px solid #fecaca;border-radius:8px"><strong style="color:#b91c1c">שגיאות בריצה האחרונה:</strong><ul style="margin:6px 0 0 0;padding-inline-start:20px;font-family:monospace;font-size:12px;color:#7f1d1d">' + "".join(f"<li>{esc(e)}</li>" for e in err_list) + "</ul></div>"
+    last_run = last.get("ran_at") or "טרם הופעל"
+    duration = last.get("duration_ms") or 0
+
+    body = (
+        '<div style="margin-bottom:1rem"><a href="/admin" style="color:#2563eb;font-size:13px;text-decoration:none">← חזרה לניהול</a></div>'
+        '<div class="card">'
+        '<h2 style="margin-bottom:1rem">🧹 שימור מידע ופרטיות</h2>'
+        '<p style="color:#64748b;font-size:13px;line-height:1.6;margin-bottom:1rem">'
+        'הפלטפורמה פועלת לפי מדיניות "ניתוח → יצירה → שכחה". העמוד הזה מציג מה נמצא במערכת כרגע, מתי בוצע הניקוי האחרון, ומה התוצאות שלו.'
+        '</p>'
+        '<form method="post" style="margin-bottom:1.5rem">'
+        '<input type="hidden" name="action" value="run_cleanup">'
+        '<button type="submit" class="btn btn-blue">הרץ ניקוי עכשיו</button>'
+        f'<span style="margin-inline-start:12px;color:#64748b;font-size:12px">ריצה אחרונה: {esc(last_run)} ({duration}ms)</span>'
+        '</form>'
+        + err_html +
+        '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:1.25rem;margin-top:1rem">'
+        '<div><h3 style="font-size:14px;font-weight:700;color:#1e3a8a;margin-bottom:8px">מצב נוכחי</h3>'
+        '<table style="width:100%;border-collapse:collapse;background:#f8fafc;border-radius:8px;overflow:hidden">' + snap_rows + '</table></div>'
+        '<div><h3 style="font-size:14px;font-weight:700;color:#1e3a8a;margin-bottom:8px">תוצאות ריצה אחרונה</h3>'
+        '<table style="width:100%;border-collapse:collapse;background:#f8fafc;border-radius:8px;overflow:hidden">' + last_rows + '</table></div>'
+        '<div><h3 style="font-size:14px;font-weight:700;color:#1e3a8a;margin-bottom:8px">מדיניות פעילה</h3>'
+        '<table style="width:100%;border-collapse:collapse;background:#f8fafc;border-radius:8px;overflow:hidden">' + pol_rows + '</table></div>'
+        '</div></div>'
+    )
+    return render("שימור מידע", body)
+
+
+@app.route("/internal/cleanup", methods=["POST"])
+def internal_cleanup():
+    """Run retention cleanup out-of-band. Guarded by CLEANUP_TOKEN env var.
+    Intended for an external cron (e.g. Render scheduled job)."""
+    token = os.environ.get("CLEANUP_TOKEN", "").strip()
+    provided = (request.headers.get("X-Cleanup-Token") or request.args.get("token") or "").strip()
+    if not token or provided != token:
+        return jsonify({"error": "unauthorized"}), 401
+    try:
+        stats = run_scheduled_cleanup()
+        return jsonify({"ok": True, "stats": stats, "errors": _LAST_CLEANUP.get("errors", [])})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@app.route("/internal/cleanup/status", methods=["GET"])
+def internal_cleanup_status():
+    """Operator visibility (machine-readable): last cleanup run + a live
+    snapshot of retention-relevant tables and folders.
+    Same CLEANUP_TOKEN gating as /internal/cleanup. For an admin-friendly
+    HTML view that does not require the token, see /admin/retention."""
+    token = os.environ.get("CLEANUP_TOKEN", "").strip()
+    provided = (request.headers.get("X-Cleanup-Token") or request.args.get("token") or "").strip()
+    if not token or provided != token:
+        return jsonify({"error": "unauthorized"}), 401
     return jsonify({
         "ok": True,
-        "policy": {
-            "session_inactivity_wipe_hours": SESSION_INACTIVITY_WIPE_HOURS,
-            "session_hard_cap_days": SESSION_HARD_CAP_DAYS,
-            "closed_session_purge_days": CLOSED_SESSION_PURGE_DAYS,
-            "artifact_ttl_hours": ARTIFACT_TTL_HOURS,
-            "token_usage_retention_days": TOKEN_USAGE_RETENTION_DAYS,
-            "orphan_file_age_hours": ORPHAN_FILE_AGE_HOURS,
-            "report_job_pii_scrub_days": REPORT_JOB_PII_SCRUB_DAYS,
-        },
+        "policy": _retention_policy_dict(),
         "last_cleanup": dict(_LAST_CLEANUP),
-        "snapshot": snapshot,
+        "snapshot": _build_retention_snapshot(),
     })
 
 
