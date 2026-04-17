@@ -9442,7 +9442,7 @@ def build_dept_payroll_mapping_options(input_path, extension):
         options = [{"value": "", "label": "ללא — הזנה ידנית" if field.get("has_manual") else "לא נבחר", "source_kind": "empty"}]
         if field_name == "housing_source":
             options.append({"value": "__auto__", "label": "זיהוי אוטומטי מהערות הדוח", "source_kind": "meta"})
-        daily_header_fields = {"event_source", "entry_time_source", "exit_time_source", "date_source", "total_hours_source", "hourly_rate_source", "housing_source"}
+        daily_header_fields = {"event_source", "entry_time_source", "exit_time_source", "date_source", "total_hours_source", "hourly_rate_source", "housing_source", "notes_source"}
         for option in base_options:
             token = option.get("match_token", "")
             keywords = DEPT_PAYROLL_SUGGESTION_KEYWORDS.get(field_name, [])
