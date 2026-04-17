@@ -6413,7 +6413,7 @@ def write_dept_payroll_output_v2(output_path, worker_rows, dept_settings, client
     # ── KPI summary cards ──
     total_unassigned_hours = round(sum(wc.get("unassigned_hours", 0) for wc in worker_calculations), 2)
     total_assigned_hours = round(sum(sum(wc.get("client_hours", {}).values()) for wc in worker_calculations), 2)
-    expected_profit = round(grand_charge_total - grand_total_net, 2)
+    expected_profit = round(grand_charge_total - grand_total_gross, 2)
 
     total_notes_deductions = round(sum(wc.get("notes_deductions", 0) for wc in worker_calculations), 2)
 
@@ -6421,7 +6421,7 @@ def write_dept_payroll_output_v2(output_path, worker_rows, dept_settings, client
         ("סה\"כ חיוב ללקוחות", round(grand_charge_total, 2), "15803D"),
         ("סה\"כ שולם לעובדים (נטו)", round(grand_total_net, 2), "1E3A8A"),
         ("סה\"כ ברוטו עובדים", round(grand_total_gross, 2), "475569"),
-        ("רווח צפוי (חיוב − נטו)", expected_profit, "15803D" if expected_profit >= 0 else "DC2626"),
+        ("רווח צפוי (חיוב − ברוטו)", expected_profit, "15803D" if expected_profit >= 0 else "DC2626"),
         ("סה\"כ שעות משויכות ללקוחות", total_assigned_hours, "115E59"),
         ("סה\"כ שעות ללא שיוך לקוח", total_unassigned_hours, "991B1B" if total_unassigned_hours > 0 else "475569"),
     ]
