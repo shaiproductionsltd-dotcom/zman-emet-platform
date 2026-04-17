@@ -6365,14 +6365,24 @@ def write_dept_payroll_output_v2(output_path, worker_rows, dept_settings, client
         grand_total_notes_ded += wc.get("notes_deductions", 0)
 
     # Grand total for employees — dark indigo
-    write_cell(ws2, row, 1, f"סה\"כ תשלום לכל העובדים ({len(worker_calculations)} עובדים)", font=grand_font, fill=grand_fill, align="right")
-    write_cell(ws2, row, 2, "", fill=grand_fill)
+    # Label row (merged across all columns)
     net_col = 8 if has_notes_deductions else 7  # last column in calc block
-    write_cell(ws2, row, 3, round(grand_total_gross, 2), font=grand_font, fill=grand_fill, fmt=num_fmt)
-    for col_idx in range(4, net_col):
+    ws2.merge_cells(start_row=row, start_column=1, end_row=row, end_column=net_col)
+    write_cell(ws2, row, 1, f"סה\"כ תשלום לכל העובדים ({len(worker_calculations)} עובדים)", font=grand_font, fill=grand_fill, align="right")
+    for col_idx in range(2, net_col + 1):
         write_cell(ws2, row, col_idx, "", fill=grand_fill)
+    ws2.row_dimensions[row].height = 30
+    row += 1
+    # Values row — sums aligned with calc-block columns
+    write_cell(ws2, row, 1, round(grand_total_hours, 2), font=grand_font, fill=grand_fill, fmt=num_fmt)
+    write_cell(ws2, row, 2, "", fill=grand_fill)  # rate varies — no total
+    write_cell(ws2, row, 3, round(grand_total_gross, 2), font=grand_font, fill=grand_fill, fmt=num_fmt)
+    write_cell(ws2, row, 4, round(grand_total_taxes, 2), font=grand_font, fill=grand_fill, fmt=num_fmt)
+    write_cell(ws2, row, 5, round(grand_total_insurance, 2), font=grand_font, fill=grand_fill, fmt=num_fmt)
+    write_cell(ws2, row, 6, round(grand_total_housing, 2), font=grand_font, fill=grand_fill, fmt=num_fmt)
+    if has_notes_deductions:
+        write_cell(ws2, row, 7, round(grand_total_notes_ded, 2), font=grand_font, fill=grand_fill, fmt=num_fmt)
     write_cell(ws2, row, net_col, round(grand_total_net, 2), font=grand_font, fill=grand_fill, fmt=num_fmt)
-    ws2.merge_cells(start_row=row, start_column=1, end_row=row, end_column=2)
     ws2.row_dimensions[row].height = 32
 
     # Column widths
