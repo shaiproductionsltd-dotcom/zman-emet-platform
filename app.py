@@ -5229,7 +5229,7 @@ def extract_dept_payroll_worker(detail_sheet, summary_sheet, workbook_kind, mapp
                 continue
             for field_name, col_key in daily_col_fields.items():
                 source = mapping.get(field_name, "")
-                if source.startswith("meta:"):
+                if source.startswith("meta:") or source.startswith("daily:"):
                     source_label = normalize_token(source.split(":", 1)[1])
                     if source_label and source_label == header_val:
                         col_positions[col_key] = c
@@ -5463,7 +5463,7 @@ def scan_dept_notes_types(input_path, extension, mapping):
                 header_val = normalize_token(get_flamingo_sheet_cell(detail_sheet, workbook_kind, daily_header_row, c))
                 if not header_val:
                     continue
-                if notes_source and notes_source.startswith("meta:"):
+                if notes_source and (notes_source.startswith("meta:") or notes_source.startswith("daily:")):
                     source_label = normalize_token(notes_source.split(":", 1)[1])
                     if source_label and source_label == header_val:
                         notes_col = c
@@ -9288,6 +9288,7 @@ def collect_dept_daily_header_candidates(detail_sheet, workbook_kind):
         "רגילות", "נוכחות", "תקן", "חוסר",
         "אירוע", "כניסה", "יציאה", "תאריך",
         "תעריףשעתי", "תעריף",
+        "הערות", "הערה",
     }
     for col_index in range(cols):
         label_text = str(get_flamingo_sheet_cell(detail_sheet, workbook_kind, header_row, col_index) or "").strip()
@@ -9303,13 +9304,13 @@ def collect_dept_daily_header_candidates(detail_sheet, workbook_kind):
             if val not in ("", None):
                 sample = stringify_excel_value(val)
                 break
-        source = f"meta:{label_text}"
+        source = f"daily:{label_text}"
         if source in seen:
             continue
         candidates.append({
             "value": source,
             "label": f"עמודה יומית: {label_text}" + (f" (לדוגמה: {sample})" if sample else ""),
-            "source_kind": "meta",
+            "source_kind": "daily",
             "match_token": normalized,
         })
         seen.add(source)
@@ -9452,7 +9453,7 @@ def build_dept_payroll_mapping_options(input_path, extension):
             elif field_name in daily_header_fields:
                 if any(keyword in token for keyword in keywords):
                     options.append(option)
-                elif option.get("source_kind") == "meta":
+                elif option.get("source_kind") in ("meta", "daily"):
                     options.append(option)
             elif field_name == "dept_number_source":
                 options.append(option)
