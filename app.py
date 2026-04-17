@@ -9534,6 +9534,7 @@ def build_dept_payroll_mapping_form(script_id, temp_upload_path, temp_upload_ext
         options = inspection["options_by_field"].get(field_name, [])
         blank_options = [option for option in options if not option.get("value")]
         meta_options = [option for option in options if option.get("source_kind") == "meta"]
+        daily_options = [option for option in options if option.get("source_kind") == "daily"]
         summary_options = [option for option in options if option.get("source_kind") == "table_exact"]
 
         def render_option(option):
@@ -9546,6 +9547,11 @@ def build_dept_payroll_mapping_form(script_id, temp_upload_path, temp_upload_ext
         if meta_options:
             select_options += '<optgroup label="שדות עליונים">'
             for option in meta_options:
+                select_options += render_option(option)
+            select_options += '</optgroup>'
+        if daily_options:
+            select_options += '<optgroup label="עמודות יומיות">'
+            for option in daily_options:
                 select_options += render_option(option)
             select_options += '</optgroup>'
         if summary_options:
