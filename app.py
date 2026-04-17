@@ -5810,10 +5810,12 @@ def write_dept_payroll_output(output_path, worker_rows, dept_settings):
     wb.save(output_path)
 
 
-def write_dept_payroll_output_v2(output_path, worker_rows, dept_settings, clients_info):
+def write_dept_payroll_output_v2(output_path, worker_rows, dept_settings, clients_info, note_classifications=None):
     """Write 3-tab output: charge per client, pay to employee, company summary."""
     INSURANCE = 280
     clients_by_name, worker_to_client = clients_info or ({}, {})
+    if note_classifications is None:
+        note_classifications = {}
 
     wb = Workbook()
 
@@ -5844,6 +5846,11 @@ def write_dept_payroll_output_v2(output_path, worker_rows, dept_settings, client
     calc_value_font = Font(bold=True, size=11, color="0F172A")
     # Info text — subtle
     info_font = Font(size=10, color="64748B")
+    # Note classification styling — ignored notes
+    ignored_note_fill = PatternFill(start_color="F3F4F6", end_color="F3F4F6", fill_type="solid")
+    ignored_note_font = Font(size=9, italic=True, color="9CA3AF")
+    # Note classification styling — deducted notes (red to highlight active deduction)
+    deducted_note_font = Font(size=9, color="DC2626")
 
     num_fmt = '#,##0.00'
     thin_border = Border(
@@ -6152,9 +6159,15 @@ def write_dept_payroll_output_v2(output_path, worker_rows, dept_settings, client
     row = 1
     grand_total_net = 0
     grand_total_gross = 0
+    grand_total_hours = 0
+    grand_total_taxes = 0
+    grand_total_insurance = 0
+    grand_total_housing = 0
+    grand_total_notes_ded = 0
 
     for wc in worker_calculations:
         # Worker header
+        missing_rate = not wc.get("hourly_rate")
         ws2.merge_cells(start_row=row, start_column=1, end_row=row, end_column=7)
         worker_label = f"עובד: {wc['worker_name']}"
         if wc.get("id_number"):
@@ -6166,11 +6179,24 @@ def write_dept_payroll_output_v2(output_path, worker_rows, dept_settings, client
         if wc.get("department"):
             worker_label += f" | מחלקה: {wc['department']}"
         cell = ws2.cell(row=row, column=1, value=worker_label)
-        cell.font = Font(bold=True, size=12, color="1E3A8A")
-        cell.fill = section_fill
+        if missing_rate:
+            cell.font = Font(bold=True, size=12, color="991B1B")
+            cell.fill = PatternFill(start_color="FEE2E2", end_color="FEE2E2", fill_type="solid")
+        else:
+            cell.font = Font(bold=True, size=12, color="1E3A8A")
+            cell.fill = section_fill
         cell.alignment = Alignment(horizontal="right", vertical="center")
         ws2.row_dimensions[row].height = 30
         row += 1
+        # Warning line when hourly rate is missing or zero
+        if missing_rate:
+            ws2.merge_cells(start_row=row, start_column=1, end_row=row, end_column=7)
+            warn_cell = ws2.cell(row=row, column=1, value="⚠ חסר תעריף שעתי — כל חישובי השכר לעובד זה יהיו 0")
+            warn_cell.font = Font(bold=True, size=10, color="991B1B")
+            warn_cell.fill = PatternFill(start_color="FEF2F2", end_color="FEF2F2", fill_type="solid")
+            warn_cell.alignment = Alignment(horizontal="right", vertical="center")
+            ws2.row_dimensions[row].height = 22
+            row += 1
 
         # Daily breakdown headers
         daily_headers = ["תאריך", "יום", "כניסה", "יציאה", "אירוע/לקוח", "שעות", "הערות"]
@@ -6201,12 +6227,56 @@ def write_dept_payroll_output_v2(output_path, worker_rows, dept_settings, client
                 hrs = dr.get("total_hours", 0)
                 write_cell(ws2, row, 6, hrs, fmt=num_fmt, fill=rf, font=rfont)
                 daily_hours_sum += hrs if isinstance(hrs, (int, float)) else 0
-                notes_display = dr.get("notes_text", "")
+                notes_raw = dr.get("notes_text", "")
+                # Determine note classification styling for this cell
+                note_cell_font = None
+                note_cell_fill = rf
+                notes_display = notes_raw
+                if notes_raw and note_classifications:
+                    parsed_items = parse_note_items(notes_raw)
+                    if parsed_items:
+                        has_ignored = False
+                        has_deducted = False
+                        annotated_parts = []
+                        # Rebuild display text with classification annotations
+                        # Split original text same way parse_note_items does
+                        raw_parts = re.split(r',\s+|[;|]', str(notes_raw))
+                        for part in raw_parts:
+                            part_stripped = part.strip()
+                            if not part_stripped:
+                                continue
+                            # Check if this part matches a classified note item
+                            m = re.match(r'^(.+?)\s+([\d,]+(?:\.\d+)?)\s*$', part_stripped)
+                            if m:
+                                type_text = m.group(1).strip()
+                                classification = note_classifications.get(type_text, "ignore")
+                                if classification == "ignore":
+                                    has_ignored = True
+                                    annotated_parts.append(f"{part_stripped} (לא בחישוב)")
+                                elif classification == "deduct":
+                                    has_deducted = True
+                                    annotated_parts.append(part_stripped)
+                                else:
+                                    annotated_parts.append(part_stripped)
+                            else:
+                                # Non-amount text, keep as-is
+                                annotated_parts.append(part_stripped)
+                        notes_display = " | ".join(annotated_parts)
+                        # Choose styling based on what classifications are present
+                        if has_ignored and not has_deducted:
+                            note_cell_fill = ignored_note_fill
+                            note_cell_font = ignored_note_font
+                        elif has_deducted and not has_ignored:
+                            note_cell_font = deducted_note_font
+                        elif has_ignored and has_deducted:
+                            # Mixed: use ignored fill but normal size font
+                            note_cell_fill = ignored_note_fill
+                            note_cell_font = Font(size=9, color="6B7280")
                 if missing:
                     notes_display = " | ".join(missing) + ((" | " + notes_display) if notes_display else "")
                     write_cell(ws2, row, 7, notes_display, fill=rf, font=Font(size=9, color="991B1B"))
                 else:
-                    write_cell(ws2, row, 7, notes_display, fill=rf)
+                    write_cell(ws2, row, 7, notes_display, fill=note_cell_fill, font=note_cell_font)
                 row += 1
 
             # ── Daily total row — teal ──
@@ -6288,6 +6358,11 @@ def write_dept_payroll_output_v2(output_path, worker_rows, dept_settings, client
 
         grand_total_net += wc.get("net", 0)
         grand_total_gross += wc.get("gross", 0)
+        grand_total_hours += (wc.get("payable_hours") or 0)
+        grand_total_taxes += wc.get("taxes", 0)
+        grand_total_insurance += wc.get("insurance", 0)
+        grand_total_housing += wc.get("housing_charge", 0)
+        grand_total_notes_ded += wc.get("notes_deductions", 0)
 
     # Grand total for employees — dark indigo
     write_cell(ws2, row, 1, f"סה\"כ תשלום לכל העובדים ({len(worker_calculations)} עובדים)", font=grand_font, fill=grand_fill, align="right")
@@ -6706,7 +6781,7 @@ def run_dept_payroll(input_path, output_path, extension, options=None):
     # Use v2 output if we have daily rows / client data
     has_daily_data = any(w.get("daily_rows") or w.get("special_movements") for w in worker_rows)
     if has_daily_data or clients_info[0]:
-        write_dept_payroll_output_v2(output_path, worker_rows, dept_settings, clients_info)
+        write_dept_payroll_output_v2(output_path, worker_rows, dept_settings, clients_info, note_classifications=note_classifications)
     else:
         write_dept_payroll_output(output_path, worker_rows, dept_settings)
 
