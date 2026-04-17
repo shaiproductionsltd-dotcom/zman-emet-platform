@@ -277,7 +277,7 @@ def check_marketplace_handling():
 
 
 def check_retention_plumbing():
-    print("[5] Retention plumbing")
+    print("[6] Retention plumbing")
     failures = 0
     try:
         with A.get_db() as db:
@@ -302,13 +302,35 @@ def check_retention_plumbing():
         failures += 1
     try:
         stats = A.run_scheduled_cleanup()
-        if isinstance(stats, dict) and "artifacts_expired" in stats:
-            _passed(f"run_scheduled_cleanup() returned stats {sorted(stats.keys())}")
+        expected_keys = {
+            "sessions_wiped_inactivity", "sessions_wiped_hard_cap",
+            "sessions_deleted", "artifacts_expired", "token_rows_purged",
+            "report_jobs_expired", "orphan_files_removed", "report_pii_scrubbed",
+        }
+        missing = expected_keys - set(stats.keys())
+        if missing:
+            _failed("run_scheduled_cleanup missing stat keys", str(missing))
+            failures += 1
         else:
-            _failed("run_scheduled_cleanup() returned unexpected shape", str(stats))
+            _passed(f"run_scheduled_cleanup returns all {len(expected_keys)} stat keys")
+        # Last-run tracking was captured
+        if A._LAST_CLEANUP.get("ran_at") and A._LAST_CLEANUP.get("stats"):
+            _passed(f"_LAST_CLEANUP populated (duration={A._LAST_CLEANUP['duration_ms']}ms)")
+        else:
+            _failed("_LAST_CLEANUP not captured")
             failures += 1
     except Exception as e:
         _failed("run_scheduled_cleanup raised", str(e))
+        failures += 1
+
+    # Per-step isolation: simulate a failed step shouldn't abort others.
+    # We can't easily force a DB failure here without mocking; confirm the
+    # function has the expected structural guard (stats dict populated).
+    stats2 = A.run_scheduled_cleanup()
+    if isinstance(stats2.get("orphan_files_removed"), int):
+        _passed("orphan_files_removed is an int even on clean runs")
+    else:
+        _failed("orphan_files_removed not int", str(stats2))
         failures += 1
     return failures
 

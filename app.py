@@ -12444,12 +12444,28 @@ def login():
 
 @app.route("/logout")
 def logout():
-    # Close any active assistant chat sessions for this user
+    # Close any active assistant chat sessions for this user AND drop their
+    # artifacts. Logout is an explicit "I'm done" signal — analyze→generate→forget.
     uid = session.get("user_id")
     if uid:
         try:
             now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             with get_db() as db:
+                # Find active assistant sessions to scrub
+                rows = db.execute(
+                    "SELECT id FROM tool_chat_sessions WHERE user_id=? AND session_type='assistant' AND status='active'",
+                    (uid,),
+                ).fetchall()
+                ids = [r["id"] for r in rows or []]
+                if ids:
+                    placeholders = ",".join(["?"] * len(ids))
+                    try:
+                        db.execute(
+                            f"DELETE FROM session_artifacts WHERE user_id=? AND session_id IN ({placeholders})",
+                            (uid, *ids),
+                        )
+                    except Exception:
+                        pass
                 db.execute(
                     "UPDATE tool_chat_sessions SET status='closed', messages_json='[]', updated_at=? WHERE user_id=? AND session_type='assistant' AND status='active'",
                     (now, uid),
@@ -18566,10 +18582,31 @@ def _hhmm_ago(hours=None, days=None):
     return base.strftime("%Y-%m-%d %H:%M:%S")
 
 
+# In-process record of the last cleanup run — surfaced via /internal/cleanup/status.
+# Best-effort only; cleared on process restart. For durable history use the logs.
+_LAST_CLEANUP = {
+    "ran_at": None,
+    "duration_ms": 0,
+    "stats": {},
+    "errors": [],
+}
+
+
+def _safe_rowcount(cursor):
+    """Some drivers return -1 for unspecified rowcount; clamp to 0."""
+    try:
+        rc = getattr(cursor, "rowcount", 0)
+        return rc if isinstance(rc, int) and rc >= 0 else 0
+    except Exception:
+        return 0
+
+
 def run_scheduled_cleanup():
     """Central retention coordinator. Idempotent; safe to run repeatedly.
-    Called lazily from user-facing routes and can also be driven by an
+    Each step is independently wrapped — a failure of one does NOT block the
+    others. Called lazily from user-facing routes and can also be driven by an
     external scheduler hitting /internal/cleanup."""
+    started = datetime.now()
     stats = {
         "sessions_wiped_inactivity": 0,
         "sessions_wiped_hard_cap": 0,
@@ -18580,60 +18617,70 @@ def run_scheduled_cleanup():
         "orphan_files_removed": 0,
         "report_pii_scrubbed": 0,
     }
+    errors = []
+
     cutoff_inactivity = _hhmm_ago(hours=SESSION_INACTIVITY_WIPE_HOURS)
     cutoff_hard_cap = _hhmm_ago(days=SESSION_HARD_CAP_DAYS)
     cutoff_closed = _hhmm_ago(days=CLOSED_SESSION_PURGE_DAYS)
-    now_ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    now_ts = started.strftime("%Y-%m-%d %H:%M:%S")
     cutoff_tokens = _hhmm_ago(days=TOKEN_USAGE_RETENTION_DAYS)
     cutoff_report_pii = _hhmm_ago(days=REPORT_JOB_PII_SCRUB_DAYS)
 
+    # Step 0 — report jobs (its own commit pattern)
     try:
         expire_report_jobs()
-    except Exception:
-        pass
+    except Exception as e:
+        errors.append(f"expire_report_jobs: {e!r}")
 
-    try:
-        with get_db() as db:
-            # 1. Sessions inactive for 24h — wipe content (keep shell)
-            db.execute(
-                "UPDATE tool_chat_sessions SET status='closed', messages_json='[]' "
-                "WHERE status='active' AND updated_at < ?",
-                (cutoff_inactivity,),
-            )
-            # 2. Hard cap — any session older than 30d from creation gets force-closed
-            db.execute(
-                "UPDATE tool_chat_sessions SET status='closed', messages_json='[]', updated_at=? "
-                "WHERE status='active' AND created_at < ?",
-                (now_ts, cutoff_hard_cap),
-            )
-            # 3. Purge old closed/completed sessions
-            db.execute(
-                "DELETE FROM tool_chat_sessions WHERE status IN ('closed','completed') AND updated_at < ?",
-                (cutoff_closed,),
-            )
-            # 4. Expire artifacts past their TTL (content scrubbed, row kept briefly for audit)
-            db.execute(
-                "DELETE FROM session_artifacts WHERE expires_at <= ?",
-                (now_ts,),
-            )
-            # 5. Token usage purge
-            db.execute(
-                "DELETE FROM chat_token_usage WHERE created_at < ?",
-                (cutoff_tokens,),
-            )
-            # 6. report_jobs PII scrub after 30d (keep row + timestamps + script_id for stats)
-            db.execute(
-                "UPDATE report_jobs SET original_filename='', full_name='', company_name='', username='' "
-                "WHERE created_at < ? AND (original_filename<>'' OR full_name<>'' OR company_name<>'')",
-                (cutoff_report_pii,),
-            )
-            db.commit()
-    except Exception:
-        pass
+    # Per-step DB cleanup. Each in its own connection so a failure in one does
+    # not abort the rest of the cleanup pass.
+    db_steps = [
+        (
+            "sessions_wiped_inactivity",
+            "UPDATE tool_chat_sessions SET status='closed', messages_json='[]' "
+            "WHERE status='active' AND updated_at < ?",
+            (cutoff_inactivity,),
+        ),
+        (
+            "sessions_wiped_hard_cap",
+            "UPDATE tool_chat_sessions SET status='closed', messages_json='[]', updated_at=? "
+            "WHERE status='active' AND created_at < ?",
+            (now_ts, cutoff_hard_cap),
+        ),
+        (
+            "sessions_deleted",
+            "DELETE FROM tool_chat_sessions WHERE status IN ('closed','completed') AND updated_at < ?",
+            (cutoff_closed,),
+        ),
+        (
+            "artifacts_expired",
+            "DELETE FROM session_artifacts WHERE expires_at <= ?",
+            (now_ts,),
+        ),
+        (
+            "token_rows_purged",
+            "DELETE FROM chat_token_usage WHERE created_at < ?",
+            (cutoff_tokens,),
+        ),
+        (
+            "report_pii_scrubbed",
+            "UPDATE report_jobs SET original_filename='', full_name='', company_name='', username='' "
+            "WHERE created_at < ? AND (original_filename<>'' OR full_name<>'' OR company_name<>'')",
+            (cutoff_report_pii,),
+        ),
+    ]
+    for stat_key, sql, params in db_steps:
+        try:
+            with get_db() as db:
+                cur = db.execute(sql, params)
+                stats[stat_key] = _safe_rowcount(cur)
+                db.commit()
+        except Exception as e:
+            errors.append(f"{stat_key}: {e!r}")
 
-    # 7. Orphan file sweep — UPLOAD and OUTPUT folders
+    # Step 7 — orphan file sweep
     try:
-        cutoff_ts = (datetime.now() - timedelta(hours=ORPHAN_FILE_AGE_HOURS)).timestamp()
+        cutoff_ts = (started - timedelta(hours=ORPHAN_FILE_AGE_HOURS)).timestamp()
         referenced = set()
         try:
             with get_db() as db:
@@ -18648,8 +18695,8 @@ def run_scheduled_cleanup():
                         referenced.add(os.path.basename(ip))
                     if of:
                         referenced.add(of)
-        except Exception:
-            pass
+        except Exception as e:
+            errors.append(f"orphan_referenced_lookup: {e!r}")
         for folder in (UPLOAD_FOLDER, OUTPUT_FOLDER):
             try:
                 for p in folder.iterdir():
@@ -18662,13 +18709,20 @@ def run_scheduled_cleanup():
                             continue
                         p.unlink()
                         stats["orphan_files_removed"] += 1
-                    except OSError:
+                    except OSError as e:
+                        errors.append(f"orphan_unlink({p.name}): {e!r}")
                         continue
-            except Exception:
+            except Exception as e:
+                errors.append(f"orphan_iter({folder}): {e!r}")
                 continue
-    except Exception:
-        pass
+    except Exception as e:
+        errors.append(f"orphan_outer: {e!r}")
 
+    duration_ms = int((datetime.now() - started).total_seconds() * 1000)
+    _LAST_CLEANUP["ran_at"] = now_ts
+    _LAST_CLEANUP["duration_ms"] = duration_ms
+    _LAST_CLEANUP["stats"] = dict(stats)
+    _LAST_CLEANUP["errors"] = list(errors)
     return stats
 
 
@@ -19040,9 +19094,77 @@ def internal_cleanup():
         return jsonify({"error": "unauthorized"}), 401
     try:
         stats = run_scheduled_cleanup()
-        return jsonify({"ok": True, "stats": stats})
+        return jsonify({"ok": True, "stats": stats, "errors": _LAST_CLEANUP.get("errors", [])})
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@app.route("/internal/cleanup/status", methods=["GET"])
+def internal_cleanup_status():
+    """Operator visibility: last cleanup run + a live snapshot of what's
+    currently in the retention-relevant tables and folders.
+    Same CLEANUP_TOKEN gating as /internal/cleanup."""
+    token = os.environ.get("CLEANUP_TOKEN", "").strip()
+    provided = (request.headers.get("X-Cleanup-Token") or request.args.get("token") or "").strip()
+    if not token or provided != token:
+        return jsonify({"error": "unauthorized"}), 401
+
+    snapshot = {}
+    # Live counts of what's currently held
+    try:
+        with get_db() as db:
+            for label, sql in (
+                ("active_assistant_sessions",
+                 "SELECT COUNT(*) AS c FROM tool_chat_sessions WHERE session_type='assistant' AND status='active'"),
+                ("closed_sessions_pending_purge",
+                 "SELECT COUNT(*) AS c FROM tool_chat_sessions WHERE status IN ('closed','completed')"),
+                ("live_artifacts",
+                 "SELECT COUNT(*) AS c FROM session_artifacts WHERE expires_at > ?"),
+                ("expired_artifacts_pending_sweep",
+                 "SELECT COUNT(*) AS c FROM session_artifacts WHERE expires_at <= ?"),
+                ("report_jobs_with_pii",
+                 "SELECT COUNT(*) AS c FROM report_jobs WHERE original_filename<>'' OR full_name<>'' OR company_name<>''"),
+                ("recommendations_total",
+                 "SELECT COUNT(*) AS c FROM assistant_recommendations"),
+                ("recommendations_clicked",
+                 "SELECT COUNT(*) AS c FROM assistant_recommendations WHERE clicked=1"),
+            ):
+                try:
+                    if "?" in sql:
+                        now_ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        row = db.execute(sql, (now_ts,)).fetchone()
+                    else:
+                        row = db.execute(sql).fetchone()
+                    snapshot[label] = int(row["c"]) if row else 0
+                except Exception as e:
+                    snapshot[label] = f"error: {e!r}"
+    except Exception as e:
+        snapshot["_db_error"] = repr(e)
+
+    # File system counts
+    try:
+        snapshot["upload_folder_files"] = sum(1 for p in UPLOAD_FOLDER.iterdir() if p.is_file())
+    except Exception:
+        snapshot["upload_folder_files"] = -1
+    try:
+        snapshot["output_folder_files"] = sum(1 for p in OUTPUT_FOLDER.iterdir() if p.is_file())
+    except Exception:
+        snapshot["output_folder_files"] = -1
+
+    return jsonify({
+        "ok": True,
+        "policy": {
+            "session_inactivity_wipe_hours": SESSION_INACTIVITY_WIPE_HOURS,
+            "session_hard_cap_days": SESSION_HARD_CAP_DAYS,
+            "closed_session_purge_days": CLOSED_SESSION_PURGE_DAYS,
+            "artifact_ttl_hours": ARTIFACT_TTL_HOURS,
+            "token_usage_retention_days": TOKEN_USAGE_RETENTION_DAYS,
+            "orphan_file_age_hours": ORPHAN_FILE_AGE_HOURS,
+            "report_job_pii_scrub_days": REPORT_JOB_PII_SCRUB_DAYS,
+        },
+        "last_cleanup": dict(_LAST_CLEANUP),
+        "snapshot": snapshot,
+    })
 
 
 if __name__ == "__main__":
