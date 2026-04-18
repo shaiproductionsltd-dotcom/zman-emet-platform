@@ -259,6 +259,69 @@ def check_marker_parser():
     return failures
 
 
+def check_widget_blank_state():
+    """The dashboard assistant widget must render a multi-role blank-state
+    with starter chips covering all six supported intents, and reset/refresh
+    must restore the same starter experience (single source of truth)."""
+    print("[10] Dashboard widget blank-state covers all 6 intents")
+    failures = 0
+    html = A.render_assistant_widget()
+    must_contain = [
+        # Multi-role intro copy
+        "יועץ Scriptly",
+        "למצוא לך כלי שמתאים",
+        "self-serve",
+        "דורשת פיתוח",
+        "לנתח קובץ",
+        "HR / שכר / דוחות",
+        # Six chip texts (one per intent the user listed)
+        "איזה כלי מתאים לי?",                  # find existing
+        "אני רוצה לבנות כלי חדש",              # build new
+        "לבנות לבד או צריך פיתוח?",            # boundary
+        "תעזור לי לנתח קובץ שאעלה",            # upload + analyze
+        "שאלה מהירה על שעות / שכר / חוקי עבודה",  # quick HR Q
+        "מה אתה יודע לעשות?",                  # what-can-you-do
+        # Free-typing reassurance
+        "אתה תמיד חופשי לכתוב כל דבר",
+        # JS plumbing — single source of truth + restore behavior
+        "var astBlankHtml=",
+        "function astRenderBlankState(",
+        "function astTriggerUpload(",
+        # Reset path uses the renderer (no more one-line welcome)
+        "astRenderBlankState();",
+        # Empty-init path uses the renderer too (so refresh after server
+        # cleanup still shows the chips)
+        # The renderer is referenced inside astInitSession's else branch
+    ]
+    for needle in must_contain:
+        if needle in html:
+            _passed(f"widget contains: {needle[:55]}")
+        else:
+            _failed(f"widget missing required anchor: {needle[:55]}")
+            failures += 1
+    # Reset must NOT use the old one-line welcome string
+    if "שיחה חדשה נפתחה. אפשר לשאול." in html:
+        _failed("old one-line reset welcome still present — should be replaced by astRenderBlankState()")
+        failures += 1
+    else:
+        _passed("old one-line reset welcome removed")
+    # Upload chip must trigger the file picker, not send text
+    if 'onclick="astTriggerUpload()"' in html:
+        _passed("upload chip wired to file picker (not text send)")
+    else:
+        _failed("upload chip not wired to astTriggerUpload")
+        failures += 1
+    # The wipe selectors that hide the blank-state when chat starts must
+    # also include the new hint line so it doesn't linger after first message
+    wipe_count = html.count('".ast-welcome,.ast-chips,.ast-bs-hint"')
+    if wipe_count >= 2:
+        _passed(f"hint line wipe wired in {wipe_count} sites (addMessage + renderHistory)")
+    else:
+        _failed(f"hint wipe wiring incomplete (count={wipe_count}, expected >=2)")
+        failures += 1
+    return failures
+
+
 def check_tool_creation_early_classification():
     """The /tools/create assistant must commit to a classification in its
     first response and explain any mid-conversation path change. This guards
@@ -548,6 +611,8 @@ def main():
     total += check_create_mode_framing()
     print()
     total += check_tool_creation_early_classification()
+    print()
+    total += check_widget_blank_state()
     print()
     if total == 0:
         print("==== ALL ASSISTANT SMOKE CHECKS PASSED ====")

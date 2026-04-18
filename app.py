@@ -11634,12 +11634,18 @@ def render_assistant_widget():
         '.ast-msg-user{background:linear-gradient(135deg,#3b82f6,#6366f1);color:#fff;align-self:flex-end;border-bottom-right-radius:4px}'
         '.ast-msg-system{background:rgba(250,204,21,.1);color:#fbbf24;align-self:center;text-align:center;font-size:12px;border-radius:8px;max-width:95%}'
         '.ast-welcome{color:#94a3b8;font-size:13px;text-align:center;padding:8px 0;line-height:1.7}'
-        '.ast-chips{display:flex;flex-wrap:wrap;gap:6px;justify-content:center;padding:6px 0}'
+        '.ast-bs-title{color:#e2e8f0;font-size:14px;font-weight:700;margin-bottom:6px;direction:rtl}'
+        '.ast-bs-sub{color:#94a3b8;font-size:12.5px;line-height:1.7;direction:rtl;text-align:right;padding:0 4px}'
+        '.ast-bs-hint{color:#64748b;font-size:11px;text-align:center;padding:4px 0 2px;font-style:italic}'
+        '.ast-chips{display:flex;flex-wrap:wrap;gap:6px;justify-content:flex-start;padding:6px 0;direction:rtl}'
         '.ast-chip{'
         '  background:rgba(59,130,246,.12);border:1px solid rgba(59,130,246,.25);color:#93c5fd;'
         '  padding:6px 12px;border-radius:20px;font-size:12px;cursor:pointer;transition:all .2s;direction:rtl;'
+        '  display:inline-flex;align-items:center;gap:6px;line-height:1.4;'
         '}'
         '.ast-chip:hover{background:rgba(59,130,246,.25);border-color:rgba(59,130,246,.5)}'
+        '.ast-chip-upload{background:rgba(139,92,246,.14);border-color:rgba(139,92,246,.3);color:#c4b5fd}'
+        '.ast-chip-upload:hover{background:rgba(139,92,246,.28);border-color:rgba(139,92,246,.55)}'
         '#ast-input-area{'
         '  padding:10px 12px;border-top:1px solid rgba(255,255,255,.08);display:flex;gap:8px;align-items:flex-end;flex-shrink:0;'
         '}'
@@ -11691,15 +11697,28 @@ def render_assistant_widget():
         '    </div>'
         '  </div>'
         '  <div id="ast-messages">'
+        # Multi-role blank-state. JS captures this on load (astBlankHtml) and
+        # re-injects on reset / empty-init so refresh and reset always show
+        # the same starter experience.
         '    <div class="ast-welcome">'
-        '      ' + welcome_line +
+        '      <div class="ast-bs-title">\U0001F916 \u05d9\u05d5\u05e2\u05e5 Scriptly \u2014 \u05d1\u05de\u05d4 \u05d0\u05e2\u05d6\u05d5\u05e8?</div>'
+        '      <div class="ast-bs-sub">\u05d0\u05e0\u05d9 \u05d9\u05db\u05d5\u05dc \u05dc\u05de\u05e6\u05d5\u05d0 \u05dc\u05da \u05db\u05dc\u05d9 \u05e9\u05de\u05ea\u05d0\u05d9\u05dd, \u05dc\u05d4\u05e0\u05d7\u05d5\u05ea \u05d0\u05d5\u05ea\u05da \u05d1\u05d1\u05e0\u05d9\u05d9\u05ea \u05db\u05dc\u05d9 \u05d7\u05d3\u05e9, \u05dc\u05d4\u05d2\u05d9\u05d3 \u05d0\u05dd \u05d4\u05d1\u05e7\u05e9\u05d4 \u05e9\u05dc\u05da \u05de\u05ea\u05d0\u05d9\u05de\u05d4 \u05dc-self-serve \u05d0\u05d5 \u05d3\u05d5\u05e8\u05e9\u05ea \u05e4\u05d9\u05ea\u05d5\u05d7, \u05dc\u05e0\u05ea\u05d7 \u05e7\u05d5\u05d1\u05e5 \u05e9\u05ea\u05e2\u05dc\u05d4, \u05d0\u05d5 \u05dc\u05e2\u05e0\u05d5\u05ea \u05e2\u05dc \u05e9\u05d0\u05dc\u05d4 \u05de\u05d4\u05d9\u05e8\u05d5\u05ea \u05d1\u05ea\u05d7\u05d5\u05dd HR / \u05e9\u05db\u05e8 / \u05d3\u05d5\u05d7\u05d5\u05ea.</div>'
         '    </div>'
         '    <div class="ast-chips">'
-        '      <span class="ast-chip" onclick="astPickSuggestion(this)">\u05d0\u05d9\u05d6\u05d4 \u05db\u05dc\u05d9 \u05de\u05ea\u05d0\u05d9\u05dd \u05dc\u05e7\u05d5\u05d1\u05e5 \u05e9\u05dc\u05d9?</span>'
-        '      <span class="ast-chip" onclick="astPickSuggestion(this)">\u05d0\u05d9\u05da \u05de\u05e8\u05d9\u05e6\u05d9\u05dd \u05d3\u05d5\u05d7?</span>'
-        '      <span class="ast-chip" onclick="astPickSuggestion(this)">\u05e9\u05d0\u05dc\u05d4 \u05e2\u05dc \u05e9\u05e2\u05d5\u05ea \u05e0\u05d5\u05e1\u05e4\u05d5\u05ea</span>'
-        '      <span class="ast-chip" onclick="astPickSuggestion(this)">\u05de\u05d4 \u05d4\u05db\u05dc\u05d9\u05dd \u05e9\u05d6\u05de\u05d9\u05e0\u05d9\u05dd \u05dc\u05d9?</span>'
+        # Find existing tool
+        '      <span class="ast-chip" onclick="astPickSuggestion(this)">\U0001F50D \u05d0\u05d9\u05d6\u05d4 \u05db\u05dc\u05d9 \u05de\u05ea\u05d0\u05d9\u05dd \u05dc\u05d9?</span>'
+        # Build a new tool
+        '      <span class="ast-chip" onclick="astPickSuggestion(this)">\u2728 \u05d0\u05e0\u05d9 \u05e8\u05d5\u05e6\u05d4 \u05dc\u05d1\u05e0\u05d5\u05ea \u05db\u05dc\u05d9 \u05d7\u05d3\u05e9</span>'
+        # Self-serve vs platform-team boundary
+        '      <span class="ast-chip" onclick="astPickSuggestion(this)">\U0001F91D \u05dc\u05d1\u05e0\u05d5\u05ea \u05dc\u05d1\u05d3 \u05d0\u05d5 \u05e6\u05e8\u05d9\u05da \u05e4\u05d9\u05ea\u05d5\u05d7?</span>'
+        # Upload + analyze (special: triggers file picker, doesn't send text)
+        '      <span class="ast-chip ast-chip-upload" onclick="astTriggerUpload()">\U0001F4CE \u05ea\u05e2\u05d6\u05d5\u05e8 \u05dc\u05d9 \u05dc\u05e0\u05ea\u05d7 \u05e7\u05d5\u05d1\u05e5 \u05e9\u05d0\u05e2\u05dc\u05d4</span>'
+        # Quick HR/payroll question
+        '      <span class="ast-chip" onclick="astPickSuggestion(this)">\U0001F4A1 \u05e9\u05d0\u05dc\u05d4 \u05de\u05d4\u05d9\u05e8\u05d4 \u05e2\u05dc \u05e9\u05e2\u05d5\u05ea / \u05e9\u05db\u05e8 / \u05d7\u05d5\u05e7\u05d9 \u05e2\u05d1\u05d5\u05d3\u05d4</span>'
+        # What-can-you-do
+        '      <span class="ast-chip" onclick="astPickSuggestion(this)">\U0001F916 \u05de\u05d4 \u05d0\u05ea\u05d4 \u05d9\u05d5\u05d3\u05e2 \u05dc\u05e2\u05e9\u05d5\u05ea?</span>'
         '    </div>'
+        '    <div class="ast-bs-hint">\u05d0\u05ea\u05d4 \u05ea\u05de\u05d9\u05d3 \u05d7\u05d5\u05e4\u05e9\u05d9 \u05dc\u05db\u05ea\u05d5\u05d1 \u05db\u05dc \u05d3\u05d1\u05e8 \u05d1\u05ea\u05d9\u05d1\u05ea \u05d4\u05e7\u05dc\u05d8 \u05dc\u05de\u05d8\u05d4</div>'
         '  </div>'
         '  <div id="ast-input-area">'
         '    <button id="ast-file-btn" onclick="document.getElementById(\'ast-file-input\').click()" title="\u05d4\u05e2\u05dc\u05d0\u05ea \u05e7\u05d5\u05d1\u05e5">&#128206;</button>'
@@ -11711,6 +11730,21 @@ def render_assistant_widget():
         '</div>'
         '<script>'
         'var astSessionId=null,astLoading=false,astArtifactIds=[],astMsgCount=0,astLastCtaKey="";'
+        # Snapshot the rich blank-state on first load so reset/empty-init can
+        # restore the same starter chips without duplicating markup in JS.
+        'var astBlankHtml=(function(){var c=document.getElementById("ast-messages");return c?c.innerHTML:""})();'
+        'function astRenderBlankState(){'
+        '  var c=document.getElementById("ast-messages");'
+        '  if(!c||!astBlankHtml)return;'
+        '  c.innerHTML=astBlankHtml;'
+        '}'
+        # File-upload chip — triggers the existing hidden file input instead
+        # of sending text, so "תעזור לי לנתח קובץ שאעלה" actually opens the
+        # file picker as the user expects.
+        'function astTriggerUpload(){'
+        '  if(!astSessionId){astInitSession();setTimeout(astTriggerUpload,300);return}'
+        '  var f=document.getElementById("ast-file-input");if(f)f.click();'
+        '}'
         'function toggleAssistantPanel(){'
         '  var p=document.getElementById("ast-panel"),f=document.getElementById("ast-fab");'
         '  if(p.classList.contains("ast-open")){'
@@ -11727,7 +11761,14 @@ def render_assistant_widget():
         '  .then(function(r){return r.json()})'
         '  .then(function(d){'
         '    if(d.session_id){astSessionId=d.session_id;'
-        '      if(d.messages&&d.messages.length>0){astMsgCount=d.messages.length;astRenderHistory(d.messages)}'
+        '      if(d.messages&&d.messages.length>0){'
+        '        astMsgCount=d.messages.length;astRenderHistory(d.messages);'
+        '      }else{'
+        # Server returned a fresh session with no messages — re-render the
+        # rich blank-state so the user always lands on the starter chips,
+        # even after a server-side cleanup wiped the prior session.
+        '        astRenderBlankState();'
+        '      }'
         '    }'
         '  }).catch(function(){});'
         '  var fab=document.getElementById("ast-fab");'
@@ -11739,10 +11780,9 @@ def render_assistant_widget():
         '  .then(function(d){'
         '    if(d.ok&&d.session_id){'
         '      astSessionId=d.session_id;astMsgCount=0;astArtifactIds=[];astLastCtaKey="";'
-        '      var c=document.getElementById("ast-messages");c.innerHTML="";'
-        '      var w=document.createElement("div");w.className="ast-welcome";'
-        '      w.textContent="\\u05e9\\u05d9\\u05d7\\u05d4 \\u05d7\\u05d3\\u05e9\\u05d4 \\u05e0\\u05e4\\u05ea\\u05d7\\u05d4. \\u05d0\\u05e4\\u05e9\\u05e8 \\u05dc\\u05e9\\u05d0\\u05d5\\u05dc.";'
-        '      c.appendChild(w);'
+        # Restore the full rich blank-state — same chips as on first load —
+        # not the previous one-liner welcome.
+        '      astRenderBlankState();'
         '    }'
         '  }).catch(function(){});'
         '}'
@@ -11799,7 +11839,7 @@ def render_assistant_widget():
         '}'
         'function astRenderHistory(msgs){'
         '  var c=document.getElementById("ast-messages");'
-        '  c.querySelectorAll(".ast-welcome,.ast-chips").forEach(function(el){el.remove()});'
+        '  c.querySelectorAll(".ast-welcome,.ast-chips,.ast-bs-hint").forEach(function(el){el.remove()});'
         '  msgs.forEach(function(m){'
         '    var div=document.createElement("div");div.className="ast-msg "+(m.role==="user"?"ast-msg-user":"ast-msg-ai");'
         '    div.innerHTML=astFormatText(m.content);c.appendChild(div);'
@@ -11814,7 +11854,7 @@ def render_assistant_widget():
         '}'
         'function astAddMessage(role,text){'
         '  var c=document.getElementById("ast-messages");'
-        '  c.querySelectorAll(".ast-welcome,.ast-chips").forEach(function(el){el.remove()});'
+        '  c.querySelectorAll(".ast-welcome,.ast-chips,.ast-bs-hint").forEach(function(el){el.remove()});'
         '  var div=document.createElement("div");div.className="ast-msg "+(role==="user"?"ast-msg-user":"ast-msg-ai");'
         '  div.innerHTML=astFormatText(text);c.appendChild(div);c.scrollTop=c.scrollHeight;'
         '}'
