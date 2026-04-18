@@ -11770,7 +11770,12 @@ def render_assistant_widget():
         '  astLastCtaKey=key;'
         '  var c=document.getElementById("ast-messages");'
         '  var wrap=document.createElement("div");wrap.className="ast-cta-wrap";'
-        '  var a=document.createElement("a");a.href=sb.url;'
+        '  var a=document.createElement("a");'
+        # Append the brief as an encoded query param so the create page can
+        # seed its chat with the AI-generated spec for this exact request.
+        '  var hrefBase=sb.url||"/tools/create";'
+        '  var briefParam=sb.brief?((hrefBase.indexOf("?")>=0?"&":"?")+"brief="+encodeURIComponent(sb.brief)):"";'
+        '  a.href=hrefBase+briefParam;'
         # self-serve = purple (build it yourself); escalate = amber (sent to dev team)
         '  var title,subTitle,ariaLabel;'
         '  if(kind==="escalate"){'
@@ -16078,13 +16083,16 @@ def parse_assistant_output(text):
     self_serve_match = _SELF_SERVE_BUILD_RE.search(text)
     escalate_match = _ESCALATE_RE.search(text)
     legacy_match = _SUGGEST_BUILD_RE.search(text)
+    # The widget appends &brief=<encoded> client-side so the create page can
+    # frame the conversation and seed the chat. Mode is part of the URL so
+    # plain anchor clicks (no JS) still land in the right framing.
     if self_serve_match:
         parsed = _parse_marker_body(self_serve_match.group(1))
         brief = (parsed.get("brief") or "").strip()
         if brief:
             build = {
                 "brief": brief,
-                "url": "/tools/create",
+                "url": "/tools/create?mode=self_serve",
                 "kind": "self_serve",
             }
     elif escalate_match:
@@ -16093,7 +16101,7 @@ def parse_assistant_output(text):
         if brief:
             build = {
                 "brief": brief,
-                "url": "/tools/create?mode=brief",
+                "url": "/tools/create?mode=escalate",
                 "kind": "escalate",
             }
     elif legacy_match:
@@ -16102,7 +16110,7 @@ def parse_assistant_output(text):
         if brief:
             build = {
                 "brief": brief,
-                "url": "/tools/create",
+                "url": "/tools/create?mode=self_serve",
                 "kind": "self_serve",
             }
 
@@ -17110,6 +17118,127 @@ def update_tool_definition(tool_id):
 
 # ── AI Tool Creation Chat ────────────────────────────────────────
 
+def _build_create_mode_framing(mode, brief):
+    """Build mode-aware UX bits for the /tools/create page when the user
+    arrived from an assistant CTA.
+
+    Returns a 4-tuple:
+      banner_html               — top banner (empty string if no mode)
+      welcome_html_override     — replacement for the default welcome bubble
+                                  (None means keep default)
+      hide_default_suggestions  — bool, True if generic suggestion panel
+                                  should be hidden (escalate doesn't want
+                                  generic prompts)
+      seed_assistant_text       — text to insert as the first assistant
+                                  message in an empty chat session, or None
+
+    Pure function — easy to smoke-test and avoids leaking template logic
+    into the route body."""
+    mode = (mode or "").strip().lower()
+    if mode not in ("self_serve", "escalate"):
+        return ("", None, False, None)
+    brief_clean = (brief or "").strip()
+    # Hard cap so a malformed query string can't blow up the page or DB row
+    if len(brief_clean) > 1500:
+        brief_clean = brief_clean[:1500].rstrip() + "…"
+    brief_safe = esc(brief_clean) if brief_clean else ""
+    brief_block_html = ""
+    if brief_safe:
+        brief_block_html = (
+            '<div style="background:rgba(255,255,255,0.55);border-radius:10px;'
+            'padding:10px 12px;margin-top:10px;font-size:13px;line-height:1.6;'
+            'white-space:pre-wrap;color:#1f2937">'
+            + brief_safe + '</div>'
+        )
+
+    if mode == "self_serve":
+        banner_html = (
+            '<div style="background:linear-gradient(135deg,#ede9fe,#ddd6fe);'
+            'border:1px solid #c4b5fd;border-radius:14px;padding:14px 18px;'
+            'margin-bottom:14px;direction:rtl">'
+            '<div style="font-size:14px;font-weight:800;color:#5b21b6">'
+            '\U0001F4AA הגעת מהיועץ — זה מסוג הכלים שאתה יכול לבנות בעצמך כאן'
+            '</div>'
+            '<div style="font-size:12.5px;color:#4c1d95;margin-top:4px;line-height:1.6">'
+            'האשף ינחה אותך לחדד את האפיון, ובסוף תשמור את הכלי ותוכל להריץ אותו.'
+            '</div>'
+            + (('<div style="font-size:12px;font-weight:700;color:#5b21b6;margin-top:10px">'
+                'האפיון הראשוני שאספנו ביחד:</div>' + brief_block_html) if brief_safe else '')
+            + '</div>'
+        )
+        welcome_html_override = (
+            '<div class="chat-bubble chat-ai">'
+            '<div class="chat-bubble-inner chat-ai-inner">'
+            '\U0001F44B שלום! אני אלווה אותך בבניית הכלי שביקשת ביועץ.<br><br>'
+            'הכלי הזה הוא בדיוק מהסוג שאתה יכול לבנות בעצמך כאן — '
+            'קובץ נכנס, חוקים פשוטים, דוח יוצא.<br><br>'
+            'נתחיל לחדד את האפיון יחד, ובסוף נשמור הגדרת כלי מוכנה לריצה.'
+            '</div></div>'
+        )
+        # Self-serve users still benefit from the example chips
+        hide_default_suggestions = False
+        if brief_clean:
+            seed_assistant_text = (
+                "\U0001F44B שלום! הגעת אליי מהיועץ עם בקשה לכלי שאתה יכול לבנות בעצמך כאן. "
+                "האפיון הראשוני שאספנו:\n\n"
+                + brief_clean + "\n\n"
+                "בוא נחדד אותו יחד עד שיהיה מוכן לשמירה. "
+                "מה תעדיף שנתחיל ממנו — להחליט סופית על העמודות בקובץ הקלט, "
+                "להגדיר את מבנה הפלט, או יש משהו ספציפי בבריף שצריך לשנות?"
+            )
+        else:
+            seed_assistant_text = (
+                "\U0001F44B שלום! הגעת אליי מהיועץ לבניית כלי שאתה יכול ליצור בעצמך כאן. "
+                "כדי שאוכל לעזור, ספר לי בקצרה: מה הכלי צריך לקבל כקלט, "
+                "מה הוא צריך לעשות עם המידע, ואיך הפלט אמור להיראות?"
+            )
+    else:
+        # escalate
+        banner_html = (
+            '<div style="background:linear-gradient(135deg,#fef3c7,#fde68a);'
+            'border:1px solid #f59e0b;border-radius:14px;padding:14px 18px;'
+            'margin-bottom:14px;direction:rtl">'
+            '<div style="font-size:14px;font-weight:800;color:#92400e">'
+            '\U0001F6E0 הגעת מהיועץ — בקשה זו דורשת פיתוח של צוות הפלטפורמה'
+            '</div>'
+            '<div style="font-size:12.5px;color:#78350f;margin-top:4px;line-height:1.6">'
+            'נחדד יחד את האפיון. בסיום, הכפתור ״שלח לפיתוח״ יעביר אותו לצוות '
+            'ותוכל להמשיך בעבודה הרגילה. אין צורך לבנות כאן את הכלי בעצמך.'
+            '</div>'
+            + (('<div style="font-size:12px;font-weight:700;color:#92400e;margin-top:10px">'
+                'האפיון הראשוני שאספנו ביחד:</div>' + brief_block_html) if brief_safe else '')
+            + '</div>'
+        )
+        welcome_html_override = (
+            '<div class="chat-bubble chat-ai">'
+            '<div class="chat-bubble-inner chat-ai-inner">'
+            '\U0001F44B שלום! אני אעזור לך להכין אפיון מסודר עבור צוות הפיתוח.<br><br>'
+            'הבקשה שביקשת ביועץ חורגת מהיכולות של אשף ה-self-serve כאן '
+            '(אינטגרציה / שמירה מתמשכת / מסכים מורכבים / יכולת חדשה).<br><br>'
+            'נחדד את האפיון יחד, ובסוף תוכל לשלוח אותו ישירות לצוות בלחיצת כפתור.'
+            '</div></div>'
+        )
+        # The generic "what do others ask?" chips imply self-serve building —
+        # they're noise in escalation mode.
+        hide_default_suggestions = True
+        if brief_clean:
+            seed_assistant_text = (
+                "\U0001F44B שלום! הגעת אליי מהיועץ עם בקשה שמסווגת כדורשת פיתוח של צוות הפלטפורמה. "
+                "האפיון הראשוני שאספנו:\n\n"
+                + brief_clean + "\n\n"
+                "המטרה כעת: לחדד יחד את האפיון לפני שנשלח לצוות. "
+                "כשנסיים אכין developer brief מסודר ותוכל לשלוח אותו בלחיצת כפתור. "
+                "בוא נתחיל — האם הבריף הראשוני נראה לך נכון, או שיש משהו שצריך לתקן או להוסיף?"
+            )
+        else:
+            seed_assistant_text = (
+                "\U0001F44B שלום! הגעת אליי מהיועץ עם בקשה שדורשת פיתוח של צוות הפלטפורמה. "
+                "כדי שאוכל להכין אפיון טוב לצוות, ספר לי קצת יותר על מה אתה מנסה להשיג, "
+                "ואיזה חלק מהבקשה הוא הכי קריטי מבחינתך."
+            )
+    return (banner_html, welcome_html_override, hide_default_suggestions, seed_assistant_text)
+
+
 @app.route("/tools/create", methods=["GET"])
 @login_required
 def tools_create():
@@ -17118,6 +17247,14 @@ def tools_create():
 
     lang = get_flow_lang()
     text = get_flow_text(lang)
+
+    # Mode-aware arrival from the dashboard assistant CTA. Validates and
+    # truncates inside the helper; safe to pass raw.
+    arrival_mode = request.args.get("mode", "")
+    arrival_brief = request.args.get("brief", "")
+    mode_banner_html, mode_welcome_html, hide_default_suggestions, seed_assistant_text = (
+        _build_create_mode_framing(arrival_mode, arrival_brief)
+    )
 
     # Create new chat session
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -17168,6 +17305,24 @@ def tools_create():
         except (json.JSONDecodeError, TypeError):
             existing_messages = []
 
+    # Seed the conversation with a mode-aware opening assistant message,
+    # but only if the session is brand-new. We don't overwrite a user's
+    # in-progress chat just because they re-arrived via a new CTA — the
+    # banner still shows the new mode in that case.
+    if seed_assistant_text and not existing_messages:
+        existing_messages = [{"role": "assistant", "content": seed_assistant_text}]
+        try:
+            with get_db() as db:
+                db.execute(
+                    "UPDATE tool_chat_sessions SET messages_json=?, updated_at=? WHERE id=?",
+                    (json.dumps(existing_messages, ensure_ascii=False), now, chat_session_id),
+                )
+                db.commit()
+        except Exception:
+            # Seeding is best-effort; if persistence fails the user will just
+            # see the banner without a pre-conversation, which is still usable.
+            pass
+
     for msg in existing_messages:
         if msg["role"] == "user":
             user_text = esc(msg["content"]).replace("\n", "<br>")
@@ -17204,6 +17359,81 @@ def tools_create():
                         '<button type="submit" name="action" value="publish" class="btn btn-blue" style="border-radius:10px;font-size:13px;background:#047857">&#128228; שלח לאישור ופרסום</button>'
                         '</div></form></div>'
                     )
+
+    # Default welcome bubble + suggestions panel — used unless the user
+    # arrived via a mode-specific assistant CTA (then we swap them).
+    default_welcome_html = (
+        '<div class="chat-bubble chat-ai">'
+        '<div class="chat-bubble-inner chat-ai-inner">'
+        '&#128075; שלום! אני העוזר החכם של Scriptly.<br><br>'
+        'אני יכול לעזור לך ב-3 דרכים:<br><br>'
+        '&#128269; <b>נתח קובץ עכשיו</b><br>'
+        '<span style="color:#475569;font-size:13px">פשוט תעלה קובץ ותשאל אותי כל שאלה — אענה מיד.</span><br><br>'
+        '&#128295; <b>שפר כלי קיים</b><br>'
+        '<span style="color:#475569;font-size:13px">רוצה לשנות כלי שכבר יש לך? אני אעשה שינויים פשוטים מיד, או אאפיין יחד איתך שינויים מורכבים.</span><br><br>'
+        '&#10024; <b>בנה כלי חדש</b><br>'
+        '<span style="color:#475569;font-size:13px">ספר לי מה אתה צריך — אשאל אותך שאלות מדויקות ואכין בריף מלא שהמפתח יוכל לבנות בשבילך.</span><br><br>'
+        '&#128161; <b>לא יודע מאיפה להתחיל? הנה מה שאחרים מבקשים:</b>'
+        '</div></div>'
+    )
+    default_suggestions_html = (
+        '<div id="suggestionsPanel">'
+        '<div class="suggest-cat" onclick="toggleCat(this)">'
+        '<div class="suggest-cat-header">&#128336; נוכחות ושעות</div>'
+        '<div class="suggest-cat-items">'
+        '<button class="suggest-btn" onclick="pickSuggestion(this)">מי לא הגיע היום?</button>'
+        '<button class="suggest-btn" onclick="pickSuggestion(this)">מי קרוב לחריגת שעות נוספות החודש?</button>'
+        '<button class="suggest-btn" onclick="pickSuggestion(this)">כמה שעות עבד כל עובד השבוע?</button>'
+        '<button class="suggest-btn" onclick="pickSuggestion(this)">מי עבד בשבת או בחג?</button>'
+        '<button class="suggest-btn" onclick="pickSuggestion(this)">הצג לי עובדים עם יותר מ-X שעות נוספות החודש</button>'
+        '</div></div>'
+        '<div class="suggest-cat" onclick="toggleCat(this)">'
+        '<div class="suggest-cat-header">&#128176; שכר וחישובים</div>'
+        '<div class="suggest-cat-items">'
+        '<button class="suggest-btn" onclick="pickSuggestion(this)">כמה שעות נוספות צריך לשלם החודש?</button>'
+        '<button class="suggest-btn" onclick="pickSuggestion(this)">מי זכאי לבונוס לפי הביצועים שלו?</button>'
+        '<button class="suggest-btn" onclick="pickSuggestion(this)">חשב לי את עלות כוח האדם לפי מחלקה</button>'
+        '<button class="suggest-btn" onclick="pickSuggestion(this)">מי קיבל העלאת שכר השנה ומי לא?</button>'
+        '<button class="suggest-btn" onclick="pickSuggestion(this)">מה ההפרש בין שכר גברים לנשים באותה רמה?</button>'
+        '</div></div>'
+        '<div class="suggest-cat" onclick="toggleCat(this)">'
+        '<div class="suggest-cat-header">&#128197; היעדרויות וחופשות</div>'
+        '<div class="suggest-cat-items">'
+        '<button class="suggest-btn" onclick="pickSuggestion(this)">מי ניצל יותר מ-X ימי מחלה השנה?</button>'
+        '<button class="suggest-btn" onclick="pickSuggestion(this)">מי מסיים את ימי החופשה שלו בסוף השנה?</button>'
+        '<button class="suggest-btn" onclick="pickSuggestion(this)">הצג לי תמונת היעדרויות לפי מחלקה</button>'
+        '<button class="suggest-btn" onclick="pickSuggestion(this)">מי בחל&quot;ת או בחופשת לידה כרגע?</button>'
+        '<button class="suggest-btn" onclick="pickSuggestion(this)">כמה ימי מחלה נוצלו לעומת אשתקד?</button>'
+        '</div></div>'
+        '<div class="suggest-cat" onclick="toggleCat(this)">'
+        '<div class="suggest-cat-header">&#128101; כוח אדם וניהול</div>'
+        '<div class="suggest-cat-items">'
+        '<button class="suggest-btn" onclick="pickSuggestion(this)">מי מסיים חוזה בחודשיים הקרובים?</button>'
+        '<button class="suggest-btn" onclick="pickSuggestion(this)">כמה עובדים יש לי בכל מחלקה?</button>'
+        '<button class="suggest-btn" onclick="pickSuggestion(this)">מי עובד אצלנו יותר מ-5 שנים?</button>'
+        '<button class="suggest-btn" onclick="pickSuggestion(this)">הצג לי עובדים חדשים מהחצי שנה האחרונה</button>'
+        '<button class="suggest-btn" onclick="pickSuggestion(this)">מי הגיע לגיל פרישה השנה?</button>'
+        '</div></div>'
+        '<div class="suggest-cat" onclick="toggleCat(this)">'
+        '<div class="suggest-cat-header">&#9878;&#65039; ציות וחוקי עבודה</div>'
+        '<div class="suggest-cat-items">'
+        '<button class="suggest-btn" onclick="pickSuggestion(this)">מי חרג ממכסת שעות נוספות חוקית?</button>'
+        '<button class="suggest-btn" onclick="pickSuggestion(this)">מי לא קיבל מנוחה שבועית כחוק?</button>'
+        '<button class="suggest-btn" onclick="pickSuggestion(this)">הצג לי עובדי לילה שחרגו מ-58 שעות שבועיות</button>'
+        '<button class="suggest-btn" onclick="pickSuggestion(this)">מי לא קיבל תלוש שכר החודש?</button>'
+        '</div></div>'
+        '<div class="suggest-cat" onclick="toggleCat(this)">'
+        '<div class="suggest-cat-header">&#128202; ניתוח וטרנדים</div>'
+        '<div class="suggest-cat-items">'
+        '<button class="suggest-btn" onclick="pickSuggestion(this)">השווה נוכחות החודש לעומת החודש שעבר</button>'
+        '<button class="suggest-btn" onclick="pickSuggestion(this)">מאיזו מחלקה יש הכי הרבה תחלופת עובדים?</button>'
+        '<button class="suggest-btn" onclick="pickSuggestion(this)">הצג לי גרף עלויות כוח אדם לאורך השנה</button>'
+        '<button class="suggest-btn" onclick="pickSuggestion(this)">מי השתפר/הידרדר בביצועים לאורך זמן?</button>'
+        '</div></div>'
+        '</div>'
+    )
+    welcome_bubble_html = mode_welcome_html if mode_welcome_html else default_welcome_html
+    suggestions_panel_html = "" if hide_default_suggestions else default_suggestions_html
 
     body = (
         '<style>'
@@ -17305,8 +17535,10 @@ def tools_create():
         '<div><a href="/marketplace" style="color:#2563eb;font-size:13px;text-decoration:none">&#8592; חזרה לשוק הכלים</a></div>'
         '<form method="post" action="/tools/create/reset"><button type="submit" class="btn btn-gray" style="font-size:12px;border-radius:8px">&#128260; שיחה חדשה</button></form>'
         '</div>'
+        # Mode-aware arrival banner (empty string when no mode= in URL)
+        + mode_banner_html
         # Chat container
-        '<div class="chat-container" id="chatContainer">'
+        + '<div class="chat-container" id="chatContainer">'
         # Drop zone overlay
         '<div class="chat-drop-overlay" id="dropOverlay">'
         '<div class="chat-drop-icon">&#128206;</div>'
@@ -17330,74 +17562,8 @@ def tools_create():
         '<div class="chat-header-sub">נתח קבצים, בנה כלים חדשים, או שפר כלים קיימים — הכל בשיחה אחת</div>'
         '</div>'
         '<div class="chat-messages" id="chatMessages">'
-        # Welcome message
-        '<div class="chat-bubble chat-ai">'
-        '<div class="chat-bubble-inner chat-ai-inner">'
-        '&#128075; שלום! אני העוזר החכם של Scriptly.<br><br>'
-        'אני יכול לעזור לך ב-3 דרכים:<br><br>'
-        '&#128269; <b>נתח קובץ עכשיו</b><br>'
-        '<span style="color:#475569;font-size:13px">פשוט תעלה קובץ ותשאל אותי כל שאלה — אענה מיד.</span><br><br>'
-        '&#128295; <b>שפר כלי קיים</b><br>'
-        '<span style="color:#475569;font-size:13px">רוצה לשנות כלי שכבר יש לך? אני אעשה שינויים פשוטים מיד, או אאפיין יחד איתך שינויים מורכבים.</span><br><br>'
-        '&#10024; <b>בנה כלי חדש</b><br>'
-        '<span style="color:#475569;font-size:13px">ספר לי מה אתה צריך — אשאל אותך שאלות מדויקות ואכין בריף מלא שהמפתח יוכל לבנות בשבילך.</span><br><br>'
-        '&#128161; <b>לא יודע מאיפה להתחיל? הנה מה שאחרים מבקשים:</b>'
-        '</div></div>'
-        # Suggestion categories
-        '<div id="suggestionsPanel">'
-        '<div class="suggest-cat" onclick="toggleCat(this)">'
-        '<div class="suggest-cat-header">&#128336; נוכחות ושעות</div>'
-        '<div class="suggest-cat-items">'
-        '<button class="suggest-btn" onclick="pickSuggestion(this)">מי לא הגיע היום?</button>'
-        '<button class="suggest-btn" onclick="pickSuggestion(this)">מי קרוב לחריגת שעות נוספות החודש?</button>'
-        '<button class="suggest-btn" onclick="pickSuggestion(this)">כמה שעות עבד כל עובד השבוע?</button>'
-        '<button class="suggest-btn" onclick="pickSuggestion(this)">מי עבד בשבת או בחג?</button>'
-        '<button class="suggest-btn" onclick="pickSuggestion(this)">הצג לי עובדים עם יותר מ-X שעות נוספות החודש</button>'
-        '</div></div>'
-        '<div class="suggest-cat" onclick="toggleCat(this)">'
-        '<div class="suggest-cat-header">&#128176; שכר וחישובים</div>'
-        '<div class="suggest-cat-items">'
-        '<button class="suggest-btn" onclick="pickSuggestion(this)">כמה שעות נוספות צריך לשלם החודש?</button>'
-        '<button class="suggest-btn" onclick="pickSuggestion(this)">מי זכאי לבונוס לפי הביצועים שלו?</button>'
-        '<button class="suggest-btn" onclick="pickSuggestion(this)">חשב לי את עלות כוח האדם לפי מחלקה</button>'
-        '<button class="suggest-btn" onclick="pickSuggestion(this)">מי קיבל העלאת שכר השנה ומי לא?</button>'
-        '<button class="suggest-btn" onclick="pickSuggestion(this)">מה ההפרש בין שכר גברים לנשים באותה רמה?</button>'
-        '</div></div>'
-        '<div class="suggest-cat" onclick="toggleCat(this)">'
-        '<div class="suggest-cat-header">&#128197; היעדרויות וחופשות</div>'
-        '<div class="suggest-cat-items">'
-        '<button class="suggest-btn" onclick="pickSuggestion(this)">מי ניצל יותר מ-X ימי מחלה השנה?</button>'
-        '<button class="suggest-btn" onclick="pickSuggestion(this)">מי מסיים את ימי החופשה שלו בסוף השנה?</button>'
-        '<button class="suggest-btn" onclick="pickSuggestion(this)">הצג לי תמונת היעדרויות לפי מחלקה</button>'
-        '<button class="suggest-btn" onclick="pickSuggestion(this)">מי בחל&quot;ת או בחופשת לידה כרגע?</button>'
-        '<button class="suggest-btn" onclick="pickSuggestion(this)">כמה ימי מחלה נוצלו לעומת אשתקד?</button>'
-        '</div></div>'
-        '<div class="suggest-cat" onclick="toggleCat(this)">'
-        '<div class="suggest-cat-header">&#128101; כוח אדם וניהול</div>'
-        '<div class="suggest-cat-items">'
-        '<button class="suggest-btn" onclick="pickSuggestion(this)">מי מסיים חוזה בחודשיים הקרובים?</button>'
-        '<button class="suggest-btn" onclick="pickSuggestion(this)">כמה עובדים יש לי בכל מחלקה?</button>'
-        '<button class="suggest-btn" onclick="pickSuggestion(this)">מי עובד אצלנו יותר מ-5 שנים?</button>'
-        '<button class="suggest-btn" onclick="pickSuggestion(this)">הצג לי עובדים חדשים מהחצי שנה האחרונה</button>'
-        '<button class="suggest-btn" onclick="pickSuggestion(this)">מי הגיע לגיל פרישה השנה?</button>'
-        '</div></div>'
-        '<div class="suggest-cat" onclick="toggleCat(this)">'
-        '<div class="suggest-cat-header">&#9878;&#65039; ציות וחוקי עבודה</div>'
-        '<div class="suggest-cat-items">'
-        '<button class="suggest-btn" onclick="pickSuggestion(this)">מי חרג ממכסת שעות נוספות חוקית?</button>'
-        '<button class="suggest-btn" onclick="pickSuggestion(this)">מי לא קיבל מנוחה שבועית כחוק?</button>'
-        '<button class="suggest-btn" onclick="pickSuggestion(this)">הצג לי עובדי לילה שחרגו מ-58 שעות שבועיות</button>'
-        '<button class="suggest-btn" onclick="pickSuggestion(this)">מי לא קיבל תלוש שכר החודש?</button>'
-        '</div></div>'
-        '<div class="suggest-cat" onclick="toggleCat(this)">'
-        '<div class="suggest-cat-header">&#128202; ניתוח וטרנדים</div>'
-        '<div class="suggest-cat-items">'
-        '<button class="suggest-btn" onclick="pickSuggestion(this)">השווה נוכחות החודש לעומת החודש שעבר</button>'
-        '<button class="suggest-btn" onclick="pickSuggestion(this)">מאיזו מחלקה יש הכי הרבה תחלופת עובדים?</button>'
-        '<button class="suggest-btn" onclick="pickSuggestion(this)">הצג לי גרף עלויות כוח אדם לאורך השנה</button>'
-        '<button class="suggest-btn" onclick="pickSuggestion(this)">מי השתפר/הידרדר בביצועים לאורך זמן?</button>'
-        '</div></div>'
-        '</div>'
+        + welcome_bubble_html
+        + suggestions_panel_html
         + msgs_html
         + '</div>'
         # Input area

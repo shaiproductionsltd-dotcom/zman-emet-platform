@@ -195,10 +195,20 @@ def check_marker_parser():
         return lambda rec, sb: bool(rec) and rec.get("tool_id") == tool_id and sb is None
 
     def _expect_self_serve():
-        return lambda rec, sb: rec is None and bool(sb) and sb.get("kind") == "self_serve" and sb.get("url") == "/tools/create"
+        return lambda rec, sb: (
+            rec is None and bool(sb)
+            and sb.get("kind") == "self_serve"
+            and "/tools/create" in (sb.get("url") or "")
+            and "mode=self_serve" in (sb.get("url") or "")
+        )
 
     def _expect_escalate():
-        return lambda rec, sb: rec is None and bool(sb) and sb.get("kind") == "escalate" and "/tools/create" in (sb.get("url") or "")
+        return lambda rec, sb: (
+            rec is None and bool(sb)
+            and sb.get("kind") == "escalate"
+            and "/tools/create" in (sb.get("url") or "")
+            and "mode=escalate" in (sb.get("url") or "")
+        )
 
     def _expect_legacy_self_serve():
         # Legacy SUGGEST_BUILD must route to self_serve for back-compat
@@ -246,6 +256,111 @@ def check_marker_parser():
             if token in clean:
                 _failed(f"{label}: marker token leaked into display", token)
                 failures += 1
+    return failures
+
+
+def check_create_mode_framing():
+    """The /tools/create page must look meaningfully different depending on
+    how the user arrived (self-serve vs escalate vs no-mode)."""
+    print("[8] /tools/create mode-aware framing helper")
+    failures = 0
+
+    # No mode -> default behavior preserved
+    banner, welcome, hide_sugg, seed = A._build_create_mode_framing("", "")
+    if banner == "" and welcome is None and hide_sugg is False and seed is None:
+        _passed("no mode -> page renders with original defaults")
+    else:
+        _failed("no-mode arrival altered the default page",
+                f"banner={bool(banner)} welcome={welcome is not None} hide={hide_sugg} seed={seed is not None}")
+        failures += 1
+
+    # Self-serve mode with brief
+    banner, welcome, hide_sugg, seed = A._build_create_mode_framing(
+        "self_serve",
+        "כלי שמסנן עובדים מתחת ל-100 שעות חודשיות\nקלט: דוח נוכחות חודשי\nפלט: רשימת עובדים עם שעות בפועל"
+    )
+    if banner and "לבנות בעצמך" in banner and "כלי שמסנן עובדים" in banner:
+        _passed("self_serve banner shows empowering framing + brief")
+    else:
+        _failed("self_serve banner missing or wrong", banner[:200])
+        failures += 1
+    if welcome and "בנייה" in welcome or (welcome and "בעצמך" in welcome):
+        _passed("self_serve welcome bubble overrides default")
+    else:
+        _failed("self_serve welcome override missing")
+        failures += 1
+    if hide_sugg is False:
+        _passed("self_serve keeps generic suggestion chips")
+    else:
+        _failed("self_serve should keep suggestion chips")
+        failures += 1
+    if seed and "בעצמך" in seed and "כלי שמסנן עובדים" in seed:
+        _passed("self_serve seed message includes brief verbatim")
+    else:
+        _failed("self_serve seed text wrong", (seed or "")[:200])
+        failures += 1
+
+    # Escalate mode with brief
+    banner, welcome, hide_sugg, seed = A._build_create_mode_framing(
+        "escalate",
+        "אינטגרציה עם מערכת HR חיצונית — סנכרון אוטומטי של עובדים"
+    )
+    if banner and "פיתוח" in banner and "אינטגרציה" in banner:
+        _passed("escalate banner shows platform-team framing + brief")
+    else:
+        _failed("escalate banner missing or wrong", banner[:200])
+        failures += 1
+    if welcome and ("צוות" in welcome or "פיתוח" in welcome):
+        _passed("escalate welcome bubble overrides default")
+    else:
+        _failed("escalate welcome override missing")
+        failures += 1
+    if hide_sugg is True:
+        _passed("escalate hides generic self-serve suggestion chips")
+    else:
+        _failed("escalate should hide suggestion chips")
+        failures += 1
+    if seed and "developer brief" in seed and "אינטגרציה" in seed:
+        _passed("escalate seed message frames spec handoff + carries brief")
+    else:
+        _failed("escalate seed text wrong", (seed or "")[:200])
+        failures += 1
+
+    # Brief truncation safety
+    huge = "x" * 5000
+    _, _, _, seed = A._build_create_mode_framing("self_serve", huge)
+    if seed and len([c for c in seed if c == "x"]) <= 1500:
+        _passed("brief truncated to <=1500 chars before seeding")
+    else:
+        _failed("brief truncation failed", str(len(seed or "")))
+        failures += 1
+
+    # Unknown mode is treated as no-mode
+    banner, welcome, hide_sugg, seed = A._build_create_mode_framing("garbage", "x")
+    if banner == "" and welcome is None and seed is None:
+        _passed("unknown mode falls back to no-op (defensive)")
+    else:
+        _failed("unknown mode leaked framing", str(banner)[:120])
+        failures += 1
+
+    # Parser URLs must include mode= so plain anchor clicks (no JS) still
+    # land in the right framing
+    _, _, sb1 = A.parse_assistant_output(
+        "ok\n---SELF_SERVE_BUILD---\nbrief: סינון עובדים\n---END---"
+    )
+    if sb1 and "mode=self_serve" in (sb1.get("url") or ""):
+        _passed("parser sets mode=self_serve in url")
+    else:
+        _failed("parser URL missing mode=self_serve", str(sb1))
+        failures += 1
+    _, _, sb2 = A.parse_assistant_output(
+        "ok\n---ESCALATE_TO_PLATFORM_TEAM---\nbrief: אינטגרציה\n---END---"
+    )
+    if sb2 and "mode=escalate" in (sb2.get("url") or ""):
+        _passed("parser sets mode=escalate in url")
+    else:
+        _failed("parser URL missing mode=escalate", str(sb2))
+        failures += 1
     return failures
 
 
@@ -385,6 +500,8 @@ def main():
     total += check_retention_plumbing()
     print()
     total += check_three_way_prompt_doc()
+    print()
+    total += check_create_mode_framing()
     print()
     if total == 0:
         print("==== ALL ASSISTANT SMOKE CHECKS PASSED ====")
