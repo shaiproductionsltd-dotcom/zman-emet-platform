@@ -5,6 +5,7 @@ from io import BytesIO
 import calendar
 import csv
 from datetime import date, datetime, time, timedelta
+import hashlib
 import html
 import json
 import os
@@ -12,6 +13,8 @@ import secrets
 import sqlite3
 import string
 import threading
+import urllib.request
+import urllib.error
 import uuid
 import re
 from urllib.parse import urlencode
@@ -8201,6 +8204,20 @@ def init_db():
         db.execute("CREATE INDEX IF NOT EXISTS idx_assistant_recs_tool ON assistant_recommendations(tool_id)")
         # ── End marketplace tables ────────────────────────────────
 
+        # ── Password reset tokens (token hashes only, never plaintext) ──
+        db.execute(
+            """CREATE TABLE IF NOT EXISTS password_reset_tokens (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            token_hash TEXT NOT NULL,
+            purpose TEXT NOT NULL DEFAULT 'reset',
+            expires_at TEXT NOT NULL,
+            used_at TEXT,
+            created_at TEXT NOT NULL)"""
+        )
+        db.execute("CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_user ON password_reset_tokens(user_id)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_hash ON password_reset_tokens(token_hash)")
+
         existing_columns = get_table_columns(db, "users")
         desired_columns = {
             "company_name": "TEXT",
@@ -8212,6 +8229,9 @@ def init_db():
             "service_valid_until": "TEXT",
             "billing_mode": "TEXT DEFAULT 'monthly'",
             "trial_days": "INTEGER DEFAULT 30",
+            "status": "TEXT DEFAULT 'active'",
+            "must_change_password": "INTEGER DEFAULT 0",
+            "approved_at": "TEXT",
         }
         for column_name, column_sql in desired_columns.items():
             if column_name not in existing_columns:
@@ -8241,6 +8261,267 @@ def pop_flashes():
 def generate_temp_password(length=10):
     alphabet = string.ascii_letters + string.digits
     return "".join(secrets.choice(alphabet) for _ in range(length))
+
+
+def _row_get(row, key, default=None):
+    """Safely read a column from a sqlite3.Row or dict-like row."""
+    if row is None:
+        return default
+    if hasattr(row, "get"):
+        try:
+            return row.get(key, default)
+        except Exception:
+            pass
+    try:
+        value = row[key]
+    except (KeyError, IndexError, TypeError):
+        return default
+    return default if value is None else value
+
+
+# ── Email + password reset helpers ─────────────────────────────────
+# Email uses Resend REST API via urllib (no extra deps). Silent-skip
+# when RESEND_API_KEY is missing so local dev never crashes; we log
+# what would have been sent and (for reset) also print the link to
+# stdout so testing is possible without a provider key.
+#
+# Required env vars for real delivery:
+#   RESEND_API_KEY  — provider key
+#   EMAIL_FROM      — e.g. "Scriptly <noreply@script-ly.com>"
+#   ADMIN_EMAIL     — admin notification recipient (default below)
+#   APP_BASE_URL    — absolute URL used when building links inside emails
+ADMIN_NOTIFY_EMAIL_DEFAULT = "shaiproductionsltd@gmail.com"
+EMAIL_FROM_DEFAULT = "Scriptly <onboarding@resend.dev>"
+INITIAL_APPROVED_PASSWORD = "1234"
+RESET_TOKEN_TTL_MINUTES = 60
+
+
+def get_admin_notify_email():
+    return (os.environ.get("ADMIN_EMAIL") or ADMIN_NOTIFY_EMAIL_DEFAULT).strip()
+
+
+def get_email_from():
+    return (os.environ.get("EMAIL_FROM") or EMAIL_FROM_DEFAULT).strip()
+
+
+def get_app_base_url():
+    """Prefer APP_BASE_URL env; fall back to request.host_url inside a request."""
+    base = (os.environ.get("APP_BASE_URL") or "").strip().rstrip("/")
+    if base:
+        return base
+    try:
+        host = request.host_url  # type: ignore[name-defined]
+        return str(host).rstrip("/") if host else ""
+    except Exception:
+        return ""
+
+
+def send_email(to_email, subject, html_body, text_body=None):
+    """Send an email via Resend. Returns True on 2xx, False otherwise.
+
+    If RESEND_API_KEY is not configured we log and return False — callers
+    should treat email failure as non-fatal for the caller's flow, but
+    must surface the state elsewhere (flash message / admin log).
+    """
+    to_email = (to_email or "").strip()
+    if not to_email:
+        print("[email] skipped: empty recipient")
+        return False
+    api_key = (os.environ.get("RESEND_API_KEY") or "").strip()
+    if not api_key:
+        print("[email] RESEND_API_KEY missing — would send to %s: %r" % (to_email, subject))
+        return False
+    payload = {
+        "from": get_email_from(),
+        "to": [to_email],
+        "subject": subject,
+        "html": html_body,
+    }
+    if text_body:
+        payload["text"] = text_body
+    req = urllib.request.Request(
+        "https://api.resend.com/emails",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Authorization": "Bearer " + api_key,
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            status = getattr(resp, "status", 200)
+            if 200 <= int(status) < 300:
+                return True
+            print("[email] resend non-2xx status=%s to=%s" % (status, to_email))
+            return False
+    except urllib.error.HTTPError as e:
+        try:
+            err_body = e.read().decode("utf-8", errors="replace")[:300]
+        except Exception:
+            err_body = ""
+        print("[email] resend HTTPError %s to=%s body=%s" % (e.code, to_email, err_body))
+        return False
+    except Exception as e:
+        print("[email] resend error to=%s: %s" % (to_email, e))
+        return False
+
+
+def _email_frame(inner_html):
+    """Minimal RTL-safe HTML wrapper for email bodies."""
+    return (
+        '<!DOCTYPE html><html dir="rtl" lang="he"><head><meta charset="UTF-8">'
+        '<meta name="viewport" content="width=device-width,initial-scale=1">'
+        '</head><body style="margin:0;padding:0;background:#f1f5f9;font-family:Arial,Helvetica,sans-serif;color:#0f172a">'
+        '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#f1f5f9;padding:32px 12px">'
+        '<tr><td align="center">'
+        '<table role="presentation" width="560" cellpadding="0" cellspacing="0" border="0" style="max-width:560px;background:#ffffff;border-radius:14px;border:1px solid #e2e8f0;padding:28px 26px">'
+        '<tr><td>'
+        '<div style="font-size:20px;font-weight:800;color:#0f172a;letter-spacing:-.4px;margin-bottom:6px">Scriptly</div>'
+        '<div style="height:1px;background:#e2e8f0;margin:12px 0 18px"></div>'
+        + inner_html +
+        '<div style="height:1px;background:#e2e8f0;margin:22px 0 14px"></div>'
+        '<div style="font-size:11px;color:#94a3b8">© Scriptly • הודעה אוטומטית, אין להשיב</div>'
+        '</td></tr></table></td></tr></table></body></html>'
+    )
+
+
+def send_admin_new_signup_email(user_row):
+    """Notify admin that a new customer registered and is pending approval."""
+    admin_to = get_admin_notify_email()
+    subject = "[Scriptly] לקוח חדש ממתין לאישור"
+    rows = []
+    for label, value in (
+        ("שם מלא", _row_get(user_row, "full_name")),
+        ("שם משתמש", _row_get(user_row, "username")),
+        ("אימייל", _row_get(user_row, "email")),
+        ("טלפון", _row_get(user_row, "phone")),
+        ("שם חברה", _row_get(user_row, "company_name")),
+        ("ח.פ / מזהה", _row_get(user_row, "company_id")),
+    ):
+        rows.append(
+            '<tr><td style="padding:6px 10px;color:#64748b;font-size:12px;border-bottom:1px solid #f1f5f9">'
+            + esc(label) + '</td><td style="padding:6px 10px;font-weight:700;color:#0f172a;font-size:13px;border-bottom:1px solid #f1f5f9">'
+            + esc(value or "—") + '</td></tr>'
+        )
+    base = get_app_base_url()
+    admin_link = (base + "/admin#adminUsers") if base else "/admin"
+    inner = (
+        '<div style="font-size:16px;font-weight:800;color:#0f172a;margin-bottom:10px">לקוח חדש ממתין לאישור</div>'
+        '<div style="font-size:13px;color:#475569;margin-bottom:14px">התקבלה הרשמה חדשה דרך דף ההרשמה הציבורי. נדרש אישור ידני לפני שהלקוח יוכל להיכנס.</div>'
+        '<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="width:100%;background:#f8fafc;border-radius:10px;overflow:hidden">'
+        + "".join(rows) +
+        '</table>'
+        '<div style="margin-top:18px"><a href="' + esc(admin_link) + '" style="display:inline-block;background:#2563eb;color:#ffffff;text-decoration:none;padding:10px 18px;border-radius:10px;font-weight:700;font-size:13px">פתח ממשק ניהול</a></div>'
+    )
+    return send_email(admin_to, subject, _email_frame(inner))
+
+
+def send_customer_approval_email(user_row, initial_password, login_url):
+    """Email the customer with approval + initial login credentials."""
+    to = (_row_get(user_row, "email") or "").strip()
+    if not to:
+        return False
+    subject = "[Scriptly] החשבון שלך אושר — פרטי כניסה ראשונה"
+    inner = (
+        '<div style="font-size:16px;font-weight:800;color:#0f172a;margin-bottom:10px">החשבון שלך אושר!</div>'
+        '<div style="font-size:13px;color:#475569;margin-bottom:14px">שלום ' + esc(_row_get(user_row, "full_name") or _row_get(user_row, "username") or "") + ', המנהל אישר את החשבון שלך ב-Scriptly. ניתן להתחבר בעזרת פרטי הכניסה הבאים.</div>'
+        '<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="width:100%;background:#f8fafc;border-radius:10px;overflow:hidden;margin-bottom:14px">'
+        '<tr><td style="padding:8px 12px;color:#64748b;font-size:12px;border-bottom:1px solid #f1f5f9">שם משתמש</td><td style="padding:8px 12px;font-weight:800;color:#0f172a;font-size:14px;border-bottom:1px solid #f1f5f9;font-family:Consolas,Menlo,monospace">' + esc(_row_get(user_row, "username") or "") + '</td></tr>'
+        '<tr><td style="padding:8px 12px;color:#64748b;font-size:12px">סיסמה ראשונית</td><td style="padding:8px 12px;font-weight:800;color:#0f172a;font-size:14px;font-family:Consolas,Menlo,monospace">' + esc(initial_password) + '</td></tr>'
+        '</table>'
+        '<div style="font-size:13px;color:#b45309;background:#fff7ed;border:1px solid #fed7aa;border-radius:10px;padding:10px 12px;margin-bottom:14px">'
+        'בכניסה הראשונה תתבקש להגדיר סיסמה קבועה. לא ניתן להמשיך להשתמש במערכת עם הסיסמה הראשונית.'
+        '</div>'
+        '<div><a href="' + esc(login_url) + '" style="display:inline-block;background:#2563eb;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:10px;font-weight:800;font-size:14px">כניסה למערכת</a></div>'
+    )
+    return send_email(to, subject, _email_frame(inner))
+
+
+def send_password_reset_email(user_row, reset_url):
+    """Email the customer with a tokenized reset link."""
+    to = (_row_get(user_row, "email") or "").strip()
+    if not to:
+        return False
+    subject = "[Scriptly] איפוס סיסמה"
+    inner = (
+        '<div style="font-size:16px;font-weight:800;color:#0f172a;margin-bottom:10px">בקשת איפוס סיסמה</div>'
+        '<div style="font-size:13px;color:#475569;margin-bottom:14px">שלום ' + esc(_row_get(user_row, "full_name") or _row_get(user_row, "username") or "") + ', התקבלה בקשה לאיפוס סיסמה לחשבון שלך. אם לא ביקשת — ניתן להתעלם מההודעה הזו.</div>'
+        '<div style="font-size:13px;color:#475569;margin-bottom:14px">הלינק תקף ל-' + str(RESET_TOKEN_TTL_MINUTES) + ' דקות וניתן לשימוש חד פעמי בלבד.</div>'
+        '<div style="margin-bottom:14px"><a href="' + esc(reset_url) + '" style="display:inline-block;background:#2563eb;color:#ffffff;text-decoration:none;padding:12px 20px;border-radius:10px;font-weight:800;font-size:14px">בחירת סיסמה חדשה</a></div>'
+        '<div style="font-size:12px;color:#94a3b8;word-break:break-all">אם הכפתור לא עובד, ניתן להעתיק את הלינק הבא:<br>' + esc(reset_url) + '</div>'
+    )
+    # Also echo to stdout to aid local testing when RESEND_API_KEY is absent.
+    print("[password-reset] %s -> %s" % (_row_get(user_row, "username") or _row_get(user_row, "email") or "?", reset_url))
+    return send_email(to, subject, _email_frame(inner))
+
+
+# ── Password reset token helpers ──────────────────────────────────
+
+def _hash_reset_token(raw_token):
+    return hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+
+
+def create_password_reset_token(db, user_id, purpose="reset", ttl_minutes=RESET_TOKEN_TTL_MINUTES):
+    """Insert a new token row and return the raw token string (only shown to user)."""
+    raw = secrets.token_urlsafe(32)
+    token_hash = _hash_reset_token(raw)
+    now = datetime.now()
+    expires_at = (now + timedelta(minutes=ttl_minutes)).strftime("%Y-%m-%d %H:%M:%S")
+    db.execute(
+        "INSERT INTO password_reset_tokens(user_id, token_hash, purpose, expires_at, created_at) VALUES (?,?,?,?,?)",
+        (user_id, token_hash, purpose, expires_at, now.strftime("%Y-%m-%d %H:%M:%S")),
+    )
+    return raw
+
+
+def consume_password_reset_token(db, raw_token, purpose="reset"):
+    """Validate token (not used, not expired). If valid, mark used and return user row."""
+    if not raw_token:
+        return None
+    token_hash = _hash_reset_token(raw_token)
+    row = db.execute(
+        "SELECT * FROM password_reset_tokens WHERE token_hash=? AND purpose=?",
+        (token_hash, purpose),
+    ).fetchone()
+    if not row:
+        return None
+    if row["used_at"]:
+        return None
+    try:
+        expires = datetime.strptime(row["expires_at"], "%Y-%m-%d %H:%M:%S")
+    except Exception:
+        return None
+    if datetime.now() > expires:
+        return None
+    user = db.execute("SELECT * FROM users WHERE id=?", (row["user_id"],)).fetchone()
+    if not user:
+        return None
+    db.execute(
+        "UPDATE password_reset_tokens SET used_at=? WHERE id=?",
+        (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), row["id"]),
+    )
+    return user
+
+
+def peek_password_reset_token(db, raw_token, purpose="reset"):
+    """Read-only validation for GET render: does NOT mark used. Returns user row or None."""
+    if not raw_token:
+        return None
+    token_hash = _hash_reset_token(raw_token)
+    row = db.execute(
+        "SELECT * FROM password_reset_tokens WHERE token_hash=? AND purpose=?",
+        (token_hash, purpose),
+    ).fetchone()
+    if not row or row["used_at"]:
+        return None
+    try:
+        expires = datetime.strptime(row["expires_at"], "%Y-%m-%d %H:%M:%S")
+    except Exception:
+        return None
+    if datetime.now() > expires:
+        return None
+    return db.execute("SELECT * FROM users WHERE id=?", (row["user_id"],)).fetchone()
 
 
 def esc(value):
@@ -12372,24 +12653,25 @@ def register():
         email = request.form.get("email", "").strip()
         phone = request.form.get("phone", "").strip()
         username = request.form.get("username", "").strip()
-        password = request.form.get("password", "").strip()
 
-        if not full_name or not email or not username or not password:
+        if not full_name or not email or not username:
             error = '<div class="flash-err">יש למלא את כל שדות החובה</div>' if lang == "he" else '<div class="flash-err">Please fill all required fields</div>'
-        elif len(password) < 4:
-            error = '<div class="flash-err">הסיסמה חייבת להכיל לפחות 4 תווים</div>' if lang == "he" else '<div class="flash-err">Password must be at least 4 characters</div>'
         else:
             try:
                 join_date = date.today().isoformat()
+                # Placeholder hash blocks password login until admin approves
+                # (approval replaces this with a real hash of the initial password).
+                placeholder_hash = generate_password_hash(secrets.token_urlsafe(24))
                 with get_db() as db:
                     db.execute(
                         """INSERT INTO users(
                         username, password, full_name, company_name, company_id, email, phone,
-                        join_date, trial_start_date, trial_days, active, is_admin, billing_mode
-                        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        join_date, trial_start_date, trial_days, active, is_admin, billing_mode,
+                        status, must_change_password
+                        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                         (
                             username,
-                            generate_password_hash(password),
+                            placeholder_hash,
                             full_name,
                             company_name,
                             company_id,
@@ -12398,20 +12680,35 @@ def register():
                             join_date,
                             join_date,
                             30,
-                            1,
+                            0,              # active = 0 (blocked until approved)
                             0,
                             "monthly",
+                            "pending",     # status
+                            0,              # must_change_password (set on approval)
                         ),
                     )
+                    new_user = db.execute(
+                        "SELECT id, username, full_name, email, phone, company_name, company_id FROM users WHERE username=?",
+                        (username,),
+                    ).fetchone()
                     db.commit()
-                add_flash("נרשמת בהצלחה! כעת ניתן להתחבר" if lang == "he" else "Registration successful! You can now log in")
+                try:
+                    if new_user is not None:
+                        send_admin_new_signup_email(new_user)
+                except Exception as mail_exc:
+                    print("[register] admin email failed: %s" % mail_exc)
+                add_flash(
+                    "ההרשמה התקבלה וממתינה לאישור המנהל. תקבל הודעת אימייל כאשר החשבון יאושר."
+                    if lang == "he"
+                    else "Registration received. An administrator will review your account and email you once it is approved."
+                )
                 return redirect("/login")
             except Exception:
                 error = '<div class="flash-err">שם המשתמש כבר קיים במערכת</div>' if lang == "he" else '<div class="flash-err">Username already exists</div>'
 
     lbl = {
-        "he": {"title": "הרשמה", "full_name": "שם מלא *", "company_name": "שם חברה", "company_id": "ח.פ / מזהה חברה", "email": "אימייל *", "phone": "טלפון", "username": "שם משתמש *", "password": "סיסמה *", "submit": "הרשמה", "login_link": "יש לך חשבון?", "login_text": "התחברות"},
-        "en": {"title": "Register", "full_name": "Full Name *", "company_name": "Company Name", "company_id": "Company ID", "email": "Email *", "phone": "Phone", "username": "Username *", "password": "Password *", "submit": "Register", "login_link": "Already have an account?", "login_text": "Log in"},
+        "he": {"title": "הרשמה", "full_name": "שם מלא *", "company_name": "שם חברה", "company_id": "ח.פ / מזהה חברה", "email": "אימייל *", "phone": "טלפון", "username": "שם משתמש *", "submit": "שליחת בקשה לאישור", "login_link": "יש לך חשבון?", "login_text": "התחברות", "notice": "לאחר שליחת הטופס, המנהל יקבל הודעה ויאשר את החשבון. הסיסמה תישלח אליך באימייל לאחר אישור."},
+        "en": {"title": "Register", "full_name": "Full Name *", "company_name": "Company Name", "company_id": "Company ID", "email": "Email *", "phone": "Phone", "username": "Username *", "submit": "Submit for approval", "login_link": "Already have an account?", "login_text": "Log in", "notice": "After you submit this form, an administrator will review your account. You will receive login credentials by email once approved."},
     }
     t = lbl.get(lang, lbl["he"])
 
@@ -12437,9 +12734,10 @@ def register():
         '<input type="text" name="phone" value="' + esc(request.form.get("phone", "")) + '" style="background:rgba(248,250,255,.8);border-color:#dbeafe">'
         + '<label class="field-label">' + t["username"] + '</label>'
         '<input type="text" name="username" required value="' + esc(request.form.get("username", "")) + '" style="background:rgba(248,250,255,.8);border-color:#dbeafe">'
-        + '<label class="field-label">' + t["password"] + '</label>'
-        '<input type="password" name="password" required style="background:rgba(248,250,255,.8);border-color:#dbeafe">'
-        + '<button type="submit" class="btn btn-blue" style="width:100%;padding:14px;font-size:15px;margin-top:.75rem;border-radius:14px">' + t["submit"] + '</button>'
+        + '<div style="font-size:12px;color:#475569;background:#f1f5f9;border:1px solid #e2e8f0;border-radius:10px;padding:10px 12px;margin:.4rem 0 .75rem;line-height:1.55">'
+        + t["notice"]
+        + '</div>'
+        + '<button type="submit" class="btn btn-blue" style="width:100%;padding:14px;font-size:15px;margin-top:.25rem;border-radius:14px">' + t["submit"] + '</button>'
         '</form>'
         '<p style="text-align:center;margin-top:1.25rem;font-size:13px;color:#64748b">'
         + t["login_link"] + ' '
@@ -12466,18 +12764,39 @@ def login():
         username = request.form["username"].strip()
         password = request.form["password"]
         with get_db() as db:
-            user = db.execute("SELECT * FROM users WHERE username=? AND active=1", (username,)).fetchone()
-        if user and check_password_hash(user["password"], password):
+            user = db.execute("SELECT * FROM users WHERE username=?", (username,)).fetchone()
+        # Pending status is surfaced explicitly (customer needs to know they
+        # are waiting on admin approval). Other block reasons fall through
+        # to the generic login error to avoid user-enumeration leaks.
+        user_status = (_row_get(user, "status") or "active") if user else ""
+        if user and user_status == "pending":
+            error = '<div class="flash-err">' + (
+                "החשבון שלך ממתין לאישור מנהל. נשלח אליך אימייל כאשר תהיה גישה."
+                if lang == "he"
+                else "Your account is waiting for administrator approval. You will receive an email once access is granted."
+            ) + "</div>"
+        elif user and not user["active"]:
+            error = '<div class="flash-err">' + (
+                "החשבון לא פעיל. ניתן לפנות לתמיכה."
+                if lang == "he"
+                else "This account is not active. Please contact support."
+            ) + "</div>"
+        elif user and check_password_hash(user["password"], password):
+            must_change = bool(_row_get(user, "must_change_password", 0))
             session.update(
                 {
                     "user_id": user["id"],
                     "username": user["username"],
                     "name": user["full_name"],
                     "is_admin": bool(user["is_admin"]),
+                    "must_change_password": must_change,
                 }
             )
+            if must_change:
+                return redirect("/account/first-password")
             return redirect("/admin" if user["is_admin"] else "/dashboard")
-        error = '<div class="flash-err">' + text["login_error"] + "</div>"
+        else:
+            error = '<div class="flash-err">' + text["login_error"] + "</div>"
 
     svg_logo = '<svg viewBox="0 0 28 28" fill="none" width="36" height="36" style="color:#2563eb"><circle cx="14" cy="14" r="13" stroke="currentColor" stroke-width="2"/><path d="M9 14h10M14 9v10" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>'
     body = (
@@ -12498,7 +12817,11 @@ def login():
         '<input type="password" name="password" required style="background:rgba(248,250,255,.8);border-color:#dbeafe">'
         + '<button type="submit" class="btn btn-blue" style="width:100%;padding:14px;font-size:15px;margin-top:.75rem;border-radius:14px">' + text["login_submit"] + '</button>'
         "</form>"
-        '<p style="text-align:center;margin-top:1.25rem;font-size:13px;color:#64748b">'
+        '<p style="text-align:center;margin-top:.9rem;font-size:13px">'
+        + '<a href="/forgot-password" style="color:#2563eb;font-weight:700;text-decoration:none">'
+        + ("שכחת סיסמה?" if lang == "he" else "Forgot password?")
+        + '</a></p>'
+        '<p style="text-align:center;margin-top:1rem;font-size:13px;color:#64748b">'
         + ("אין לך חשבון? " if lang == "he" else "Don't have an account? ")
         + '<a href="/register" style="color:#2563eb;font-weight:700;text-decoration:none">'
         + ("הרשמה בחינם" if lang == "he" else "Register free")
@@ -12544,6 +12867,257 @@ def logout():
         except Exception:
             pass
     session.clear()
+    return redirect("/login")
+
+
+# ── First-login password gate ──────────────────────────────────────
+# When must_change_password is set, block access to the whole app until
+# the user picks a permanent password. Routes below are the only ones
+# that stay reachable: the change-password page itself, logout, and
+# the auth endpoints (login/register/forgot/reset) used when the user
+# is signed out or recovering a different account.
+FIRST_PASSWORD_ALLOWED_PATHS = {
+    "/account/first-password",
+    "/logout",
+    "/login",
+    "/register",
+    "/forgot-password",
+}
+
+
+@app.before_request
+def _gate_forced_password_change():
+    if not session.get("must_change_password"):
+        return None
+    path = request.path or ""
+    if path in FIRST_PASSWORD_ALLOWED_PATHS:
+        return None
+    if path.startswith("/reset-password/"):
+        return None
+    # Allow static + health endpoints if they ever exist (defensive).
+    if path.startswith("/static/"):
+        return None
+    return redirect("/account/first-password")
+
+
+def _render_minimal_auth_page(title, inner_html, lang=None):
+    """Narrow rendering used for first-password / forgot-password / reset pages.
+
+    These pages must stay reachable when the forced-password gate is
+    active, so they avoid any template that pulls the logged-in chrome.
+    """
+    lang = lang or get_flow_lang()
+    svg_logo = '<svg viewBox="0 0 28 28" fill="none" width="36" height="36" style="color:#2563eb"><circle cx="14" cy="14" r="13" stroke="currentColor" stroke-width="2"/><path d="M9 14h10M14 9v10" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>'
+    body = (
+        '<div style="background:rgba(255,255,255,.95);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);padding:2.5rem;border-radius:24px;box-shadow:0 20px 60px rgba(0,0,0,.2),0 0 0 1px rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.3)">'
+        '<div style="text-align:center;margin-bottom:1.5rem">'
+        '<div style="display:inline-flex;align-items:center;justify-content:center;margin-bottom:8px">' + svg_logo + '</div>'
+        '<h1 style="font-size:22px;font-weight:800;color:#0f172a;letter-spacing:-0.5px">Scriptly</h1>'
+        '<p style="font-size:13px;color:#64748b;margin-top:6px;line-height:1.6">' + esc(title) + '</p>'
+        '</div>'
+        + inner_html
+        + '</div>'
+    )
+    return render(title, body, nav=False, lang=lang)
+
+
+@app.route("/account/first-password", methods=["GET", "POST"])
+@login_required
+def first_password():
+    uid = session.get("user_id")
+    # If the flag was cleared elsewhere, route them back to the app.
+    if not session.get("must_change_password"):
+        with get_db() as db:
+            row = db.execute("SELECT must_change_password FROM users WHERE id=?", (uid,)).fetchone()
+        if not row or not _row_get(row, "must_change_password", 0):
+            return redirect("/admin" if session.get("is_admin") else "/dashboard")
+        session["must_change_password"] = True
+    lang = get_flow_lang()
+    is_he = (lang == "he")
+    error = ""
+    if request.method == "POST":
+        new_pw = request.form.get("new_password", "")
+        confirm_pw = request.form.get("confirm_password", "")
+        if new_pw == INITIAL_APPROVED_PASSWORD:
+            error = '<div class="flash-err">' + ("יש לבחור סיסמה שונה מהסיסמה הראשונית" if is_he else "Please choose a password different from the initial one") + '</div>'
+        elif len(new_pw) < 6:
+            error = '<div class="flash-err">' + ("הסיסמה חייבת להכיל לפחות 6 תווים" if is_he else "Password must be at least 6 characters") + '</div>'
+        elif new_pw != confirm_pw:
+            error = '<div class="flash-err">' + ("הסיסמאות לא תואמות" if is_he else "Passwords do not match") + '</div>'
+        else:
+            with get_db() as db:
+                db.execute(
+                    "UPDATE users SET password=?, must_change_password=0 WHERE id=?",
+                    (generate_password_hash(new_pw), uid),
+                )
+                # Invalidate any outstanding reset tokens for this user.
+                db.execute(
+                    "UPDATE password_reset_tokens SET used_at=? WHERE user_id=? AND used_at IS NULL",
+                    (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), uid),
+                )
+                db.commit()
+            session.pop("must_change_password", None)
+            add_flash("הסיסמה עודכנה בהצלחה" if is_he else "Password updated successfully")
+            return redirect("/admin" if session.get("is_admin") else "/dashboard")
+    intro = (
+        '<div style="font-size:13px;color:#475569;background:#f1f5f9;border:1px solid #e2e8f0;border-radius:10px;padding:10px 12px;margin-bottom:14px;line-height:1.55">'
+        + ("בכניסה הראשונה יש להגדיר סיסמה קבועה. לא ניתן להמשיך להשתמש במערכת לפני בחירת סיסמה."
+           if is_he else
+           "Please choose a permanent password. You cannot continue using the app until you set one.")
+        + '</div>'
+    )
+    form_html = (
+        intro
+        + error
+        + '<form method="POST">'
+        + '<label class="field-label">' + ("סיסמה חדשה" if is_he else "New password") + '</label>'
+        + '<input type="password" name="new_password" required minlength="6" autofocus style="background:rgba(248,250,255,.8);border-color:#dbeafe">'
+        + '<label class="field-label">' + ("אישור סיסמה" if is_he else "Confirm password") + '</label>'
+        + '<input type="password" name="confirm_password" required minlength="6" style="background:rgba(248,250,255,.8);border-color:#dbeafe">'
+        + '<button type="submit" class="btn btn-blue" style="width:100%;padding:14px;font-size:15px;margin-top:.75rem;border-radius:14px">'
+        + ("שמירת סיסמה והמשך" if is_he else "Save password and continue")
+        + '</button>'
+        '</form>'
+        '<p style="text-align:center;margin-top:1rem;font-size:13px"><a href="/logout" style="color:#64748b;text-decoration:none">'
+        + ("התנתקות" if is_he else "Log out")
+        + '</a></p>'
+    )
+    return _render_minimal_auth_page("הגדרת סיסמה קבועה" if is_he else "Set permanent password", form_html, lang)
+
+
+@app.route("/forgot-password", methods=["GET", "POST"])
+def forgot_password():
+    lang = get_flow_lang()
+    is_he = (lang == "he")
+    notice = ""
+    submitted = False
+    if request.method == "POST":
+        identifier = request.form.get("identifier", "").strip()
+        if identifier:
+            with get_db() as db:
+                # Accept either username or email; restrict to fully-approved,
+                # active, non-admin accounts so pending/rejected users can't
+                # abuse the reset flow to activate themselves.
+                user = db.execute(
+                    "SELECT * FROM users WHERE (username=? OR email=?) AND active=1 AND is_admin=0",
+                    (identifier, identifier),
+                ).fetchone()
+                user_status = (_row_get(user, "status") or "active") if user else ""
+                if user and user_status == "active":
+                    try:
+                        raw = create_password_reset_token(db, user["id"], purpose="reset")
+                        db.commit()
+                        base = get_app_base_url() or ""
+                        reset_url = (base.rstrip("/") if base else "") + "/reset-password/" + raw
+                        try:
+                            send_password_reset_email(user, reset_url)
+                        except Exception as mail_exc:
+                            print("[forgot-password] email failed: %s" % mail_exc)
+                    except Exception as exc:
+                        print("[forgot-password] token create failed: %s" % exc)
+        submitted = True
+        notice = (
+            '<div style="font-size:13px;color:#0f172a;background:#ecfdf5;border:1px solid #a7f3d0;border-radius:10px;padding:10px 12px;margin-bottom:14px;line-height:1.55">'
+            + ("אם החשבון קיים במערכת, נשלח אליו אימייל עם לינק לבחירת סיסמה חדשה. הלינק תקף ל-" + str(RESET_TOKEN_TTL_MINUTES) + " דקות."
+               if is_he else
+               "If the account exists, an email with a reset link has been sent. The link is valid for " + str(RESET_TOKEN_TTL_MINUTES) + " minutes.")
+            + '</div>'
+        )
+    if submitted:
+        inner = (
+            notice
+            + '<p style="text-align:center;margin-top:1rem;font-size:13px"><a href="/login" style="color:#2563eb;font-weight:700;text-decoration:none">'
+            + ("חזרה לכניסה" if is_he else "Back to login")
+            + '</a></p>'
+        )
+    else:
+        inner = (
+            '<div style="font-size:13px;color:#475569;background:#f1f5f9;border:1px solid #e2e8f0;border-radius:10px;padding:10px 12px;margin-bottom:14px;line-height:1.55">'
+            + ("נא להזין שם משתמש או אימייל, ותקבלו לינק לבחירת סיסמה חדשה."
+               if is_he else
+               "Enter your username or email and we will send you a link to choose a new password.")
+            + '</div>'
+            + '<form method="POST">'
+            + '<label class="field-label">' + ("שם משתמש או אימייל" if is_he else "Username or email") + '</label>'
+            + '<input type="text" name="identifier" required autofocus style="background:rgba(248,250,255,.8);border-color:#dbeafe">'
+            + '<button type="submit" class="btn btn-blue" style="width:100%;padding:14px;font-size:15px;margin-top:.75rem;border-radius:14px">'
+            + ("שליחת לינק" if is_he else "Send link")
+            + '</button></form>'
+            '<p style="text-align:center;margin-top:1rem;font-size:13px"><a href="/login" style="color:#64748b;text-decoration:none">'
+            + ("חזרה לכניסה" if is_he else "Back to login")
+            + '</a></p>'
+        )
+    return _render_minimal_auth_page("שחזור סיסמה" if is_he else "Reset password", inner, lang)
+
+
+@app.route("/reset-password/<token>", methods=["GET", "POST"])
+def reset_password_with_token(token):
+    lang = get_flow_lang()
+    is_he = (lang == "he")
+    # GET renders the form; POST consumes the token atomically so a single
+    # token yields at most one password change.
+    if request.method == "GET":
+        with get_db() as db:
+            user = peek_password_reset_token(db, token, purpose="reset")
+        if not user:
+            return _render_minimal_auth_page(
+                "לינק לא תקין" if is_he else "Invalid link",
+                '<div class="flash-err">' + ("הלינק לשחזור סיסמה לא תקף או פג תוקף. נא לשלוח בקשה חדשה." if is_he else "This reset link is invalid or has expired. Please request a new one.") + '</div>'
+                + '<p style="text-align:center;margin-top:1rem;font-size:13px"><a href="/forgot-password" style="color:#2563eb;font-weight:700;text-decoration:none">'
+                + ("שליחת בקשה חדשה" if is_he else "Request a new link")
+                + '</a></p>',
+                lang,
+            )
+        form_html = (
+            '<div style="font-size:13px;color:#475569;background:#f1f5f9;border:1px solid #e2e8f0;border-radius:10px;padding:10px 12px;margin-bottom:14px;line-height:1.55">'
+            + ("בחירת סיסמה חדשה עבור " + esc(_row_get(user, "username") or "") if is_he else "Choose a new password for " + esc(_row_get(user, "username") or ""))
+            + '</div>'
+            + '<form method="POST">'
+            + '<label class="field-label">' + ("סיסמה חדשה" if is_he else "New password") + '</label>'
+            + '<input type="password" name="new_password" required minlength="6" autofocus style="background:rgba(248,250,255,.8);border-color:#dbeafe">'
+            + '<label class="field-label">' + ("אישור סיסמה" if is_he else "Confirm password") + '</label>'
+            + '<input type="password" name="confirm_password" required minlength="6" style="background:rgba(248,250,255,.8);border-color:#dbeafe">'
+            + '<button type="submit" class="btn btn-blue" style="width:100%;padding:14px;font-size:15px;margin-top:.75rem;border-radius:14px">'
+            + ("שמירת סיסמה" if is_he else "Save password")
+            + '</button></form>'
+        )
+        return _render_minimal_auth_page("איפוס סיסמה" if is_he else "Reset password", form_html, lang)
+
+    new_pw = request.form.get("new_password", "")
+    confirm_pw = request.form.get("confirm_password", "")
+    if len(new_pw) < 6 or new_pw != confirm_pw:
+        err_msg = ("יש להזין סיסמה באורך 6 תווים לפחות ולוודא התאמה" if is_he else "Password must be at least 6 characters and match confirmation")
+        return _render_minimal_auth_page(
+            "איפוס סיסמה" if is_he else "Reset password",
+            '<div class="flash-err">' + err_msg + '</div>'
+            + '<p style="text-align:center;margin-top:1rem;font-size:13px"><a href="/reset-password/' + esc(token) + '" style="color:#2563eb;font-weight:700;text-decoration:none">'
+            + ("חזרה לטופס" if is_he else "Back to form")
+            + '</a></p>',
+            lang,
+        )
+    with get_db() as db:
+        user = consume_password_reset_token(db, token, purpose="reset")
+        if not user:
+            db.commit()
+            return _render_minimal_auth_page(
+                "לינק לא תקין" if is_he else "Invalid link",
+                '<div class="flash-err">' + ("הלינק לשחזור סיסמה לא תקף או פג תוקף. נא לשלוח בקשה חדשה." if is_he else "This reset link is invalid or has expired. Please request a new one.") + '</div>'
+                + '<p style="text-align:center;margin-top:1rem;font-size:13px"><a href="/forgot-password" style="color:#2563eb;font-weight:700;text-decoration:none">'
+                + ("שליחת בקשה חדשה" if is_he else "Request a new link")
+                + '</a></p>',
+                lang,
+            )
+        db.execute(
+            "UPDATE users SET password=?, must_change_password=0 WHERE id=?",
+            (generate_password_hash(new_pw), user["id"]),
+        )
+        # Any other outstanding reset tokens for this user are invalidated now.
+        db.execute(
+            "UPDATE password_reset_tokens SET used_at=? WHERE user_id=? AND used_at IS NULL",
+            (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), user["id"]),
+        )
+        db.commit()
+    add_flash("הסיסמה עודכנה, ניתן להיכנס כעת" if is_he else "Password updated. You can now log in.")
     return redirect("/login")
 
 
@@ -14374,11 +14948,16 @@ def admin():
     active_customers = 0
     trial_customers = 0
     inactive_customers = 0
+    pending_customers = 0
     user_cards = ""
     for user in users:
         uid = user["id"]
+        signup_status = (_row_get(user, "status") or "active").lower()
+        is_pending_signup = (signup_status == "pending")
         status = get_account_status(user)
-        if status["status_key"] == "active":
+        if is_pending_signup:
+            pending_customers += 1
+        elif status["status_key"] == "active":
             active_customers += 1
         elif status["status_key"] == "trial":
             trial_customers += 1
@@ -14417,31 +14996,54 @@ def admin():
                 '</form></div>'
             )
         current_account_type = "active" if user["service_valid_until"] else "trial"
+        pending_badge_html = (
+            '<span style="display:inline-flex;align-items:center;padding:5px 10px;border-radius:999px;background:#fef3c7;color:#92400e;font-size:11px;font-weight:800">ממתין לאישור</span>'
+            if is_pending_signup else ""
+        )
+        pending_approval_block = ""
+        if is_pending_signup:
+            pending_approval_block = (
+                '<div style="margin:12px 20px 0;padding:12px 14px;background:#fffbeb;border:1px solid #fde68a;border-radius:12px">'
+                '<div style="font-weight:800;color:#92400e;font-size:13px;margin-bottom:4px">הרשמה ממתינה לאישור</div>'
+                '<div style="font-size:12px;color:#78350f;margin-bottom:10px;line-height:1.5">אישור יגדיר סיסמה ראשונית 1234 ויאלץ שינוי סיסמה בכניסה הראשונה. אימייל יישלח ללקוח עם פרטי הכניסה.</div>'
+                '<div style="display:flex;gap:8px;flex-wrap:wrap">'
+                '<form method="POST" action="/admin/approve_user/' + str(uid) + '" style="display:inline" onsubmit="return confirm(\'לאשר את הלקוח ולשלוח אימייל עם פרטי כניסה?\')">'
+                '<button type="submit" class="btn btn-blue" style="font-size:12px;padding:6px 14px">אישור ושליחת אימייל</button>'
+                '</form>'
+                '<form method="POST" action="/admin/reject_user/' + str(uid) + '" style="display:inline" onsubmit="return confirm(\'לדחות את ההרשמה?\')">'
+                '<button type="submit" class="btn btn-red" style="font-size:12px;padding:6px 14px">דחייה</button>'
+                '</form></div></div>'
+            )
         user_cards += (
-            '<details class="admin-user-card">'
+            '<details class="admin-user-card"' + (' open' if is_pending_signup else '') + '>'
             '<summary class="admin-collapsible-summary">'
             '<div><div class="admin-user-title">' + esc(user["company_name"] or user["full_name"] or user["username"]) + '</div>'
             '<div class="admin-user-sub">@' + esc(user["username"]) + ' • ח.פ: ' + esc(user["company_id"] or "לא הוגדר") + '</div>'
             '<div class="admin-user-sub">' + esc(user["full_name"] or "לא הוגדר") + ' • ' + esc(user["email"] or "ללא אימייל") + '</div></div>'
             '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">'
-            '<span style="display:inline-flex;align-items:center;padding:5px 10px;border-radius:999px;background:' + active_bg + ';color:' + active_color + ';font-size:11px;font-weight:800">' + active_label + '</span>'
+            + pending_badge_html
+            + '<span style="display:inline-flex;align-items:center;padding:5px 10px;border-radius:999px;background:' + active_bg + ';color:' + active_color + ';font-size:11px;font-weight:800">' + active_label + '</span>'
             '<span class="admin-user-status" style="background:' + service_style[0] + ';color:' + service_style[1] + '">' + esc(status["status_label_he"]) + '</span>'
             '<span style="font-size:18px;color:#64748b">+</span></div>'
             '</summary>'
-            # Active toggle
-            '<div style="padding:12px 20px 0;display:flex;align-items:center;gap:10px;flex-wrap:wrap">'
-            '<form method="POST" action="/admin/toggle_active/' + str(uid) + '" style="display:inline">'
-            '<label style="display:inline-flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;font-weight:700;color:#334155">'
-            '<span>גישה למערכת:</span>'
-            '<span style="position:relative;display:inline-block;width:44px;height:24px">'
-            '<input type="checkbox" onchange="this.form.submit()" ' + ('checked ' if is_active else '') + 'style="opacity:0;width:0;height:0;position:absolute">'
-            '<span style="position:absolute;top:0;left:0;right:0;bottom:0;background:' + ('#047857' if is_active else '#cbd5e1') + ';border-radius:24px;transition:background .2s"></span>'
-            '<span style="position:absolute;top:2px;' + ('left:22px' if is_active else 'left:2px') + ';width:20px;height:20px;background:white;border-radius:50%;transition:left .2s;box-shadow:0 1px 3px rgba(0,0,0,.2)"></span>'
-            '</span>'
-            '<span style="font-size:12px;color:' + active_color + '">' + active_label + '</span>'
-            '</label></form></div>'
+            + pending_approval_block
+            # Active toggle — suppressed for pending signups so the admin uses
+            # the approve/reject flow instead of silently flipping `active`.
+            + ('' if is_pending_signup else
+               '<div style="padding:12px 20px 0;display:flex;align-items:center;gap:10px;flex-wrap:wrap">'
+               '<form method="POST" action="/admin/toggle_active/' + str(uid) + '" style="display:inline">'
+               '<label style="display:inline-flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;font-weight:700;color:#334155">'
+               '<span>גישה למערכת:</span>'
+               '<span style="position:relative;display:inline-block;width:44px;height:24px">'
+               '<input type="checkbox" onchange="this.form.submit()" ' + ('checked ' if is_active else '') + 'style="opacity:0;width:0;height:0;position:absolute">'
+               '<span style="position:absolute;top:0;left:0;right:0;bottom:0;background:' + ('#047857' if is_active else '#cbd5e1') + ';border-radius:24px;transition:background .2s"></span>'
+               '<span style="position:absolute;top:2px;' + ('left:22px' if is_active else 'left:2px') + ';width:20px;height:20px;background:white;border-radius:50%;transition:left .2s;box-shadow:0 1px 3px rgba(0,0,0,.2)"></span>'
+               '</span>'
+               '<span style="font-size:12px;color:' + active_color + '">' + active_label + '</span>'
+               '</label></form></div>'
+              )
             # Meta boxes
-            '<div class="admin-user-meta">'
+            + '<div class="admin-user-meta">'
             '<div class="admin-user-meta-box"><div class="k">איש קשר</div><div class="v">' + esc(user["full_name"] or "לא הוגדר") + '</div></div>'
             '<div class="admin-user-meta-box"><div class="k">מסלול חיוב</div><div class="v">' + esc(billing_mode_label(user["billing_mode"], "he")) + '</div></div>'
             '<div class="admin-user-meta-box"><div class="k">אימייל</div><div class="v">' + esc(user["email"] or "ללא אימייל") + '</div></div>'
@@ -14488,6 +15090,7 @@ def admin():
     users_overview = (
         '<div class="admin-user-summary">'
         '<div class="admin-user-summary-box"><div class="k">סה"כ לקוחות</div><div class="v">' + str(len(users)) + '</div></div>'
+        '<div class="admin-user-summary-box" style="' + ("border:1.5px solid #f59e0b;background:#fffbeb" if pending_customers else "") + '"><div class="k">ממתינים לאישור</div><div class="v" style="' + ("color:#92400e" if pending_customers else "") + '">' + str(pending_customers) + '</div></div>'
         '<div class="admin-user-summary-box"><div class="k">בשירות פעיל</div><div class="v">' + str(active_customers) + '</div></div>'
         '<div class="admin-user-summary-box"><div class="k">בתקופת ניסיון</div><div class="v">' + str(trial_customers) + '</div></div>'
         '<div class="admin-user-summary-box"><div class="k">לא בשירות</div><div class="v">' + str(inactive_customers) + '</div></div>'
@@ -14941,15 +15544,74 @@ def edit_user(uid):
 @admin_required
 def toggle_active(uid):
     with get_db() as db:
-        user = db.execute("SELECT id, active FROM users WHERE id=? AND is_admin=0", (uid,)).fetchone()
+        user = db.execute("SELECT id, active, status FROM users WHERE id=? AND is_admin=0", (uid,)).fetchone()
         if not user:
             add_flash("לקוח לא נמצא")
             return redirect("/admin")
+        # Pending signups must go through the approve/reject flow so the
+        # initial password is generated and the approval email is sent.
+        if (_row_get(user, "status") or "active") == "pending":
+            add_flash("לקוח ממתין לאישור — יש להשתמש בכפתור האישור כדי לשלוח פרטי כניסה")
+            return redirect("/admin#adminUsers")
         new_active = 0 if user["active"] else 1
         db.execute("UPDATE users SET active=? WHERE id=?", (new_active, uid))
         db.commit()
     add_flash("סטטוס הלקוח עודכן בהצלחה")
     return redirect("/admin")
+
+
+@app.route("/admin/approve_user/<int:uid>", methods=["POST"])
+@login_required
+@admin_required
+def approve_user(uid):
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with get_db() as db:
+        user = db.execute("SELECT * FROM users WHERE id=? AND is_admin=0", (uid,)).fetchone()
+        if not user:
+            add_flash("לקוח לא נמצא")
+            return redirect("/admin#adminUsers")
+        if (_row_get(user, "status") or "active") == "active" and user["active"]:
+            add_flash("החשבון כבר פעיל")
+            return redirect("/admin#adminUsers")
+        db.execute(
+            """UPDATE users SET status=?, active=?, password=?, must_change_password=?, approved_at=? WHERE id=?""",
+            (
+                "active",
+                1,
+                generate_password_hash(INITIAL_APPROVED_PASSWORD),
+                1,
+                now,
+                uid,
+            ),
+        )
+        db.commit()
+        fresh = db.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
+    try:
+        base = get_app_base_url() or ""
+        login_url = (base.rstrip("/") if base else "") + "/login"
+        if fresh is not None:
+            send_customer_approval_email(fresh, INITIAL_APPROVED_PASSWORD, login_url)
+    except Exception as mail_exc:
+        print("[approve_user] email failed: %s" % mail_exc)
+    customer_label = _row_get(user, "full_name") or _row_get(user, "company_name") or _row_get(user, "username") or str(uid)
+    add_flash("החשבון של " + customer_label + " אושר ונשלח אימייל עם פרטי הכניסה")
+    return redirect("/admin#adminUsers")
+
+
+@app.route("/admin/reject_user/<int:uid>", methods=["POST"])
+@login_required
+@admin_required
+def reject_user(uid):
+    with get_db() as db:
+        user = db.execute("SELECT id, full_name, company_name, username, status FROM users WHERE id=? AND is_admin=0", (uid,)).fetchone()
+        if not user:
+            add_flash("לקוח לא נמצא")
+            return redirect("/admin#adminUsers")
+        db.execute("UPDATE users SET status=?, active=? WHERE id=?", ("rejected", 0, uid))
+        db.commit()
+    customer_label = _row_get(user, "full_name") or _row_get(user, "company_name") or _row_get(user, "username") or str(uid)
+    add_flash("הבקשה של " + customer_label + " נדחתה")
+    return redirect("/admin#adminUsers")
 
 
 @app.route("/admin/extend_trial/<int:uid>", methods=["POST"])
