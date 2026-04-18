@@ -259,6 +259,50 @@ def check_marker_parser():
     return failures
 
 
+def check_tool_creation_early_classification():
+    """The /tools/create assistant must commit to a classification in its
+    first response and explain any mid-conversation path change. This guards
+    against late-surprise escalation — the trust failure we just fixed."""
+    print("[9] Tool-creation prompt enforces early classification")
+    failures = 0
+    p = A.TOOL_CREATION_SYSTEM_PROMPT_BASE
+    must_contain = [
+        # Section anchor
+        "סיווג מוקדם וברור",
+        "חוק ברזל",
+        # First-response commitment language
+        "בתשובה הראשונה שלך",
+        "אסור לרוץ לאיסוף פרטים מפורט לפני שהסיווג הוצהר",
+        # Four canonical Hebrew framings (as actual user-facing strings)
+        "כבר קיים כלי שעושה את זה",
+        "זה נראה כמו כלי שתוכל לבנות כאן בעצמך",
+        "זו נראית בקשה שכנראה דורשת פיתוח של צוות הפלטפורמה",
+        "אני צריך הבהרה אחת",
+        # Path-change rule
+        "שינוי סיווג באמצע השיחה",
+        "בהתחלה זה נראה כמו כלי שאפשר לבנות כאן",
+        "בהתחלה חשבתי שזה דורש פיתוח",
+        # Hard prohibitions
+        "אסור להציג developer_brief בסוף שיחה שניהלת כ-self-serve",
+        "אסור להציג JSON של כלי בסוף שיחה שניהלת כצריכת פיתוח",
+        "אסור להמתין לסוף השיחה כדי \"להפתיע\" את המשתמש",
+        # Output-section guards reinforce the rule at the emission point
+        "אסור להציג את הבריף הזה אלא אם המשתמש כבר יודע מתחילת השיחה",
+        "אסור להציג JSON של כלי אלא אם המשתמש כבר יודע מתחילת השיחה",
+        # Mode B opener now requires classification first
+        "שלב 0 (חובה לפני כל שלב אחר)",
+        # Honor seeded mode-aware arrivals from the dashboard assistant
+        "אם המשתמש הגיע משיחה עם היועץ עם סיווג מוצהר",
+    ]
+    for needle in must_contain:
+        if needle in p:
+            _passed(f"prompt contains: {needle[:55]}")
+        else:
+            _failed(f"prompt missing required anchor: {needle[:55]}")
+            failures += 1
+    return failures
+
+
 def check_create_mode_framing():
     """The /tools/create page must look meaningfully different depending on
     how the user arrived (self-serve vs escalate vs no-mode)."""
@@ -502,6 +546,8 @@ def main():
     total += check_three_way_prompt_doc()
     print()
     total += check_create_mode_framing()
+    print()
+    total += check_tool_creation_early_classification()
     print()
     if total == 0:
         print("==== ALL ASSISTANT SMOKE CHECKS PASSED ====")
