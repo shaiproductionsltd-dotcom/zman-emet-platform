@@ -11672,6 +11672,8 @@ def render_assistant_widget():
         '.ast-cta:hover{transform:translateY(-1px);box-shadow:0 4px 14px rgba(16,185,129,.35)}'
         '.ast-cta-build{background:linear-gradient(135deg,#8b5cf6,#6d28d9)}'
         '.ast-cta-build:hover{box-shadow:0 4px 14px rgba(139,92,246,.35)}'
+        '.ast-cta-escalate{background:linear-gradient(135deg,#f59e0b,#b45309)}'
+        '.ast-cta-escalate:hover{box-shadow:0 4px 14px rgba(245,158,11,.35)}'
         '.ast-cta-sub{font-size:11px;font-weight:400;opacity:.85;margin-top:2px}'
         '.ast-retention{color:#64748b;font-size:10px;text-align:center;padding:4px;direction:rtl;line-height:1.4}'
         '@media(max-width:480px){'
@@ -11762,16 +11764,32 @@ def render_assistant_widget():
         '}'
         'function astAddBuildCTA(sb,sessionId){'
         '  if(!sb||!sb.url)return;'
-        '  var key="build:"+(sb.brief||"");'
+        '  var kind=(sb.kind==="escalate")?"escalate":"self_serve";'
+        '  var key=kind+":"+(sb.brief||"");'
         '  if(key===astLastCtaKey)return;'
         '  astLastCtaKey=key;'
         '  var c=document.getElementById("ast-messages");'
         '  var wrap=document.createElement("div");wrap.className="ast-cta-wrap";'
-        '  var a=document.createElement("a");a.className="ast-cta ast-cta-build";a.href=sb.url;'
+        '  var a=document.createElement("a");a.href=sb.url;'
+        # self-serve = purple (build it yourself); escalate = amber (sent to dev team)
+        '  var title,subTitle,ariaLabel;'
+        '  if(kind==="escalate"){'
+        '    a.className="ast-cta ast-cta-escalate";'
+        # title: "בקשה זו דורשת פיתוח של צוות הפלטפורמה" / sub: "שלח אפיון לצוות »"
+        '    title="\\u05d1\\u05e7\\u05e9\\u05d4 \\u05d6\\u05d5 \\u05d3\\u05d5\\u05e8\\u05e9\\u05ea \\u05e4\\u05d9\\u05ea\\u05d5\\u05d7 \\u05e9\\u05dc \\u05e6\\u05d5\\u05d5\\u05ea \\u05d4\\u05e4\\u05dc\\u05d8\\u05e4\\u05d5\\u05e8\\u05de\\u05d4";'
+        '    subTitle="\\u05e9\\u05dc\\u05d7 \\u05d0\\u05e4\\u05d9\\u05d5\\u05df \\u05dc\\u05e6\\u05d5\\u05d5\\u05ea";'
+        '    ariaLabel="\\u05e9\\u05dc\\u05d7 \\u05d0\\u05e4\\u05d9\\u05d5\\u05df \\u05dc\\u05e6\\u05d5\\u05d5\\u05ea \\u05d4\\u05e4\\u05dc\\u05d8\\u05e4\\u05d5\\u05e8\\u05de\\u05d4";'
+        '  }else{'
+        '    a.className="ast-cta ast-cta-build";'
+        # title: "אפשר לבנות את הכלי בעצמך" / sub: "פתיחת אשף יצירת כלי »"
+        '    title="\\u05d0\\u05e4\\u05e9\\u05e8 \\u05dc\\u05d1\\u05e0\\u05d5\\u05ea \\u05d0\\u05ea \\u05d4\\u05db\\u05dc\\u05d9 \\u05d1\\u05e2\\u05e6\\u05de\\u05da";'
+        '    subTitle="\\u05e4\\u05ea\\u05d9\\u05d7\\u05ea \\u05d0\\u05e9\\u05e3 \\u05d9\\u05e6\\u05d9\\u05e8\\u05ea \\u05db\\u05dc\\u05d9";'
+        '    ariaLabel="\\u05e4\\u05ea\\u05d7 \\u05d0\\u05ea \\u05d0\\u05e9\\u05e3 \\u05d9\\u05e6\\u05d9\\u05e8\\u05ea \\u05db\\u05dc\\u05d9";'
+        '  }'
         '  var briefHtml=sb.brief?"<div class=\\"ast-cta-sub\\">"+astEscape(sb.brief)+"</div>":"";'
-        '  a.innerHTML="<div><div><span style=\\"opacity:.85;font-weight:500\\">\\u05d0\\u05d9\\u05df \\u05db\\u05dc\\u05d9 \\u05de\\u05ea\\u05d0\\u05d9\\u05dd \\u2014 \\u05d0\\u05e4\\u05e9\\u05e8 \\u05dc\\u05d1\\u05e0\\u05d5\\u05ea \\u05d0\\u05d7\\u05d3</span><br>\\u05d1\\u05e0\\u05d4 \\u05db\\u05dc\\u05d9 \\u05d7\\u05d3\\u05e9 \\u05e2\\u05dd AI ' + "\u00BB" + '</div>"+briefHtml+"</div><span aria-hidden=\\"true\\">\\u2190</span>";'
-        '  a.setAttribute("aria-label","\\u05d1\\u05e0\\u05d4 \\u05db\\u05dc\\u05d9 \\u05d7\\u05d3\\u05e9");'
-        '  a.onclick=function(){try{fetch("/assistant/recommendation/clicked",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({session_id:sessionId})})}catch(e){}};'
+        '  a.innerHTML="<div><div><span style=\\"opacity:.85;font-weight:500\\">"+title+"</span><br>"+subTitle+" ' + "\u00BB" + '</div>"+briefHtml+"</div><span aria-hidden=\\"true\\">\\u2190</span>";'
+        '  a.setAttribute("aria-label",ariaLabel);'
+        '  a.onclick=function(){try{fetch("/assistant/recommendation/clicked",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({session_id:sessionId,kind:kind})})}catch(e){}};'
         '  wrap.appendChild(a);c.appendChild(wrap);c.scrollTop=c.scrollHeight;'
         '}'
         'function astRenderHistory(msgs){'
@@ -15625,6 +15643,42 @@ ASSISTANT_CHAT_SYSTEM_PROMPT = """אתה יועץ בכיר בנושאי HR, שכ
 - רק אם אין אף כלי מתאים — הצע ליצור כלי חדש, וציין במפורש איזה 1-3 כלים קיימים שקלת ולמה כל אחד מהם לא עונה על הצורך.
 - אל תמציא כלים שלא מופיעים ברשימה. השתמש רק ב-`script_id` שמופיע ברשימת הכלים למטה.
 
+## הבחנה בין שלוש תוצאות (חובה)
+לכל בקשה שקשורה לכלי — סווג אותה לאחת משלוש אופציות לפי הסדר הזה:
+
+**1. RECOMMEND_EXISTING_TOOL — כלי קיים מתאים**
+המלץ על כלי שכבר קיים במערכת ויש לו את היכולת המבוקשת.
+
+**2. SELF_SERVE_BUILD — המשתמש יכול לבנות בעצמו**
+זוהי ברירת המחדל כשאין כלי מתאים. הפלטפורמה כוללת אשף ״יצירת כלי״ ייעודי שמאפשר למשתמש לבנות בעצמו כלי שעובד לפי הדפוס:
+**קובץ קלט → כללים פשוטים → קובץ פלט.**
+הטה את ההחלטה לטובת self-serve כשהבקשה נראית לפי הדפוס הזה. אל תקפוץ מהר מדי לאפיון לצוות.
+
+דוגמאות שכן ניתנות לבנייה עצמית:
+- סינון שורות לפי תנאי (״עובדים מתחת ל-100 שעות חודשיות״, ״רק עובדים פעילים״)
+- קיבוץ וסיכום לפי עובד / מחלקה / מנהל / תאריך / סניף
+- חישובים פשוטים על עמודות (סכום, ממוצע, הפרש, אחוז, בונוס לפי נוסחה)
+- יצירת עמודות נגזרות מנוסחה ברורה
+- דוחות חריגות וסף (״מי איחר יותר מ-3 פעמים״)
+- מיון, פיצול לקבצים, תיוג, ניקוי נתונים
+- המרת קובץ גולמי לפלט מסודר
+- לוגיקת Excel/CSV יחסית פשוטה — קלט, חוקים, פלט
+
+**3. ESCALATE_TO_PLATFORM_TEAM — דורש פיתוח של צוות הפלטפורמה**
+רק כשהבקשה חוצה ברור את גבולות self-serve. הסבר למשתמש בקצרה למה זה לא משהו שהוא יכול לבנות בעצמו, ואז הצע להעביר אפיון לצוות.
+
+דוגמאות שדורשות צוות פיתוח:
+- אינטגרציות עם מערכות חיצוניות (סנכרון אוטומטי עם מערכת HR, חברת סליקה וכו')
+- בסיסי נתונים מתמשכים / שמירה ארוכת-טווח של נתוני לקוחות
+- Workflows רב-שלביים עם אישורים, תורים, התראות למנהלים
+- מנגנוני הרשאות מתקדמים, ticketing, חיוב, מסלולי אישור
+- ממשק משתמש מורכב או מסכים אינטראקטיביים
+- לוגיקה עסקית מסובכת עם המון מקרי קצה ויוצאים מהכלל
+- יכולות פלטפורמה חדשות (מעבר ל-״קובץ → חוקים → פלט״)
+- שמירת היסטוריית עובדים לטווח ארוך לצורך תחקור עתידי
+
+הנחיה כללית: אם המשתמש סתם שואל ״מה אני יכול לבנות לבד?״ או חוקר את הגבול — הסבר לו בעברית פשוטה את החלוקה הזו (בלי הלייבלים האנגליים), עם דוגמה אחת או שתיים מכל קטגוריה. אל תשתמש בסימוני RECOMMEND/SELF_SERVE/ESCALATE עד שיש בקשה קונקרטית לכלי.
+
 ## איך נראית תשובה טובה
 - קצרה. 2-4 שורות לרוב, אלא אם המשתמש ביקש פירוט.
 - ממוקדת בצעד הבא. אל תתאר את הכלי באריכות לפני שאמרת מה לעשות.
@@ -15635,23 +15689,40 @@ ASSISTANT_CHAT_SYSTEM_PROMPT = """אתה יועץ בכיר בנושאי HR, שכ
   שורה 2-3: למה הכלי הזה (קישור לפרט קונקרטי בבקשה של המשתמש).
   שורה 4 (אופציונלי): מה צריך להעלות / שלב אחד שצריך לעשות עכשיו.
 
-## פלט מובנה להמלצה (חובה כשממליצים)
-כשמזהים כלי קיים מתאים — סיים את התשובה במבנה הבא בדיוק (אחרי שורה ריקה):
+## פלט מובנה (חובה כשממליצים או כשמסווגים בקשה לבניית כלי)
+בחר *סימון אחד בלבד* בסוף התשובה (אחרי שורה ריקה). אל תשלב כמה סימונים יחד.
+
+### א. כלי קיים מתאים → RECOMMEND_EXISTING_TOOL
 ---RECOMMEND---
 tool_id: <script_id מדויק מהרשימה>
 reason: <משפט קצר אחד בעברית. הזכר משהו מהבקשה של המשתמש כדי שיהיה ברור למה דווקא הכלי הזה>
 ---END---
 
-כשאין כלי קיים מתאים והמשתמש בבירור צריך כלי חדש — סיים במבנה:
----SUGGEST_BUILD---
-brief: <מבנה: שורה 1 — מטרת הכלי במשפט. שורה 2 — קלט (סוג קובץ ועמודות מרכזיות). שורה 3 — פלט (פורמט ועמודות עיקריות). שורה 4 — אילו כלים קיימים שקלת ולמה הם לא מספיקים>
+### ב. הבקשה מתאימה לבנייה עצמית → SELF_SERVE_BUILD
+זוהי האופציה המועדפת כשאין כלי קיים מתאים והבקשה משתלבת בדפוס ״קובץ → חוקים → פלט״.
+בהודעה למשתמש (לפני הסימון) אמור בקצרה: ״זה מסוג הכלים שאתה יכול לבנות בעצמך באשף יצירת כלי״ והסבר במילים פשוטות מה הכלי יעשה.
+---SELF_SERVE_BUILD---
+brief: <שורה 1 — מטרת הכלי במשפט. שורה 2 — קלט (סוג קובץ ועמודות מרכזיות). שורה 3 — פלט (פורמט ועמודות עיקריות). שורה 4 — אילו כלים קיימים שקלת ולמה הם לא מספיקים>
 ---END---
 
-מתי לא להשתמש בסימונים האלה:
+### ג. הבקשה חוצה את גבול self-serve → ESCALATE_TO_PLATFORM_TEAM
+רק כאשר הבקשה כוללת אינטגרציות, בסיס נתונים מתמשך, workflow רב-שלבי, הרשאות/אישורים, ממשק מורכב, או יכולת פלטפורמה חדשה.
+בהודעה למשתמש (לפני הסימון) הסבר בקצרה איזה אלמנט בבקשה חוצה את הגבול ולמה זה דורש פיתוח של צוות הפלטפורמה.
+---ESCALATE_TO_PLATFORM_TEAM---
+brief: <שורה 1 — מטרת הכלי/היכולת במשפט. שורה 2 — מה בבקשה חוצה את גבול self-serve (אינטגרציה / שמירה מתמשכת / workflow / הרשאות / UI מורכב / יכולת חדשה). שורה 3 — אילו כלים קיימים שקלת ומדוע לא מספיקים. שורה 4 — מה הצוות יצטרך לבנות בקווים כלליים>
+---END---
+
+### מתי לא להשתמש באף סימון
 - שאלות הבהרה ("מה הכוונה?", "באיזה חודש?")
 - ייעוץ כללי על חוקי עבודה, מס, פנסיה וכו' שאינו קשור להפעלת כלי
 - שיחה חברתית או הסבר שאינו מוביל לפעולה
 - כשהמשתמש מבקש מידע ולא פעולה (״תסביר לי מה זה...״)
+- כשהמשתמש שואל באופן כללי על גבול ה-self-serve מבלי לתאר בקשה קונקרטית
+
+### דגש סיווג
+- ברירת מחדל = SELF_SERVE_BUILD. אל תקפיץ ESCALATE רק כי הבקשה ארוכה או לא לגמרי ברורה.
+- ESCALATE שמור למקרים שמילולית כוללים אחד מהאלמנטים שצוינו למעלה (אינטגרציה / שמירה מתמשכת / workflow / הרשאות / UI מורכב / יכולת פלטפורמה).
+- אם הצורך מתאים לדפוס ״קובץ → חוקים → פלט״ — זה self-serve, גם אם החישוב לא טריוויאלי.
 
 אל תכלול את הסימונים בתוך התשובה המוצגת — הם נקראים על ידי המערכת ומוסתרים מהמשתמש.
 
@@ -15906,6 +15977,10 @@ def build_assistant_system_prompt(user_id, last_user_message=""):
 
 
 _RECOMMEND_RE = re.compile(r"---RECOMMEND---\s*(.*?)\s*---END---", re.DOTALL)
+_SELF_SERVE_BUILD_RE = re.compile(r"---SELF_SERVE_BUILD---\s*(.*?)\s*---END---", re.DOTALL)
+_ESCALATE_RE = re.compile(r"---ESCALATE_TO_PLATFORM_TEAM---\s*(.*?)\s*---END---", re.DOTALL)
+# Legacy marker — older Claude responses may still emit it. Treated as
+# self-serve since most legacy briefs were file→rules→output style.
 _SUGGEST_BUILD_RE = re.compile(r"---SUGGEST_BUILD---\s*(.*?)\s*---END---", re.DOTALL)
 
 
@@ -15956,7 +16031,14 @@ def _resolve_marketplace_tool(raw_tool_id):
 
 def parse_assistant_output(text):
     """Extract structured recommendation/build markers from the assistant output.
-    Returns (clean_text, recommend_dict_or_None, suggest_build_dict_or_None)."""
+    Returns (clean_text, recommend_dict_or_None, build_dict_or_None).
+
+    The build dict, when present, carries a `kind` discriminator:
+      - "self_serve" — user can build via /tools/create wizard
+      - "escalate"   — request needs platform-team development
+    Markers handled: ---RECOMMEND---, ---SELF_SERVE_BUILD---,
+    ---ESCALATE_TO_PLATFORM_TEAM---, plus legacy ---SUGGEST_BUILD---
+    (treated as self_serve for backward compatibility)."""
     if not text:
         return text, None, None
 
@@ -15990,15 +16072,44 @@ def parse_assistant_output(text):
                 }
             # else: invalid tool_id — drop silently, don't show a bad CTA
 
-    build_match = _SUGGEST_BUILD_RE.search(text)
-    if build_match:
-        parsed = _parse_marker_body(build_match.group(1))
+    # Three-way build classification. Self-serve is the preferred outcome —
+    # if both markers are emitted (model error), self-serve wins. Legacy
+    # SUGGEST_BUILD also routes to self-serve.
+    self_serve_match = _SELF_SERVE_BUILD_RE.search(text)
+    escalate_match = _ESCALATE_RE.search(text)
+    legacy_match = _SUGGEST_BUILD_RE.search(text)
+    if self_serve_match:
+        parsed = _parse_marker_body(self_serve_match.group(1))
         brief = (parsed.get("brief") or "").strip()
         if brief:
-            build = {"brief": brief, "url": "/tools/create"}
+            build = {
+                "brief": brief,
+                "url": "/tools/create",
+                "kind": "self_serve",
+            }
+    elif escalate_match:
+        parsed = _parse_marker_body(escalate_match.group(1))
+        brief = (parsed.get("brief") or "").strip()
+        if brief:
+            build = {
+                "brief": brief,
+                "url": "/tools/create?mode=brief",
+                "kind": "escalate",
+            }
+    elif legacy_match:
+        parsed = _parse_marker_body(legacy_match.group(1))
+        brief = (parsed.get("brief") or "").strip()
+        if brief:
+            build = {
+                "brief": brief,
+                "url": "/tools/create",
+                "kind": "self_serve",
+            }
 
     # Strip markers from displayed text
     clean = _RECOMMEND_RE.sub("", text)
+    clean = _SELF_SERVE_BUILD_RE.sub("", clean)
+    clean = _ESCALATE_RE.sub("", clean)
     clean = _SUGGEST_BUILD_RE.sub("", clean)
     clean = re.sub(r"\n{3,}", "\n\n", clean).strip()
     return clean, recommend, build
@@ -18955,7 +19066,8 @@ def assistant_chat():
             rec_type = "recommend"
             rec_tool_id = recommend.get("tool_id")
         elif suggest_build:
-            rec_type = "suggest_build"
+            kind = (suggest_build.get("kind") or "self_serve").strip()
+            rec_type = "self_serve_build" if kind == "self_serve" else "escalate_to_platform_team"
         if rec_type:
             try:
                 db.execute(

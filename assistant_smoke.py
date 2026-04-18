@@ -188,53 +188,88 @@ def check_access_invariant():
 
 
 def check_marker_parser():
-    print("[4] Recommendation marker parser")
+    print("[4] Recommendation marker parser (3-way classification)")
     failures = 0
+    # Each case: (label, text, predicate_on_(rec, sb))
+    def _expect_recommend(tool_id):
+        return lambda rec, sb: bool(rec) and rec.get("tool_id") == tool_id and sb is None
+
+    def _expect_self_serve():
+        return lambda rec, sb: rec is None and bool(sb) and sb.get("kind") == "self_serve" and sb.get("url") == "/tools/create"
+
+    def _expect_escalate():
+        return lambda rec, sb: rec is None and bool(sb) and sb.get("kind") == "escalate" and "/tools/create" in (sb.get("url") or "")
+
+    def _expect_legacy_self_serve():
+        # Legacy SUGGEST_BUILD must route to self_serve for back-compat
+        return lambda rec, sb: rec is None and bool(sb) and sb.get("kind") == "self_serve"
+
+    def _expect_nothing():
+        return lambda rec, sb: rec is None and sb is None
+
+    def _expect_self_serve_wins_over_escalate():
+        # If both markers leak (model error), self-serve must win
+        return lambda rec, sb: rec is None and bool(sb) and sb.get("kind") == "self_serve"
+
     cases = [
-        (
-            "הנה.\n---RECOMMEND---\ntool_id: flamingo_payroll\nreason: שעות לתשלום × תעריף\n---END---",
-            ("recommend", "flamingo_payroll"),
-        ),
-        (
-            "אין כלי קיים מתאים.\n---SUGGEST_BUILD---\nbrief: כלי לחיזוי עזיבת עובדים\n---END---",
-            ("build", None),
-        ),
-        ("סתם תשובה רגילה.", (None, None)),
-        (
-            "פייק:\n---RECOMMEND---\ntool_id: bogus_tool\nreason: x\n---END---",
-            ("none", None),  # invalid tool_id must drop
-        ),
+        ("recommend valid",
+         "הנה.\n---RECOMMEND---\ntool_id: flamingo_payroll\nreason: שעות לתשלום × תעריף\n---END---",
+         _expect_recommend("flamingo_payroll")),
+        ("self-serve build",
+         "זה מסוג הכלים שאתה יכול לבנות בעצמך.\n---SELF_SERVE_BUILD---\nbrief: כלי שמסנן עובדים מתחת ל-100 שעות חודשיות\n---END---",
+         _expect_self_serve()),
+        ("escalate to platform",
+         "זו בקשה שדורשת אינטגרציה עם מערכת חיצונית.\n---ESCALATE_TO_PLATFORM_TEAM---\nbrief: סנכרון אוטומטי עם מערכת ה-HR החיצונית\n---END---",
+         _expect_escalate()),
+        ("legacy SUGGEST_BUILD routes to self_serve",
+         "אין כלי קיים מתאים.\n---SUGGEST_BUILD---\nbrief: כלי לחיזוי עזיבת עובדים\n---END---",
+         _expect_legacy_self_serve()),
+        ("plain text -> no markers", "סתם תשובה רגילה.", _expect_nothing()),
+        ("invalid tool_id dropped",
+         "פייק:\n---RECOMMEND---\ntool_id: bogus_tool\nreason: x\n---END---",
+         _expect_nothing()),
+        ("self-serve wins when both markers present",
+         "כפול:\n---SELF_SERVE_BUILD---\nbrief: סינון עובדים\n---END---\n\n---ESCALATE_TO_PLATFORM_TEAM---\nbrief: צריך אינטגרציה\n---END---",
+         _expect_self_serve_wins_over_escalate()),
     ]
-    for text, expected in cases:
+    for label, text, predicate in cases:
         clean, rec, sb = A.parse_assistant_output(text)
-        kind, tool_id = expected
-        if kind == "recommend":
-            if rec and rec.get("tool_id") == tool_id:
-                _passed(f"recommend -> {tool_id}")
-            else:
-                _failed("recommend parsing", f"{rec!r}")
-                failures += 1
-        elif kind == "build":
-            if sb and sb.get("brief"):
-                _passed("suggest_build with brief")
-            else:
-                _failed("build parsing", f"{sb!r}")
-                failures += 1
-        elif kind == "none":
-            if rec is None:
-                _passed("invalid tool_id correctly dropped")
-            else:
-                _failed("invalid tool_id leaked", f"{rec!r}")
-                failures += 1
+        if predicate(rec, sb):
+            _passed(label)
         else:
-            if rec is None and sb is None:
-                _passed("plain text -> no markers")
-            else:
-                _failed("plain text wrongly parsed", f"rec={rec} sb={sb}")
+            _failed(label, f"rec={rec!r} sb={sb!r}")
+            failures += 1
+        # Ensure NO marker token leaks into display text in any case
+        for token in ("---RECOMMEND---", "---SELF_SERVE_BUILD---",
+                      "---ESCALATE_TO_PLATFORM_TEAM---", "---SUGGEST_BUILD---",
+                      "---END---"):
+            if token in clean:
+                _failed(f"{label}: marker token leaked into display", token)
                 failures += 1
-        # Ensure markers stripped
-        if "---RECOMMEND---" in clean or "---SUGGEST_BUILD---" in clean or "---END---" in clean:
-            _failed("markers leaked into displayed text", clean)
+    return failures
+
+
+def check_three_way_prompt_doc():
+    """Make sure the prompt actually documents the 3-way classification with both markers,
+    so Claude has the contract to follow. This catches accidental drift."""
+    print("[7] Assistant prompt documents 3-way classification")
+    failures = 0
+    p = A.ASSISTANT_CHAT_SYSTEM_PROMPT
+    must_contain = [
+        "RECOMMEND_EXISTING_TOOL",
+        "SELF_SERVE_BUILD",
+        "ESCALATE_TO_PLATFORM_TEAM",
+        "---SELF_SERVE_BUILD---",
+        "---ESCALATE_TO_PLATFORM_TEAM---",
+        # Hebrew anchors so we know the explanatory section is present
+        "ברירת מחדל = SELF_SERVE_BUILD",
+        "אינטגרצי",  # match אינטגרציה / אינטגרציות
+    ]
+    for needle in must_contain:
+        if needle in p:
+            _passed(f"prompt contains: {needle}")
+        else:
+            _failed(f"prompt missing required anchor: {needle}")
             failures += 1
     return failures
 
@@ -348,6 +383,8 @@ def main():
     total += check_marketplace_handling()
     print()
     total += check_retention_plumbing()
+    print()
+    total += check_three_way_prompt_doc()
     print()
     if total == 0:
         print("==== ALL ASSISTANT SMOKE CHECKS PASSED ====")
