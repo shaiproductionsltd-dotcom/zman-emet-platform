@@ -1,0 +1,25 @@
+# Local secrets — never commit
+.claude/
+*.env
+!render.yaml
+
+# Local DB
+platform.db
+*.db-journal
+
+# Python
+__pycache__/
+*.pyc
+
+# Local server logs
+local_server.err.log
+local_server.out.log
+run_local.err.log
+run_local.out.log
+
+# Temp working files used during script development
+tmp_*.xlsx
+tmp_*.xls
+tmp_*.pptx
+tmp_*.zip
+tmp_*.txt
