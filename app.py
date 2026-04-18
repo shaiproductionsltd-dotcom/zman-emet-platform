@@ -8345,6 +8345,7 @@ def send_email(to_email, subject, html_body, text_body=None):
         headers={
             "Authorization": "Bearer " + api_key,
             "Content-Type": "application/json",
+            "User-Agent": "scriptly-platform/1.0",
         },
         method="POST",
     )
