@@ -15566,6 +15566,7 @@ def toggle_active(uid):
 @admin_required
 def approve_user(uid):
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    mail_sent = False
     with get_db() as db:
         user = db.execute("SELECT * FROM users WHERE id=? AND is_admin=0", (uid,)).fetchone()
         if not user:
@@ -15591,11 +15592,14 @@ def approve_user(uid):
         base = get_app_base_url() or ""
         login_url = (base.rstrip("/") if base else "") + "/login"
         if fresh is not None:
-            send_customer_approval_email(fresh, INITIAL_APPROVED_PASSWORD, login_url)
+            mail_sent = bool(send_customer_approval_email(fresh, INITIAL_APPROVED_PASSWORD, login_url))
     except Exception as mail_exc:
         print("[approve_user] email failed: %s" % mail_exc)
     customer_label = _row_get(user, "full_name") or _row_get(user, "company_name") or _row_get(user, "username") or str(uid)
-    add_flash("החשבון של " + customer_label + " אושר ונשלח אימייל עם פרטי הכניסה")
+    if mail_sent:
+        add_flash("החשבון של " + customer_label + " אושר ונשלח אימייל עם פרטי הכניסה")
+    else:
+        add_flash("החשבון של " + customer_label + " אושר, אבל שליחת האימייל ללקוח נכשלה. כדאי לבדוק את כתובת המייל ואת הגדרות הספק.")
     return redirect("/admin#adminUsers")
 
 
