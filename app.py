@@ -8158,6 +8158,15 @@ def init_db():
         )
         db.execute("CREATE INDEX IF NOT EXISTS idx_tool_requests_user ON tool_requests(user_id)")
         db.execute("CREATE INDEX IF NOT EXISTS idx_tool_requests_status ON tool_requests(status)")
+        # Add estimated_time column (admin sets expected turnaround so user sees it)
+        try:
+            db.execute("ALTER TABLE tool_requests ADD COLUMN estimated_time TEXT")
+            db.commit()
+        except Exception:
+            try:
+                db.conn.rollback()
+            except Exception:
+                pass
         # ── Chat token usage (cost tracking) ──────────────────────
         db.execute(
             """CREATE TABLE IF NOT EXISTS chat_token_usage (
@@ -14934,6 +14943,11 @@ def admin():
         # Tool requests (developer briefs)
         tool_requests_rows = db.execute("SELECT * FROM tool_requests ORDER BY created_at DESC, id DESC").fetchall()
         pending_tool_requests = sum(1 for r in tool_requests_rows if r["status"] == "pending")
+        # Pending marketplace tools awaiting moderation
+        pending_marketplace_row = db.execute(
+            "SELECT COUNT(*) AS c FROM marketplace_tools WHERE status='pending_review'"
+        ).fetchone()
+        pending_marketplace_tools = int(pending_marketplace_row["c"] or 0) if pending_marketplace_row else 0
         # Token usage per user (cost monitoring)
         token_usage_by_user = db.execute(
             """SELECT user_id, SUM(input_tokens) as total_input, SUM(output_tokens) as total_output,
@@ -15251,15 +15265,18 @@ def admin():
     tool_requests_html = ""
     if tool_requests_rows:
         req_status_meta = {
-            "pending": ("ממתין לפיתוח", "#fff7ed", "#c2410c"),
+            "pending": ("ממתין", "#fff7ed", "#c2410c"),
+            "acknowledged": ("נקרא", "#ecfeff", "#0e7490"),
             "in_progress": ("בפיתוח", "#eff6ff", "#1d4ed8"),
-            "completed": ("הושלם", "#ecfdf5", "#047857"),
+            "completed": ("טופל", "#ecfdf5", "#047857"),
             "cancelled": ("בוטל", "#fef2f2", "#b91c1c"),
         }
         for req in tool_requests_rows:
             s_label, s_bg, s_fg = req_status_meta.get(req["status"], ("לא ידוע", "#f8fafc", "#475569"))
             req_date = format_ui_datetime(req["created_at"]) if req["created_at"] else ""
             req_type_label = "כלי חדש" if req["request_type"] == "new" else "שיפור כלי"
+            eta_val = (_row_get(req, "estimated_time") or "").strip()
+            eta_line = ('<div style="margin-top:10px;font-size:12px;color:#334155"><strong>זמן משוער ללקוח:</strong> ' + esc(eta_val) + '</div>') if eta_val else ""
             tool_requests_html += (
                 '<details class="support-request-card" style="margin-bottom:10px">'
                 '<summary style="display:flex;justify-content:space-between;align-items:center;cursor:pointer;padding:12px 16px">'
@@ -15272,9 +15289,27 @@ def admin():
                 '<div style="padding:0 16px 16px;border-top:1px solid #e2e8f0">'
                 '<div style="margin-top:12px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:14px;font-size:13px;line-height:1.8;white-space:pre-wrap;direction:rtl">'
                 + esc(req["brief_text"] or "") + '</div>'
+                + eta_line
+                + '<form method="POST" action="/admin/tool-request/' + str(req["id"]) + '/eta" style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">'
+                '<label style="font-size:12px;color:#475569;font-weight:700">זמן משוער ללקוח:</label>'
+                '<input type="text" name="estimated_time" value="' + esc(eta_val) + '" placeholder="לדוגמה: 3-5 ימי עסקים" style="flex:1;min-width:180px;padding:6px 10px;border:1.5px solid #e2e8f0;border-radius:8px;font-size:13px;font-family:inherit">'
+                '<button type="submit" class="btn btn-gray" style="font-size:12px;border-radius:8px;padding:6px 14px">שמירה</button>'
+                '</form>'
                 '<div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">'
             )
             if req["status"] == "pending":
+                tool_requests_html += (
+                    '<form method="POST" action="/admin/tool-request/' + str(req["id"]) + '/status">'
+                    '<input type="hidden" name="status" value="acknowledged">'
+                    '<button type="submit" class="btn btn-gray" style="font-size:12px;border-radius:8px;padding:6px 14px">&#128065; סמן כנקרא</button></form>'
+                    '<form method="POST" action="/admin/tool-request/' + str(req["id"]) + '/status">'
+                    '<input type="hidden" name="status" value="in_progress">'
+                    '<button type="submit" class="btn btn-blue" style="font-size:12px;border-radius:8px;padding:6px 14px">&#9997; התחל פיתוח</button></form>'
+                    '<form method="POST" action="/admin/tool-request/' + str(req["id"]) + '/status">'
+                    '<input type="hidden" name="status" value="cancelled">'
+                    '<button type="submit" class="btn btn-gray" style="font-size:12px;border-radius:8px;padding:6px 14px">&#10005; בטל</button></form>'
+                )
+            elif req["status"] == "acknowledged":
                 tool_requests_html += (
                     '<form method="POST" action="/admin/tool-request/' + str(req["id"]) + '/status">'
                     '<input type="hidden" name="status" value="in_progress">'
@@ -15287,7 +15322,7 @@ def admin():
                 tool_requests_html += (
                     '<form method="POST" action="/admin/tool-request/' + str(req["id"]) + '/status">'
                     '<input type="hidden" name="status" value="completed">'
-                    '<button type="submit" class="btn btn-blue" style="font-size:12px;border-radius:8px;padding:6px 14px;background:#047857">&#9989; סמן כהושלם</button></form>'
+                    '<button type="submit" class="btn btn-blue" style="font-size:12px;border-radius:8px;padding:6px 14px;background:#047857">&#9989; סמן כטופל</button></form>'
                 )
             tool_requests_html += '</div></div></details>'
     else:
@@ -15334,15 +15369,28 @@ def admin():
         ensure_ascii=False,
     )
 
+    def _nav_badge(count):
+        if not count:
+            return ""
+        return (
+            ' <span style="display:inline-flex;align-items:center;justify-content:center;min-width:18px;height:18px;padding:0 6px;margin-right:6px;border-radius:999px;background:#ef4444;color:#fff;font-size:11px;font-weight:800;line-height:1">'
+            + str(count) + '</span>'
+        )
+
     admin_side_nav = (
         '<div class="admin-float-nav">'
         '<a href="#adminAddUser" class="btn btn-gray" style="text-decoration:none;justify-content:center">הוספת לקוח</a>'
-        '<a href="#adminUsers" class="btn btn-gray" style="text-decoration:none;justify-content:center">לקוחות</a>'
+        '<a href="#adminUsers" class="btn btn-gray" style="text-decoration:none;justify-content:center">לקוחות'
+        + _nav_badge(pending_customers)
+        + '</a>'
+        '<a href="#adminMarketplace" class="btn btn-gray" style="text-decoration:none;justify-content:center">שוק הכלים'
+        + _nav_badge(pending_marketplace_tools)
+        + '</a>'
         '<a href="#adminSupport" class="btn btn-gray" style="text-decoration:none;justify-content:center">פניות שירות'
-        + (' (' + str(pending_support) + ')' if pending_support else '')
+        + _nav_badge(pending_support)
         + '</a>'
         '<a href="#adminToolRequests" class="btn btn-gray" style="text-decoration:none;justify-content:center">בקשות כלים'
-        + (' (' + str(pending_tool_requests) + ')' if pending_tool_requests else '')
+        + _nav_badge(pending_tool_requests)
         + '</a>'
         '<a href="#adminAICosts" class="btn btn-gray" style="text-decoration:none;justify-content:center">עלויות AI</a>'
         '<a href="#adminLogs" class="btn btn-gray" style="text-decoration:none;justify-content:center">לוגים</a>'
@@ -15366,17 +15414,25 @@ def admin():
             '<div class="form-group"><label class="field-label">ימי ניסיון</label><select name="trial_days" style="margin-bottom:0"><option value="30">30 יום</option><option value="60">60 יום</option><option value="90">90 יום</option></select></div>'
         '<div class="form-group"><label class="field-label">בתוקף עד</label><input type="text" name="service_valid_until" placeholder="YYYY-MM-DD" style="margin-bottom:0"></div>'
         '<button type="submit" class="btn btn-blue" style="height:40px;align-self:flex-end">הוספה</button></div></form></div>'
-        '<details class="card" id="adminUsers" style="padding:0;overflow:hidden" dir="rtl">'
+        '<details class="card" id="adminUsers"' + (' open' if pending_customers else '') + ' style="padding:0;overflow:hidden" dir="rtl">'
         '<summary class="admin-collapsible-summary">'
-        '<div><div style="font-size:22px;font-weight:800;color:#0f172a;margin-bottom:4px">&#128101; לקוחות במערכת</div><div class="admin-collapsible-sub">רשימת הלקוחות מקופלת כברירת מחדל. פתיחה לפי צורך לעבודה נוחה יותר.</div></div>'
+        '<div><div style="font-size:22px;font-weight:800;color:#0f172a;margin-bottom:4px">&#128101; לקוחות במערכת'
+        + _nav_badge(pending_customers)
+        + '</div><div class="admin-collapsible-sub">'
+        + ('יש ' + str(pending_customers) + ' הרשמות שממתינות לאישור' if pending_customers else 'רשימת הלקוחות מקופלת כברירת מחדל. פתיחה לפי צורך לעבודה נוחה יותר.')
+        + '</div></div>'
         '<span style="font-size:18px;color:#64748b">+</span>'
         '</summary><div style="padding:0 20px 20px">'
         + table
         + '</div></details>'
-        '<div class="card" style="background:linear-gradient(135deg,#f0fdf4 0%,#ecfdf5 100%);border:1px solid #86efac" dir="rtl">'
+        '<div class="card" id="adminMarketplace" style="background:linear-gradient(135deg,#f0fdf4 0%,#ecfdf5 100%);border:1px solid #86efac" dir="rtl">'
         '<div style="display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap">'
-        '<div><div style="font-size:18px;font-weight:800;color:#047857;margin-bottom:4px">🛒 ניהול שוק הכלים</div>'
-        '<div style="font-size:13px;color:#475569">בדיקה ואישור כלים שנוצרו על ידי משתמשים</div></div>'
+        '<div><div style="font-size:18px;font-weight:800;color:#047857;margin-bottom:4px">🛒 ניהול שוק הכלים'
+        + _nav_badge(pending_marketplace_tools)
+        + '</div>'
+        '<div style="font-size:13px;color:#475569">'
+        + ('יש ' + str(pending_marketplace_tools) + ' כלים שממתינים לאישור' if pending_marketplace_tools else 'בדיקה ואישור כלים שנוצרו על ידי משתמשים')
+        + '</div></div>'
         '<a href="/admin/tools" class="btn btn-blue" style="text-decoration:none;display:inline-flex;align-items:center;justify-content:center;min-width:160px;background:#047857">ניהול כלים</a>'
         '</div></div>'
         '<div class="card" style="background:linear-gradient(135deg,#f1f5f9 0%,#f8fafc 100%);border:1px solid #cbd5e1" dir="rtl">'
@@ -15385,18 +15441,22 @@ def admin():
         '<div style="font-size:13px;color:#475569">מצב נוכחי של נתוני עבודה זמניים, ריצה אחרונה של ניקוי, ומדיניות פעילה</div></div>'
         '<a href="/admin/retention" class="btn btn-gray" style="text-decoration:none;display:inline-flex;align-items:center;justify-content:center;min-width:160px">פתח דשבורד</a>'
         '</div></div>'
-        '<details class="card" id="adminSupport" style="padding:0;overflow:hidden" dir="rtl">'
+        '<details class="card" id="adminSupport"' + (' open' if pending_support else '') + ' style="padding:0;overflow:hidden" dir="rtl">'
         '<summary class="admin-collapsible-summary">'
-        '<div><div style="font-size:22px;font-weight:800;color:#0f172a;margin-bottom:4px">&#128172; פניות שירות לקוחות</div><div class="admin-collapsible-sub">'
+        '<div><div style="font-size:22px;font-weight:800;color:#0f172a;margin-bottom:4px">&#128172; פניות שירות לקוחות'
+        + _nav_badge(pending_support)
+        + '</div><div class="admin-collapsible-sub">'
         + ('יש ' + str(pending_support) + ' פניות שממתינות להתייחסות' if pending_support else 'אין כרגע פניות שממתינות להתייחסות')
         + '</div></div>'
         '<span style="font-size:18px;color:#64748b">+</span>'
         '</summary><div style="padding:0 20px 20px">'
         + support_table
         + '</div></details>'
-        '<details class="card" id="adminToolRequests" style="padding:0;overflow:hidden" dir="rtl">'
+        '<details class="card" id="adminToolRequests"' + (' open' if pending_tool_requests else '') + ' style="padding:0;overflow:hidden" dir="rtl">'
         '<summary class="admin-collapsible-summary">'
-        '<div><div style="font-size:22px;font-weight:800;color:#0f172a;margin-bottom:4px">&#128736; בקשות כלים</div><div class="admin-collapsible-sub">'
+        '<div><div style="font-size:22px;font-weight:800;color:#0f172a;margin-bottom:4px">&#128736; בקשות כלים'
+        + _nav_badge(pending_tool_requests)
+        + '</div><div class="admin-collapsible-sub">'
         + ('יש ' + str(pending_tool_requests) + ' בקשות שממתינות לפיתוח' if pending_tool_requests else 'אין כרגע בקשות ממתינות')
         + '</div></div>'
         '<span style="font-size:18px;color:#64748b">+</span>'
@@ -15659,7 +15719,7 @@ def update_support_request_status(request_id):
 @admin_required
 def update_tool_request_status(request_id):
     new_status = request.form.get("status", "").strip().lower()
-    if new_status not in {"in_progress", "completed", "cancelled"}:
+    if new_status not in {"acknowledged", "in_progress", "completed", "cancelled"}:
         add_flash("סטטוס הבקשה אינו תקין")
         return redirect("/admin#adminToolRequests")
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -15667,6 +15727,19 @@ def update_tool_request_status(request_id):
         db.execute("UPDATE tool_requests SET status=?, updated_at=? WHERE id=?", (new_status, now, request_id))
         db.commit()
     add_flash("סטטוס הבקשה עודכן בהצלחה")
+    return redirect("/admin#adminToolRequests")
+
+
+@app.route("/admin/tool-request/<int:request_id>/eta", methods=["POST"])
+@login_required
+@admin_required
+def update_tool_request_eta(request_id):
+    eta = (request.form.get("estimated_time", "") or "").strip()[:120]
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with get_db() as db:
+        db.execute("UPDATE tool_requests SET estimated_time=?, updated_at=? WHERE id=?", (eta, now, request_id))
+        db.commit()
+    add_flash("הזמן המשוער עודכן")
     return redirect("/admin#adminToolRequests")
 
 
@@ -16148,12 +16221,15 @@ TOOL_CREATION_SYSTEM_PROMPT_BASE = """אתה עוזר אפיון כלים עבו
 [סיכום בשפה פשוטה]
 האם זה נכון? יש משהו לתקן?"
 
-אחרי שהלקוח מאשר — בנה את הסיכום הטכני בפורמט שלהלן ועטוף אותו ב:
-```developer_brief
----DEVELOPER_BRIEF---
-...
----END_BRIEF---
-```
+אחרי שהלקוח מאשר — הפלט שלך תלוי בסיווג שהצהרת עליו בשלב 0:
+
+**אם הסיווג הוא self-serve (כלי שאתה בונה כאן) — חובה להוציא JSON ולא בריף:**
+בנה הגדרת כלי JSON מלאה לפי המבנה בסעיף "מבנה הגדרת כלי JSON" למטה, ועטוף אותה ב-```json```. זהו הפלט הסופי — המערכת תשמור את הכלי אוטומטית ויהיה מוכן לשימוש. אסור להוציא developer_brief בשיחה שסווגה כ-self-serve.
+
+**אם הסיווג הוא צריכת פיתוח (העברה לצוות) — חובה להוציא בריף ולא JSON:**
+בנה סיכום טכני לפי המבנה בסעיף "פורמט הסיכום הטכני למפתח" למטה, ועטוף אותו ב-```developer_brief``` עם המסמנים `---DEVELOPER_BRIEF---` ו-`---END_BRIEF---`. אסור להוציא JSON בשיחה שסווגה כצריכת פיתוח.
+
+תזכורת: הסיווג נקבע בשלב 0 (או בשיחה עם היועץ). אם אתה מרגיש שהסיווג השתנה באמצע, הצהר על זה במפורש לפי כלל "שינוי סיווג" לפני שאתה מוציא את הפלט החדש.
 
 ═══════════════════════════════════
 מצב ג — שיפור כלי קיים
@@ -16237,11 +16313,11 @@ TOOL_CREATION_SYSTEM_PROMPT_BASE = """אתה עוזר אפיון כלים עבו
 ```
 
 ═══════════════════════════════════
-מבנה הגדרת כלי JSON (למצב ג — שינויים פשוטים בלבד)
+מבנה הגדרת כלי JSON (מצב ב self-serve + מצב ג שינויים פשוטים)
 ═══════════════════════════════════
 **תנאי קדם (חובה):** אסור להציג JSON של כלי אלא אם המשתמש כבר יודע מתחילת השיחה (או מהצהרת שינוי סיווג מפורשת) שהבקשה מסווגת כ-self-serve. אם הצגת את השיחה כצריכת פיתוח ועכשיו אתה רוצה להציג JSON — קודם הצהר על שינוי הסיווג ותסביר את הסיבה (מה הבהרת המשתמש שמחזיר את הבקשה לתוך גבולות self-serve), ורק אחר כך הצג את ה-JSON.
 
-כשאתה מבצע שינוי פשוט בכלי קיים, בנה JSON בפורמט הבא ועטוף ב-```json:
+השתמש במבנה הזה גם כשאתה בונה כלי חדש במצב ב (self-serve) וגם כשאתה מבצע שינוי פשוט בכלי קיים במצב ג. בשני המקרים עטוף ב-```json:
 {
   "name": "שם בעברית",
   "description": "תיאור קצר",
@@ -19390,6 +19466,11 @@ def my_tools():
                ORDER BY i.created_at DESC""",
             (user_id, user_id),
         ).fetchall()
+        # User's dev-brief requests (tools sent to platform team)
+        my_requests = db.execute(
+            "SELECT * FROM tool_requests WHERE user_id=? ORDER BY created_at DESC, id DESC",
+            (user_id,),
+        ).fetchall()
 
     status_labels = {"draft": "טיוטה", "pending_review": "ממתין לאישור", "approved": "מאושר", "rejected": "נדחה"}
     status_colors = {"draft": "#f59e0b", "pending_review": "#3b82f6", "approved": "#047857", "rejected": "#ef4444"}
@@ -19469,6 +19550,41 @@ def my_tools():
     if not saved:
         saved_html = '<div style="text-align:center;padding:2rem;color:#94a3b8">אין כלים שמורים. <a href="/marketplace" style="color:#2563eb">גלה כלים בשוק</a></div>'
 
+    # Build dev-brief requests section
+    req_status_meta = {
+        "pending": ("ממתין לבדיקה", "#fff7ed", "#c2410c"),
+        "acknowledged": ("נקרא", "#ecfeff", "#0e7490"),
+        "in_progress": ("נכנס לטיפול", "#eff6ff", "#1d4ed8"),
+        "completed": ("טופל", "#ecfdf5", "#047857"),
+        "cancelled": ("בוטל", "#fef2f2", "#b91c1c"),
+    }
+    requests_html = ""
+    for req in my_requests:
+        s_label, s_bg, s_fg = req_status_meta.get(req["status"], ("לא ידוע", "#f8fafc", "#475569"))
+        req_date = format_ui_datetime(req["created_at"]) if req["created_at"] else ""
+        req_type_label = "כלי חדש" if req["request_type"] == "new" else "שיפור כלי"
+        eta_val = (_row_get(req, "estimated_time") or "").strip()
+        eta_html = (
+            '<div style="margin-top:8px;padding:8px 12px;background:#f0f9ff;border:1px solid #bae6fd;border-radius:8px;font-size:12px;color:#0c4a6e">'
+            '<strong>זמן משוער לטיפול:</strong> ' + esc(eta_val) + '</div>'
+        ) if eta_val else ""
+        requests_html += (
+            '<details style="border:1.5px solid #e2e8f0;border-radius:16px;padding:14px 18px;margin-bottom:12px;background:white">'
+            '<summary style="display:flex;justify-content:space-between;align-items:center;cursor:pointer;gap:10px">'
+            '<div style="flex:1;min-width:0">'
+            '<div style="font-weight:800;color:#0f172a;font-size:14px;margin-bottom:3px">&#128736; ' + esc(req["tool_name"] or "") + '</div>'
+            '<div style="font-size:12px;color:#64748b">' + esc(req_type_label) + ' &middot; נשלח ' + esc(req_date) + '</div>'
+            '</div>'
+            '<span style="font-size:11px;padding:4px 12px;border-radius:99px;font-weight:800;background:' + s_bg + ';color:' + s_fg + ';flex-shrink:0">' + s_label + '</span>'
+            '</summary>'
+            + eta_html
+            + '<div style="margin-top:10px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:12px;font-size:12px;line-height:1.7;white-space:pre-wrap;direction:rtl;color:#334155">'
+            + esc(req["brief_text"] or "") + '</div>'
+            '</details>'
+        )
+    if not my_requests:
+        requests_html = '<div style="text-align:center;padding:2rem;color:#94a3b8">לא שלחת עדיין בקשות לצוות הפיתוח.</div>'
+
     body = (
         '<div style="max-width:800px;margin:0 auto">'
         '<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:1.5rem">'
@@ -19481,6 +19597,11 @@ def my_tools():
         '<div style="margin-bottom:2rem">'
         '<h3 style="font-size:16px;font-weight:800;color:#1e3a8a;margin-bottom:14px;padding-bottom:10px;border-bottom:2px solid #dbeafe">&#9997; כלים שיצרתי</h3>'
         + created_html
+        + '</div>'
+        # Dev-brief requests section
+        '<div style="margin-bottom:2rem">'
+        '<h3 style="font-size:16px;font-weight:800;color:#1e3a8a;margin-bottom:14px;padding-bottom:10px;border-bottom:2px solid #dbeafe">&#128230; בקשות שנשלחו לפיתוח</h3>'
+        + requests_html
         + '</div>'
         # Saved/favorite tools section
         '<div>'
