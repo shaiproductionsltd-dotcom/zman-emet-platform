@@ -3357,21 +3357,26 @@ def parse_rimon_home_office_report(input_path, extension, mapping):
         error_days = 0
         standard_hours_total = 0.0
         missing_hours_total = 0.0
+        events_hours = {}
+        events_days = {}
+
+        absence_keywords = ("חופשה", "מחלה", "היעדר", "חג", "אבל", "מילואים")
 
         for day_key in sorted(grouped_dates):
             grouped = grouped_dates[day_key]
             has_home_event = grouped["home_office"]
             normalized_events = [str(event).strip() for event in grouped["events"] if str(event).strip()]
-            has_leave_event = any("פיטור" in event for event in normalized_events)
+            has_leave_event = any("פיטור" in event or "התפטר" in event for event in normalized_events)
             has_absence_event = any(
                 keyword in event
                 for event in normalized_events
-                for keyword in ("חופשה", "מחלה", "היעדר", "חג", "אבל", "מילואים")
+                for keyword in absence_keywords
             )
             has_other_work_event = any(
                 event != "עבודה מהבית"
                 and "פיטור" not in event
-                and not any(keyword in event for keyword in ("חופשה", "מחלה", "היעדר", "חג", "אבל", "מילואים"))
+                and "התפטר" not in event
+                and not any(keyword in event for keyword in absence_keywords)
                 for event in normalized_events
             )
             has_entry = bool(grouped["entry_time"])
@@ -3381,12 +3386,62 @@ def parse_rimon_home_office_report(input_path, extension, mapping):
             office_work = has_other_work_event or (has_complete_attendance and not has_home_event)
             left_employee = has_leave_event and not office_work and not has_home_event and not has_complete_attendance
             grouped["missing_absence"] = has_absence_event and not left_employee and not office_work and not has_home_event and not has_complete_attendance
-            missing_day_error = not has_complete_attendance and not has_partial_attendance and not normalized_events and not grouped["missing_absence"] and not left_employee
+            date_obj = datetime.fromisoformat(grouped["date"])
+            is_weekend = date_obj.weekday() in (4, 5)
+            has_any_activity = has_entry or has_exit or bool(normalized_events)
+            missing_day_error = (
+                not has_complete_attendance
+                and not has_partial_attendance
+                and not normalized_events
+                and not grouped["missing_absence"]
+                and not left_employee
+                and not is_weekend
+            )
             if has_partial_attendance and "חסר דיווח" not in grouped["errors"]:
                 grouped["errors"].append("חסר דיווח")
             if missing_day_error and "יום חסר" not in grouped["errors"]:
                 grouped["errors"].append("יום חסר")
             grouped["error"] = grouped["error"] or missing_day_error or has_partial_attendance
+
+            if office_work:
+                classification = "משרד"
+                primary_event = next(
+                    (
+                        event for event in normalized_events
+                        if event != "עבודה מהבית"
+                        and "פיטור" not in event
+                        and "התפטר" not in event
+                        and not any(kw in event for kw in absence_keywords)
+                    ),
+                    "עבודה מהמשרד",
+                )
+            elif has_home_event:
+                classification = "בית"
+                primary_event = "עבודה מהבית"
+            elif left_employee:
+                classification = "עזיבה"
+                primary_event = next(
+                    (event for event in normalized_events if "פיטור" in event or "התפטר" in event),
+                    "עזיבה",
+                )
+            elif grouped["missing_absence"]:
+                classification = "היעדרות"
+                primary_event = next(
+                    (event for event in normalized_events if any(kw in event for kw in absence_keywords)),
+                    "היעדרות",
+                )
+            elif is_weekend and not has_any_activity:
+                classification = "סוף שבוע"
+                primary_event = ""
+            elif grouped["error"]:
+                classification = "שגיאה"
+                primary_event = ""
+            else:
+                classification = ""
+                primary_event = ""
+
+            grouped["classification"] = classification
+            grouped["primary_event"] = primary_event
 
             if has_home_event and not office_work:
                 home_office_days += 1
@@ -3400,12 +3455,21 @@ def parse_rimon_home_office_report(input_path, extension, mapping):
                 error_days += 1
             standard_hours_total += parse_hours_or_zero(grouped["standard_hours"])
             missing_hours_total += parse_hours_or_zero(grouped["missing_hours"])
-            detected_months.append(datetime.fromisoformat(grouped["date"]).month)
+            detected_months.append(date_obj.month)
             detected_dates.add(grouped["date"])
+
+            if primary_event and classification in ("משרד", "בית", "היעדרות", "עזיבה"):
+                events_days[primary_event] = events_days.get(primary_event, 0) + 1
+                hours_for_event = parse_hours_or_zero(grouped["total_hours"])
+                if hours_for_event == 0:
+                    hours_for_event = parse_hours_or_zero(grouped["standard_hours"])
+                events_hours[primary_event] = events_hours.get(primary_event, 0.0) + hours_for_event
 
             daily_rows.append(
                 {
                     "employee_name": grouped["employee_name"],
+                    "payroll_number": payroll_number,
+                    "department": department,
                     "date": grouped["date"],
                     "day_name": grouped["day_name"],
                     "entry_time": grouped["entry_time"],
@@ -3414,6 +3478,10 @@ def parse_rimon_home_office_report(input_path, extension, mapping):
                     "office_work": office_work,
                     "missing_absence": grouped["missing_absence"],
                     "error": grouped["error"],
+                    "is_weekend": is_weekend,
+                    "has_any_activity": has_any_activity,
+                    "classification": classification,
+                    "primary_event": primary_event,
                     "event": " | ".join(grouped["events"]),
                     "total_hours": grouped["total_hours"],
                     "standard_hours": grouped["standard_hours"],
@@ -3436,6 +3504,8 @@ def parse_rimon_home_office_report(input_path, extension, mapping):
                 "total_grouped_dates": len(grouped_dates),
                 "standard_hours_total": standard_hours_total,
                 "missing_hours_total": missing_hours_total,
+                "events_hours": events_hours,
+                "events_days": events_days,
             }
         )
 
@@ -3564,61 +3634,245 @@ def write_rimon_home_office_summary(ws, employee_rows, report_meta):
         ws.column_dimensions[get_column_letter(col)].width = width
 
 
-def write_rimon_home_office_daily(ws, daily_rows):
+def write_rimon_home_office_daily(ws, daily_rows, employee_rows):
     ws.title = safe_sheet_title("פירוט יומי", "Daily Breakdown")
     ws.sheet_view.rightToLeft = True
     ws.sheet_view.showGridLines = False
-    ws.freeze_panes = "A2"
 
-    headers = [
-        "עובד",
-        "תאריך",
-        "סוג יום",
-        "שעת כניסה",
-        "שעת יציאה",
-        "סה\"כ שעות",
-        "עבודה מהבית",
-        "עבודה מהמשרד",
-        "היעדרות",
-        "שגיאה",
-        "אירוע",
-        "שעות תקן",
-        "שעות חוסר",
-        "פירוט שגיאה",
-    ]
-    for col, header in enumerate(headers, start=1):
-        cell = ws.cell(row=1, column=col, value=header)
-        cell.font = Font(bold=True, color="FFFFFF")
-        cell.fill = PatternFill(fill_type="solid", fgColor="0F766E")
-        cell.alignment = Alignment(horizontal="right")
-
-    sorted_rows = sorted(daily_rows, key=lambda row: (row["employee_name"], row["date"]))
-    for row_idx, row in enumerate(sorted_rows, start=2):
-        values = [
-            row["employee_name"],
-            row["date"],
-            row["day_name"],
-            row["entry_time"],
-            row["exit_time"],
-            row["total_hours"],
-            yes_no(row["home_office"]),
-            yes_no(row["office_work"]),
-            yes_no(row["missing_absence"]),
-            yes_no(row["error"]),
-            row["event"],
-            row["standard_hours"],
-            row["missing_hours"],
-            row["error_text"],
-        ]
-        for col, value in enumerate(values, start=1):
-            cell = ws.cell(row=row_idx, column=col, value=value)
-            cell.alignment = Alignment(horizontal="right")
-            if row_idx % 2 == 0:
-                cell.fill = PatternFill(fill_type="solid", fgColor="ECFDF5")
-
-    widths = [24, 14, 12, 12, 12, 12, 14, 14, 12, 10, 20, 14, 14, 22]
+    total_cols = 10
+    widths = [22, 10, 10, 10, 10, 22, 12, 10, 10, 20]
     for col, width in enumerate(widths, start=1):
         ws.column_dimensions[get_column_letter(col)].width = width
+
+    classification_colors = {
+        "משרד": "DCFCE7",
+        "בית": "EDE9FE",
+        "היעדרות": "FEF3C7",
+        "עזיבה": "FEE2E2",
+        "שגיאה": "FECACA",
+        "סוף שבוע": "F1F5F9",
+    }
+    classification_text_colors = {
+        "משרד": "166534",
+        "בית": "5B21B6",
+        "היעדרות": "92400E",
+        "עזיבה": "991B1B",
+        "שגיאה": "991B1B",
+        "סוף שבוע": "475569",
+    }
+
+    thin_border = Border(
+        left=Side(style="thin", color="E2E8F0"),
+        right=Side(style="thin", color="E2E8F0"),
+        top=Side(style="thin", color="E2E8F0"),
+        bottom=Side(style="thin", color="E2E8F0"),
+    )
+
+    row_idx = 1
+    ws.merge_cells(start_row=row_idx, start_column=1, end_row=row_idx, end_column=total_cols)
+    title_cell = ws.cell(row=row_idx, column=1, value="פירוט יומי לעבודה מהבית והמשרד")
+    title_cell.font = Font(bold=True, size=16, color="0F172A")
+    title_cell.fill = PatternFill(fill_type="solid", fgColor="BFDBFE")
+    title_cell.alignment = Alignment(horizontal="center", vertical="center")
+    ws.row_dimensions[row_idx].height = 26
+    row_idx += 2
+
+    rows_by_employee = defaultdict(list)
+    for row in daily_rows:
+        key = (row["employee_name"], row.get("payroll_number", ""))
+        rows_by_employee[key].append(row)
+
+    sorted_employees = sorted(
+        employee_rows,
+        key=lambda emp: (emp.get("employee_name", ""), emp.get("payroll_number", "")),
+    )
+
+    for emp in sorted_employees:
+        emp_name = emp.get("employee_name", "")
+        payroll = emp.get("payroll_number", "")
+        department = emp.get("department", "")
+
+        header_text = emp_name or "עובד"
+        meta_parts = []
+        if payroll:
+            meta_parts.append(f"מספר שכר: {payroll}")
+        if department:
+            meta_parts.append(f"מחלקה: {department}")
+        if meta_parts:
+            header_text = f"{header_text}  •  {'   '.join(meta_parts)}"
+
+        ws.merge_cells(start_row=row_idx, start_column=1, end_row=row_idx, end_column=total_cols)
+        header_cell = ws.cell(row=row_idx, column=1, value=header_text)
+        header_cell.font = Font(bold=True, size=13, color="FFFFFF")
+        header_cell.fill = PatternFill(fill_type="solid", fgColor="1E3A8A")
+        header_cell.alignment = Alignment(horizontal="right", vertical="center", indent=1)
+        ws.row_dimensions[row_idx].height = 24
+        row_idx += 1
+
+        stats_pairs = [
+            ("ימי משרד", emp.get("office_work_days", 0), "DCFCE7", "166534"),
+            ("ימי בית", emp.get("home_office_days", 0), "EDE9FE", "5B21B6"),
+            ("היעדרות", emp.get("missing_absence_days", 0), "FEF3C7", "92400E"),
+            ("עזיבה", emp.get("left_days", 0), "FEE2E2", "991B1B"),
+            ("שגיאה", emp.get("error_days", 0), "FECACA", "991B1B"),
+            ("סה\"כ זוהו", emp.get("total_grouped_dates", 0), "E0F2FE", "075985"),
+            ("תקן", format_hours(emp.get("standard_hours_total", 0.0)), "E0F2FE", "075985"),
+            ("חוסר", format_hours(emp.get("missing_hours_total", 0.0)), "FEF3C7", "92400E"),
+        ]
+        stats_row = row_idx
+        for idx, (label, value, fill_color, text_color) in enumerate(stats_pairs):
+            col = idx + 1 if idx < total_cols else total_cols
+            label_text = f"{label}: {value}"
+            cell = ws.cell(row=stats_row, column=col, value=label_text)
+            cell.font = Font(bold=True, size=11, color=text_color)
+            cell.fill = PatternFill(fill_type="solid", fgColor=fill_color)
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+            cell.border = thin_border
+        ws.row_dimensions[stats_row].height = 22
+        row_idx += 2
+
+        events_hours = emp.get("events_hours", {}) or {}
+        events_days = emp.get("events_days", {}) or {}
+        combined_events = sorted(
+            set(events_hours.keys()) | set(events_days.keys()),
+            key=lambda name: (-events_days.get(name, 0), -events_hours.get(name, 0.0), name),
+        )
+
+        ws.merge_cells(start_row=row_idx, start_column=1, end_row=row_idx, end_column=2)
+        left_title = ws.cell(row=row_idx, column=1, value="סיכום שעות לפי תנועה")
+        left_title.font = Font(bold=True, size=11, color="FFFFFF")
+        left_title.fill = PatternFill(fill_type="solid", fgColor="0F766E")
+        left_title.alignment = Alignment(horizontal="center", vertical="center")
+        ws.merge_cells(start_row=row_idx, start_column=6, end_row=row_idx, end_column=7)
+        right_title = ws.cell(row=row_idx, column=6, value="סיכום ימים לפי תנועה")
+        right_title.font = Font(bold=True, size=11, color="FFFFFF")
+        right_title.fill = PatternFill(fill_type="solid", fgColor="0F766E")
+        right_title.alignment = Alignment(horizontal="center", vertical="center")
+        ws.row_dimensions[row_idx].height = 22
+        row_idx += 1
+
+        col_headers = [(1, "תנועה"), (2, "שעות"), (6, "תנועה"), (7, "ימים")]
+        for col, header in col_headers:
+            cell = ws.cell(row=row_idx, column=col, value=header)
+            cell.font = Font(bold=True, size=10, color="0F172A")
+            cell.fill = PatternFill(fill_type="solid", fgColor="E0F2FE")
+            cell.alignment = Alignment(horizontal="center")
+            cell.border = thin_border
+        row_idx += 1
+
+        if combined_events:
+            for event_name in combined_events:
+                hours_val = events_hours.get(event_name, 0.0)
+                days_val = events_days.get(event_name, 0)
+                left_name = ws.cell(row=row_idx, column=1, value=event_name)
+                left_name.alignment = Alignment(horizontal="right", indent=1)
+                left_name.border = thin_border
+                left_hours = ws.cell(row=row_idx, column=2, value=format_hours(hours_val) if hours_val else "—")
+                left_hours.alignment = Alignment(horizontal="center")
+                left_hours.border = thin_border
+                right_name = ws.cell(row=row_idx, column=6, value=event_name)
+                right_name.alignment = Alignment(horizontal="right", indent=1)
+                right_name.border = thin_border
+                right_days = ws.cell(row=row_idx, column=7, value=days_val)
+                right_days.alignment = Alignment(horizontal="center")
+                right_days.border = thin_border
+                row_idx += 1
+            total_hours = sum(events_hours.values())
+            total_days = sum(events_days.values())
+            total_fill = PatternFill(fill_type="solid", fgColor="F1F5F9")
+            for col, val in [(1, "סה\"כ"), (2, format_hours(total_hours) if total_hours else "—"), (6, "סה\"כ"), (7, total_days)]:
+                cell = ws.cell(row=row_idx, column=col, value=val)
+                cell.font = Font(bold=True, color="0F172A")
+                cell.fill = total_fill
+                cell.alignment = Alignment(horizontal="center" if col in (2, 7) else "right", indent=1 if col in (1, 6) else 0)
+                cell.border = thin_border
+            row_idx += 1
+        else:
+            ws.merge_cells(start_row=row_idx, start_column=1, end_row=row_idx, end_column=2)
+            none_left = ws.cell(row=row_idx, column=1, value="אין תנועות לסיכום")
+            none_left.alignment = Alignment(horizontal="center")
+            none_left.font = Font(color="94A3B8", italic=True)
+            none_left.border = thin_border
+            ws.merge_cells(start_row=row_idx, start_column=6, end_row=row_idx, end_column=7)
+            none_right = ws.cell(row=row_idx, column=6, value="אין תנועות לסיכום")
+            none_right.alignment = Alignment(horizontal="center")
+            none_right.font = Font(color="94A3B8", italic=True)
+            none_right.border = thin_border
+            row_idx += 1
+
+        row_idx += 1
+
+        ws.merge_cells(start_row=row_idx, start_column=1, end_row=row_idx, end_column=total_cols)
+        daily_title = ws.cell(row=row_idx, column=1, value="פירוט יומי")
+        daily_title.font = Font(bold=True, size=11, color="FFFFFF")
+        daily_title.fill = PatternFill(fill_type="solid", fgColor="0F766E")
+        daily_title.alignment = Alignment(horizontal="right", vertical="center", indent=1)
+        ws.row_dimensions[row_idx].height = 22
+        row_idx += 1
+
+        daily_headers = [
+            "תאריך",
+            "יום",
+            "כניסה",
+            "יציאה",
+            "סה\"כ",
+            "תנועה",
+            "סיווג",
+            "תקן",
+            "חוסר",
+            "שגיאה",
+        ]
+        for col, header in enumerate(daily_headers, start=1):
+            cell = ws.cell(row=row_idx, column=col, value=header)
+            cell.font = Font(bold=True, color="FFFFFF")
+            cell.fill = PatternFill(fill_type="solid", fgColor="1E3A8A")
+            cell.alignment = Alignment(horizontal="center")
+            cell.border = thin_border
+        row_idx += 1
+
+        emp_rows = sorted(
+            rows_by_employee.get((emp_name, payroll), []),
+            key=lambda r: r["date"],
+        )
+        visible_rows = [
+            r for r in emp_rows
+            if not (r.get("is_weekend") and not r.get("has_any_activity") and not r.get("error"))
+        ]
+
+        if not visible_rows:
+            ws.merge_cells(start_row=row_idx, start_column=1, end_row=row_idx, end_column=total_cols)
+            empty_cell = ws.cell(row=row_idx, column=1, value="אין ימי פעילות לדוח זה")
+            empty_cell.alignment = Alignment(horizontal="center")
+            empty_cell.font = Font(color="94A3B8", italic=True)
+            row_idx += 1
+        else:
+            for i, row in enumerate(visible_rows):
+                classification = row.get("classification", "") or ""
+                values = [
+                    row["date"],
+                    row["day_name"],
+                    row["entry_time"],
+                    row["exit_time"],
+                    row["total_hours"],
+                    row["event"],
+                    classification,
+                    row["standard_hours"],
+                    row["missing_hours"],
+                    row["error_text"],
+                ]
+                stripe_fill = "F8FAFC" if i % 2 == 0 else "FFFFFF"
+                for col, value in enumerate(values, start=1):
+                    cell = ws.cell(row=row_idx, column=col, value=value)
+                    cell.alignment = Alignment(horizontal="center" if col not in (6, 10) else "right", indent=1 if col in (6, 10) else 0)
+                    cell.border = thin_border
+                    cell.fill = PatternFill(fill_type="solid", fgColor=stripe_fill)
+                if classification and classification in classification_colors:
+                    class_cell = ws.cell(row=row_idx, column=7)
+                    class_cell.fill = PatternFill(fill_type="solid", fgColor=classification_colors[classification])
+                    class_cell.font = Font(bold=True, color=classification_text_colors.get(classification, "0F172A"))
+                row_idx += 1
+
+        row_idx += 2
 
 
 def run_rimon_home_office_summary(input_path, output_path, extension, options=None):
@@ -3630,7 +3884,7 @@ def run_rimon_home_office_summary(input_path, output_path, extension, options=No
     employee_rows, daily_rows, report_meta = parse_rimon_home_office_report(input_path, extension, mapping)
     wb = Workbook()
     write_rimon_home_office_summary(wb.active, employee_rows, report_meta)
-    write_rimon_home_office_daily(wb.create_sheet(), daily_rows)
+    write_rimon_home_office_daily(wb.create_sheet(), daily_rows, employee_rows)
     wb.save(output_path)
     return {"warnings": build_rimon_mapping_warnings(mapping)}
 
