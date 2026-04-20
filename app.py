@@ -4030,11 +4030,50 @@ def scan_distinct_events(input_path, extension, mapping):
         for sheet in iter_excel_sheets(workbook_kind, workbook):
             rows, _cols = get_excel_dims(sheet, workbook_kind)
             header_row = detect_rimon_header_row(sheet, workbook_kind)
+            current_date = None
             for row_index in range(header_row + 1, rows):
+                row_date = parse_excel_date_generic(
+                    workbook_kind,
+                    workbook,
+                    extract_rimon_mapping_value(sheet, workbook_kind, mapping.get("date_source"), row_index),
+                )
+                if row_date:
+                    current_date = row_date
+                if current_date is None:
+                    continue
+
+                entry_raw = stringify_excel_value(extract_rimon_mapping_value(sheet, workbook_kind, mapping.get("entry_time_source"), row_index))
+                exit_raw = stringify_excel_value(extract_rimon_mapping_value(sheet, workbook_kind, mapping.get("exit_time_source"), row_index))
+                total_raw = stringify_excel_value(extract_rimon_mapping_value(sheet, workbook_kind, mapping.get("total_hours_source"), row_index))
+                std_raw = stringify_excel_value(extract_rimon_mapping_value(sheet, workbook_kind, mapping.get("standard_hours_source"), row_index))
+                missing_raw = stringify_excel_value(extract_rimon_mapping_value(sheet, workbook_kind, mapping.get("missing_hours_source"), row_index))
+
+                if not row_date:
+                    def _is_time_text(text):
+                        t = str(text or "").strip().lstrip("*")
+                        if not t:
+                            return True
+                        return try_parse_hours_value(t) is not None
+
+                    def _hours_over_day(text):
+                        parsed = try_parse_hours_value(text) if text else None
+                        return parsed is not None and parsed > 24.0
+
+                    if any(_hours_over_day(v) for v in (total_raw, std_raw, missing_raw)):
+                        break
+                    if (entry_raw and not _is_time_text(entry_raw)) or (exit_raw and not _is_time_text(exit_raw)):
+                        break
+                    if any(v and try_parse_hours_value(v) is None for v in (total_raw, std_raw, missing_raw)):
+                        break
+
                 event_value = extract_rimon_mapping_value(sheet, workbook_kind, mapping.get("event_source"), row_index)
                 event_text = stringify_excel_value(event_value).strip()
-                if event_text:
-                    distinct.add(event_text)
+                if not event_text:
+                    continue
+                stripped = event_text.lstrip("*")
+                if try_parse_hours_value(stripped) is not None:
+                    continue
+                distinct.add(event_text)
     finally:
         if workbook_kind == "xlsx":
             workbook.close()
@@ -11436,7 +11475,7 @@ def build_home_office_event_classification_form(script_id, temp_upload_path, tem
         + '<div style="font-size:15px;font-weight:700;color:#1e3a8a;margin-bottom:6px">סיווג אירועים — שלב 2 מתוך 2</div>'
         + '<div style="font-size:13px;color:#475569;line-height:1.7;margin-bottom:12px">לכל אירוע שזוהה בקובץ, בחרו איך לספור אותו. מי שסומן "עמודה נפרדת" יקבל עמודת ימים עצמאית בסיכום. מי שסומן "התעלם" לא נכלל בספירה.</div>'
         + '<div style="background:#fffbeb;border:1px solid #fcd34d;border-radius:10px;padding:10px 14px;margin-bottom:14px;font-size:12px;color:#92400e;line-height:1.7">'
-        + '<strong>כלל קבוע — סדר עדיפות בקונפליקט:</strong> עמודה נפרדת &lt; משרד &lt; בית &lt; היעדרות. כלומר, אם אותו יום מכיל "עבודה מהשטח" וגם "עבודה מהבית" — השטח גובר.'
+        + '<strong>כלל קבוע — סדר עדיפות בקונפליקט:</strong> עמודה נפרדת &gt; משרד &gt; בית &gt; היעדרות. כלומר, אם אותו יום מכיל "עבודה מהשטח" וגם "עבודה מהבית" — השטח גובר.'
         + '</div>'
         + '<div style="border:1px solid #e2e8f0;border-radius:12px;overflow:hidden;background:#ffffff;margin-bottom:14px">'
         + '<div style="display:grid;grid-template-columns:minmax(200px,280px) minmax(0,1fr);gap:14px;padding:10px 12px;background:#1e3a8a;color:#ffffff;font-weight:700;font-size:13px">'
