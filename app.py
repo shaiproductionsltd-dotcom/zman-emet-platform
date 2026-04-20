@@ -11660,21 +11660,24 @@ def build_home_office_event_classification_form(script_id, temp_upload_path, tem
     mapping_json = json.dumps(mapping or {}, ensure_ascii=False)
     template_name = default_template_name or "תבנית עוגן"
 
-    templates_payload = []
+    templates_payload = {}
     for tpl in (mapping_templates or []):
-        try:
-            tpl_mapping = json.loads(tpl.get("mapping_json") or "{}")
-        except (TypeError, ValueError):
-            tpl_mapping = {}
-        templates_payload.append({
-            "id": tpl.get("id"),
-            "name": tpl.get("name", ""),
-            "event_classifications": tpl_mapping.get("event_classifications") or {},
-        })
+        tpl_mapping = tpl.get("mapping") or {}
+        templates_payload[str(tpl.get("id"))] = tpl_mapping.get("event_classifications") or {}
 
-    template_options_html = '<option value="">ללא תבנית</option>'
-    for tpl in templates_payload:
-        template_options_html += '<option value="' + str(tpl["id"]) + '">' + esc(tpl["name"]) + '</option>'
+    template_options_html = '<option value="">ללא תבנית שמורה</option>'
+    for tpl in (mapping_templates or []):
+        template_options_html += '<option value="' + str(tpl.get("id")) + '">' + esc(tpl.get("name", "")) + '</option>'
+
+    templates_section_html = ""
+    if mapping_templates:
+        templates_section_html = (
+            '<div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:12px;padding:12px 14px;margin-bottom:14px">'
+            + '<div style="font-size:14px;font-weight:700;color:#1e3a8a;margin-bottom:8px">טעינת תבנית שמורה</div>'
+            + '<div style="font-size:12px;color:#475569;line-height:1.6;margin-bottom:8px">בחירת תבנית תטען את סיווג האירועים שבה לטופס שלמטה.</div>'
+            + '<select id="homeOfficeLoadTemplate" style="padding:8px 12px;border:1.5px solid #bfdbfe;border-radius:8px;font-size:13px;font-family:inherit;outline:none;width:100%;max-width:360px;background:white">' + template_options_html + '</select>'
+            + '</div>'
+        )
 
     return (
         '<form method="POST" id="eventClassificationForm">'
@@ -11689,6 +11692,7 @@ def build_home_office_event_classification_form(script_id, temp_upload_path, tem
         + '<div style="background:#fffbeb;border:1px solid #fcd34d;border-radius:10px;padding:10px 14px;margin-bottom:14px;font-size:12px;color:#92400e;line-height:1.7">'
         + '<strong>כלל קבוע — סדר עדיפות בקונפליקט:</strong> עמודה נפרדת &gt; משרד &gt; בית &gt; היעדרות. כלומר, אם אותו יום מכיל "עבודה מהשטח" וגם "עבודה מהבית" — השטח גובר.'
         + '</div>'
+        + templates_section_html
         + '<div style="border:1px solid #e2e8f0;border-radius:12px;overflow:hidden;background:#ffffff;margin-bottom:14px">'
         + '<div style="display:grid;grid-template-columns:minmax(200px,280px) minmax(0,1fr);gap:14px;padding:10px 12px;background:#1e3a8a;color:#ffffff;font-weight:700;font-size:13px">'
         + '<div>אירוע (כפי שמופיע בקובץ)</div><div>איך לספור?</div>'
@@ -11718,7 +11722,18 @@ def build_home_office_event_classification_form(script_id, temp_upload_path, tem
         + '<div style="font-size:13px;line-height:1.7;color:#475569">המערכת משדכת את הסיווגים שלך עם נתוני הנוכחות. הפעולה עשויה להימשך כמה דקות.</div>'
         + '</div></div>'
         + '<script>'
-        + '(function(){var form=document.getElementById("eventClassificationForm");var btn=document.getElementById("eventClassifyConfirmButton");var overlay=document.getElementById("eventClassifyOverlay");var saveCheck=document.getElementById("homeOfficeSaveTemplate");var nameWrap=document.getElementById("homeOfficeTemplateNameWrap");if(saveCheck&&nameWrap){saveCheck.addEventListener("change",function(){nameWrap.style.display=saveCheck.checked?"block":"none";});}if(form){form.addEventListener("submit",function(){if(btn){btn.disabled=true;btn.textContent="הפקת הדוח התחילה...";}if(overlay){overlay.style.display="flex";}document.body.style.overflow="hidden";});}})();'
+        + '(function(){'
+        + 'var form=document.getElementById("eventClassificationForm");'
+        + 'var btn=document.getElementById("eventClassifyConfirmButton");'
+        + 'var overlay=document.getElementById("eventClassifyOverlay");'
+        + 'var saveCheck=document.getElementById("homeOfficeSaveTemplate");'
+        + 'var nameWrap=document.getElementById("homeOfficeTemplateNameWrap");'
+        + 'var loadTpl=document.getElementById("homeOfficeLoadTemplate");'
+        + 'var tplClassifications=' + json.dumps(templates_payload, ensure_ascii=False) + ';'
+        + 'if(saveCheck&&nameWrap){saveCheck.addEventListener("change",function(){nameWrap.style.display=saveCheck.checked?"block":"none";});}'
+        + 'if(loadTpl){loadTpl.addEventListener("change",function(){var id=loadTpl.value;if(!id)return;var classMap=tplClassifications[id]||{};Object.keys(classMap).forEach(function(ev){var radios=document.querySelectorAll(\'input[type="radio"][name="event_class__\'+CSS.escape(ev)+\'"]\');radios.forEach(function(r){if(r.value===classMap[ev]){r.checked=true;}});});});}'
+        + 'if(form){form.addEventListener("submit",function(){if(btn){btn.disabled=true;btn.textContent="הפקת הדוח התחילה...";}if(overlay){overlay.style.display="flex";}document.body.style.overflow="hidden";});}'
+        + '})();'
         + '</script>'
         + '<style>@keyframes mappingSpin{from{transform:rotate(0deg);}to{transform:rotate(360deg);}}</style>'
         + '</form>'
@@ -15023,11 +15038,8 @@ def run_script(script_id):
                             if selected_template_id:
                                 for tpl in mapping_templates:
                                     if str(tpl.get("id")) == selected_template_id:
-                                        try:
-                                            tpl_mapping = json.loads(tpl.get("mapping_json") or "{}")
-                                            saved_classifications = tpl_mapping.get("event_classifications") or {}
-                                        except (TypeError, ValueError):
-                                            saved_classifications = {}
+                                        tpl_mapping = tpl.get("mapping") or {}
+                                        saved_classifications = tpl_mapping.get("event_classifications") or {}
                                         break
                             current_classifications = {}
                             for ev in distinct_events:
