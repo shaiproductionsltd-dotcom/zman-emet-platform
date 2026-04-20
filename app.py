@@ -4225,6 +4225,348 @@ def run_rimon_home_office_summary(input_path, output_path, extension, options=No
     return {"warnings": build_rimon_mapping_warnings(mapping)}
 
 
+# ============================================================
+# POWERBI Attendance — interactive BI dashboard over any
+# Rimon-style monthly attendance report. Produces a JSON
+# payload consumed by /powerbi/view/<filename>.
+# ============================================================
+
+HE_DAY_NAMES = ["שני", "שלישי", "רביעי", "חמישי", "שישי", "שבת", "ראשון"]
+
+
+def _format_hours_hhmm(hours):
+    try:
+        h = float(hours or 0)
+    except (TypeError, ValueError):
+        return "00:00"
+    if h < 0:
+        return "00:00"
+    total_minutes = int(round(h * 60))
+    return f"{total_minutes // 60:02d}:{total_minutes % 60:02d}"
+
+
+def parse_attendance_for_dashboard(input_path, extension, mapping, event_classifications=None, label=""):
+    """Parse a Rimon-style report and emit a JSON-serialisable dashboard payload."""
+    if extension not in {"xls", "xlsx"}:
+        raise ValueError("POWERBI currently supports XLS and XLSX uploads only")
+    event_classifications = event_classifications or {}
+    employee_rows, daily_rows, report_meta = parse_rimon_home_office_report(
+        input_path, extension, mapping, event_classifications=event_classifications,
+    )
+
+    dept_agg = {}
+    all_dates = set()
+    entry_hour_counts = [0] * 24
+    exit_hour_counts = [0] * 24
+    day_of_week_counts = [0] * 7
+
+    def _first_hour(hhmm):
+        m = re.search(r"(\d{1,2}):(\d{2})", str(hhmm or ""))
+        if not m:
+            return None
+        h = int(m.group(1))
+        return h if 0 <= h <= 23 else None
+
+    normalized_daily = []
+    for row in daily_rows:
+        d = row.get("date") or ""
+        if d:
+            all_dates.add(d)
+            try:
+                dt = datetime.fromisoformat(d)
+                day_of_week_counts[dt.weekday()] += 1
+            except ValueError:
+                pass
+        eh = _first_hour(row.get("entry_time"))
+        xh = _first_hour(row.get("exit_time"))
+        if eh is not None and not row.get("is_weekend"):
+            entry_hour_counts[eh] += 1
+        if xh is not None and not row.get("is_weekend"):
+            exit_hour_counts[xh] += 1
+        normalized_daily.append({
+            "date": d,
+            "employee_name": row.get("employee_name") or "",
+            "payroll_number": str(row.get("payroll_number") or ""),
+            "department": row.get("department") or "",
+            "day_name": row.get("day_name") or "",
+            "entry_time": row.get("entry_time") or "",
+            "exit_time": row.get("exit_time") or "",
+            "classification": row.get("classification") or "",
+            "primary_event": row.get("primary_event") or "",
+            "event": row.get("event") or "",
+            "total_hours": row.get("total_hours") or "",
+            "total_hours_num": parse_hours_or_zero(row.get("total_hours")),
+            "standard_hours_num": parse_hours_or_zero(row.get("standard_hours")),
+            "missing_hours_num": parse_hours_or_zero(row.get("missing_hours")),
+            "error": bool(row.get("error")),
+            "error_text": row.get("error_text") or "",
+            "is_weekend": bool(row.get("is_weekend")),
+        })
+
+    normalized_employees = []
+    for emp in employee_rows:
+        dept = emp.get("department") or "ללא מחלקה"
+        standard_hours = float(emp.get("standard_hours_total") or 0.0)
+        missing_hours = float(emp.get("missing_hours_total") or 0.0)
+        office = int(emp.get("office_work_days") or 0)
+        home = int(emp.get("home_office_days") or 0)
+        absence = int(emp.get("missing_absence_days") or 0)
+        error = int(emp.get("error_days") or 0)
+        left = int(emp.get("left_days") or 0)
+        work_days = office + home
+        missing_ratio = (missing_hours / standard_hours) if standard_hours > 0 else 0.0
+
+        bucket = dept_agg.setdefault(dept, {
+            "department": dept, "employees": 0, "office_days": 0, "home_days": 0,
+            "absence_days": 0, "error_days": 0, "standard_hours": 0.0, "missing_hours": 0.0,
+        })
+        bucket["employees"] += 1
+        bucket["office_days"] += office
+        bucket["home_days"] += home
+        bucket["absence_days"] += absence
+        bucket["error_days"] += error
+        bucket["standard_hours"] += standard_hours
+        bucket["missing_hours"] += missing_hours
+
+        normalized_employees.append({
+            "name": emp.get("employee_name") or "",
+            "payroll_number": str(emp.get("payroll_number") or ""),
+            "id_number": str(emp.get("id_number") or ""),
+            "department": dept,
+            "office_days": office,
+            "home_days": home,
+            "absence_days": absence,
+            "error_days": error,
+            "left_days": left,
+            "work_days": work_days,
+            "standard_hours": round(standard_hours, 2),
+            "missing_hours": round(missing_hours, 2),
+            "standard_hours_hhmm": _format_hours_hhmm(standard_hours),
+            "missing_hours_hhmm": _format_hours_hhmm(missing_hours),
+            "missing_ratio": round(missing_ratio, 4),
+            "home_ratio": round((home / work_days) if work_days > 0 else 0.0, 4),
+            "events_days": {str(k): int(v) for k, v in (emp.get("events_days") or {}).items()},
+            "custom_bucket_days": {str(k): int(v) for k, v in (emp.get("custom_bucket_days") or {}).items()},
+        })
+
+    total_employees = len(normalized_employees)
+    total_office = sum(e["office_days"] for e in normalized_employees)
+    total_home = sum(e["home_days"] for e in normalized_employees)
+    total_absence = sum(e["absence_days"] for e in normalized_employees)
+    total_error = sum(e["error_days"] for e in normalized_employees)
+    total_standard = sum(e["standard_hours"] for e in normalized_employees)
+    total_missing = sum(e["missing_hours"] for e in normalized_employees)
+    total_actual = max(0.0, total_standard - total_missing)
+    total_work_days = total_office + total_home
+
+    kpis = {
+        "total_employees": total_employees,
+        "total_work_days": total_work_days,
+        "total_office_days": total_office,
+        "total_home_days": total_home,
+        "total_absence_days": total_absence,
+        "total_error_days": total_error,
+        "total_standard_hours": round(total_standard, 2),
+        "total_missing_hours": round(total_missing, 2),
+        "total_actual_hours": round(total_actual, 2),
+        "total_standard_hhmm": _format_hours_hhmm(total_standard),
+        "total_missing_hhmm": _format_hours_hhmm(total_missing),
+        "total_actual_hhmm": _format_hours_hhmm(total_actual),
+        "avg_hours_per_employee": round(total_actual / total_employees, 2) if total_employees else 0,
+        "home_ratio": round(total_home / total_work_days, 4) if total_work_days else 0,
+        "office_ratio": round(total_office / total_work_days, 4) if total_work_days else 0,
+        "absence_ratio": round(total_absence / (total_work_days + total_absence), 4) if (total_work_days + total_absence) else 0,
+        "missing_ratio": round(total_missing / total_standard, 4) if total_standard else 0,
+    }
+
+    # Aggregate daily trend: total office/home/absence employee-days per date
+    daily_trend = {}
+    for row in normalized_daily:
+        d = row["date"]
+        if not d:
+            continue
+        bucket = daily_trend.setdefault(d, {"date": d, "office": 0, "home": 0, "absence": 0, "error": 0, "standard_hours": 0.0, "missing_hours": 0.0})
+        if row["classification"] == "משרד":
+            bucket["office"] += 1
+        elif row["classification"] == "בית":
+            bucket["home"] += 1
+        elif row["classification"] == "היעדרות":
+            bucket["absence"] += 1
+        if row["error"]:
+            bucket["error"] += 1
+        bucket["standard_hours"] += row["standard_hours_num"]
+        bucket["missing_hours"] += row["missing_hours_num"]
+    daily_trend_list = sorted(daily_trend.values(), key=lambda x: x["date"])
+    for b in daily_trend_list:
+        b["standard_hours"] = round(b["standard_hours"], 2)
+        b["missing_hours"] = round(b["missing_hours"], 2)
+
+    # Department list sorted by employee count desc
+    departments = []
+    for d in dept_agg.values():
+        emp_count = d["employees"]
+        standard = d["standard_hours"]
+        missing = d["missing_hours"]
+        work_days = d["office_days"] + d["home_days"]
+        departments.append({
+            "name": d["department"],
+            "employees": emp_count,
+            "office_days": d["office_days"],
+            "home_days": d["home_days"],
+            "absence_days": d["absence_days"],
+            "error_days": d["error_days"],
+            "standard_hours": round(standard, 2),
+            "missing_hours": round(missing, 2),
+            "standard_hours_hhmm": _format_hours_hhmm(standard),
+            "missing_hours_hhmm": _format_hours_hhmm(missing),
+            "home_ratio": round((d["home_days"] / work_days) if work_days else 0, 4),
+            "missing_ratio": round((missing / standard) if standard else 0, 4),
+        })
+    departments.sort(key=lambda x: x["employees"], reverse=True)
+
+    # Auto-insights
+    insights = []
+    if total_employees:
+        high_missing = [e for e in normalized_employees if e["missing_ratio"] >= 0.20]
+        if high_missing:
+            insights.append({"level": "warning", "icon": "⚠️", "text": f"{len(high_missing)} עובדים עם חוסר מעל 20% מהתקן"})
+        if kpis["home_ratio"] >= 0.4:
+            insights.append({"level": "info", "icon": "🏠", "text": f"{int(kpis['home_ratio'] * 100)}% מימי העבודה מהבית — ארגון היברידי חזק"})
+        elif kpis["home_ratio"] <= 0.1 and total_home > 0:
+            insights.append({"level": "info", "icon": "🏢", "text": f"רק {int(kpis['home_ratio'] * 100)}% מהעבודה מהבית — תרבות משרדית"})
+        if departments:
+            biggest = departments[0]
+            if biggest["employees"] >= 3:
+                insights.append({"level": "info", "icon": "👥", "text": f"המחלקה הגדולה ביותר: {biggest['name']} ({biggest['employees']} עובדים)"})
+        zero_activity = [e for e in normalized_employees if e["work_days"] == 0 and e["absence_days"] == 0]
+        if zero_activity:
+            insights.append({"level": "warning", "icon": "❓", "text": f"{len(zero_activity)} עובדים ללא פעילות או היעדרות שזוהתה — ייתכן שצריך לבדוק"})
+        if total_error:
+            insights.append({"level": "warning", "icon": "🚨", "text": f"{total_error} ימי שגיאה בדיווח (כניסה/יציאה חסרה) — טעון בדיקה"})
+        if total_absence:
+            abs_rate = total_absence / max(1, total_work_days + total_absence)
+            insights.append({"level": "info", "icon": "🏖️", "text": f"{int(abs_rate * 100)}% מהימים סווגו כהיעדרות ({total_absence} ימי היעדרות סה״כ)"})
+    if not insights:
+        insights.append({"level": "info", "icon": "✅", "text": "לא זוהו חריגות מרכזיות בדוח הזה"})
+
+    return {
+        "label": label or (report_meta.get("report_month") or "הדוח הנוכחי"),
+        "company_name": report_meta.get("company_name") or "",
+        "report_month": report_meta.get("report_month") or "",
+        "identified_day_count": len(all_dates),
+        "date_range": {
+            "start": min(all_dates) if all_dates else "",
+            "end": max(all_dates) if all_dates else "",
+        },
+        "kpis": kpis,
+        "employees": normalized_employees,
+        "departments": departments,
+        "daily": normalized_daily,
+        "daily_trend": daily_trend_list,
+        "by_day_of_week": [{"day": HE_DAY_NAMES[i], "count": day_of_week_counts[i]} for i in range(7)],
+        "entry_hour_distribution": [{"hour": i, "count": entry_hour_counts[i]} for i in range(24) if entry_hour_counts[i] > 0],
+        "exit_hour_distribution": [{"hour": i, "count": exit_hour_counts[i]} for i in range(24) if exit_hour_counts[i] > 0],
+        "insights": insights,
+    }
+
+
+def compute_period_comparison(current, previous):
+    """Compute period-over-period deltas for the dashboard comparison toggle."""
+    if not previous:
+        return None
+    def _delta(curr, prev):
+        if prev == 0:
+            return {"current": curr, "previous": prev, "delta_abs": curr, "delta_pct": None}
+        return {"current": curr, "previous": prev, "delta_abs": curr - prev, "delta_pct": round((curr - prev) / prev, 4)}
+    kc = current["kpis"]
+    kp = previous["kpis"]
+    comparisons = {
+        "total_employees": _delta(kc["total_employees"], kp["total_employees"]),
+        "total_work_days": _delta(kc["total_work_days"], kp["total_work_days"]),
+        "total_standard_hours": _delta(kc["total_standard_hours"], kp["total_standard_hours"]),
+        "total_missing_hours": _delta(kc["total_missing_hours"], kp["total_missing_hours"]),
+        "avg_hours_per_employee": _delta(kc["avg_hours_per_employee"], kp["avg_hours_per_employee"]),
+        "home_ratio": _delta(kc["home_ratio"], kp["home_ratio"]),
+        "absence_ratio": _delta(kc["absence_ratio"], kp["absence_ratio"]),
+    }
+    insights = []
+    if comparisons["total_employees"]["delta_abs"] != 0:
+        d = comparisons["total_employees"]
+        arrow = "↑" if d["delta_abs"] > 0 else "↓"
+        pct_text = f" ({int(abs(d['delta_pct']) * 100)}%)" if d.get("delta_pct") is not None else ""
+        insights.append({"level": "info", "icon": arrow, "text": f"מספר העובדים {'גדל' if d['delta_abs'] > 0 else 'קטן'} ב-{abs(d['delta_abs'])}{pct_text} לעומת התקופה הקודמת"})
+    if comparisons["avg_hours_per_employee"].get("delta_pct") is not None:
+        d = comparisons["avg_hours_per_employee"]
+        if abs(d["delta_pct"]) >= 0.05:
+            arrow = "↑" if d["delta_abs"] > 0 else "↓"
+            insights.append({"level": "info", "icon": arrow, "text": f"ממוצע שעות לעובד {'עלה' if d['delta_abs'] > 0 else 'ירד'} ב-{int(abs(d['delta_pct']) * 100)}% לעומת התקופה הקודמת"})
+    if comparisons["home_ratio"].get("delta_pct") is not None:
+        d = comparisons["home_ratio"]
+        if abs(d["delta_abs"]) >= 0.05:
+            arrow = "↑" if d["delta_abs"] > 0 else "↓"
+            insights.append({"level": "info", "icon": arrow, "text": f"שיעור עבודה מהבית {'עלה' if d['delta_abs'] > 0 else 'ירד'} מ-{int(d['previous'] * 100)}% ל-{int(d['current'] * 100)}%"})
+    return {"kpis": comparisons, "insights": insights}
+
+
+def run_powerbi_attendance(input_path, output_path, extension, options=None):
+    """Produce a POWERBI JSON payload from one or two attendance reports.
+
+    The payload is consumed by the /powerbi/view/<filename> dashboard route.
+    """
+    options = options or {}
+    mapping = default_rimon_mapping()
+    mapping.update({key: value for key, value in options.items() if key.endswith("_source")})
+
+    event_classifications = {}
+    raw_classifications = options.get("event_classifications_json", "")
+    if raw_classifications:
+        try:
+            parsed = json.loads(raw_classifications)
+            if isinstance(parsed, dict):
+                event_classifications = {str(k): str(v) for k, v in parsed.items() if v}
+        except (TypeError, ValueError):
+            event_classifications = {}
+
+    current_label = (options.get("current_label") or "הדוח הנוכחי").strip() or "הדוח הנוכחי"
+    previous_label = (options.get("previous_label") or "תקופה קודמת").strip() or "תקופה קודמת"
+
+    current = parse_attendance_for_dashboard(
+        input_path, extension, mapping,
+        event_classifications=event_classifications,
+        label=current_label,
+    )
+    previous = None
+    compare_path = options.get("compare_file_path", "")
+    compare_ext = options.get("compare_file_ext", extension)
+    if compare_path and os.path.exists(compare_path):
+        try:
+            previous = parse_attendance_for_dashboard(
+                compare_path, compare_ext, mapping,
+                event_classifications=event_classifications,
+                label=previous_label,
+            )
+        except Exception:
+            previous = None
+
+    comparison = compute_period_comparison(current, previous) if previous else None
+
+    payload = {
+        "version": 1,
+        "generated_at": datetime.utcnow().isoformat() + "Z",
+        "has_comparison": bool(previous),
+        "current": current,
+        "previous": previous,
+        "comparison": comparison,
+        "mapping": mapping,
+        "event_classifications": event_classifications,
+    }
+
+    with open(output_path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False)
+
+    return {"warnings": build_rimon_mapping_warnings(mapping)}
+
+
 # ---- Office Occupancy Heatmap ----
 
 OFFICE_HEATMAP_EVENT_KEYWORDS = [
@@ -8220,6 +8562,61 @@ SCRIPT_REGISTRY["dept_payroll"] = {
     "requires_notes_classification": True,
 }
 
+SCRIPTS["powerbi_attendance"] = {
+    "id": "powerbi_attendance",
+    "name": "POWERBI — ניתוח חכם של נוכחות",
+    "desc": "דשבורד אינטראקטיבי, קליקבילי, עם KPIs, גרפים, דריל-דאון ותובנות חכמות — עבור מנכ״לים, גזברים ומנהלי משאבי אנוש. תומך בהשוואה בין שתי תקופות.",
+    "help_label": "מה הכלי עושה",
+    "help_title": "מה צריך להעלות?",
+    "help_intro": "יש להעלות דוח מפורט חודשי. אפשר גם להוסיף דוח תקופה קודמת להשוואה.",
+    "help_items": [
+        "המערכת סורקת את הדוח ובונה דשבורד BI אינטואיטיבי עבור ההנהלה",
+        "כרטיסי KPI, גרפי מגמה, פילוח מחלקות, טבלת עובדים עם סינון",
+        "תומך בדריל-דאון מרמת ארגון → מחלקה → עובד → יום",
+        "אם הועלה דוח שני, מופעל מצב השוואה עם חצי צמיחה ותובנות",
+    ],
+    "help_note": "הכלי מזהה אוטומטית את השדות בדוח, ומבקש אישור לפני הפקת הדשבורד. גרסה ראשונה תומכת בפורמטים של דוח מפורט חודשי מסוג Rimon.",
+    "rules_label": "איך הכלי מחשב",
+    "rules_title": "מה מוצג בדשבורד?",
+    "rules_intro": "הדשבורד מחשב את המדדים הבאים אוטומטית:",
+    "rules_items": [
+        "סה״כ עובדים, ימי עבודה, שעות תקן, שעות חוסר, ממוצע שעות לעובד",
+        "שיעור עבודה מהבית לעומת משרד ושיעור היעדרויות",
+        "גרף מגמה יומי של נוכחות לאורך תקופת הדוח",
+        "פילוח לפי מחלקה עם drill-down לעובדי המחלקה",
+        "התפלגות כניסות ויציאות לפי שעה",
+        "תובנות חכמות אוטומטיות על חריגות",
+        "מצב השוואה (אם הועלו שני דוחות) עם חישוב צמיחה ומגמות",
+        "אפשרות להוריד XL מעוצב לפי הסינון הנוכחי בדשבורד",
+    ],
+    "rules_note": "כל הנתונים מוצגים ומחושבים לפי הדוח שהועלה. הדשבורד נטען בדפדפן ולא דורש התקנה.",
+    "accept": ".xls,.xlsx",
+    "icon": "📊",
+}
+
+SCRIPT_REGISTRY["powerbi_attendance"] = {
+    **SCRIPTS["powerbi_attendance"],
+    "processor": run_powerbi_attendance,
+    "output_suffix": "powerbi_data",
+    "output_extension": "json",
+    "requires_mapping_confirmation": True,
+    "requires_event_classification": True,
+    "success_title": "הדשבורד מוכן",
+    "success_action": "פתח דשבורד",
+    "retry_action": "עיבוד דוח נוסף",
+    "submit_label": "צור דשבורד",
+    "back_label": "חזרה לכלים",
+    "empty_error": "לא נבחר קובץ",
+    "unsupported_error": "יש להעלות דוח מפורט חודשי מסוג XLS או XLSX",
+    "invalid_error": "הקובץ שהועלה אינו קובץ אקסל תקין",
+    "empty_file_error": "הקובץ שהועלה ריק",
+    "too_large_error": "הקובץ שהועלה גדול מדי",
+    "processing_error": "לא ניתן היה להפיק את הדשבורד מהקובץ הזה",
+    "processing_title": "הדשבורד בהכנה",
+    "processing_note": "המערכת סורקת, מנתחת ובונה את הדשבורד שלך. פעולה אחת שלמה, בלי ללכת לאיבוד.",
+    "file_picker_label": "בחירת דוח מפורט חודשי",
+}
+
 SCRIPT_REGISTRY["org_hierarchy_report"] = {
     **SCRIPTS["org_hierarchy_report"],
     "processor": run_org_hierarchy_report,
@@ -8442,6 +8839,27 @@ AI_TOOL_METADATA = {
             "תכנון משרד", "תכנון השטח",
             "נוכחות במשרד לפי שעה", "עומס לפי ימים",
             "דפוס נוכחות", "התפלגות נוכחות", "שטחי משרד",
+        ],
+    },
+    "powerbi_attendance": {
+        "summary": "דשבורד BI אינטראקטיבי על דוח נוכחות חודשי — KPIs, גרפים, פילוח מחלקות, דריל-דאון ותובנות חכמות. תומך בהשוואה בין תקופות.",
+        "inputs": "קובץ XLS או XLSX — דוח מפורט חודשי (אופציונלי: דוח שני להשוואת תקופות)",
+        "outputs": "דשבורד HTML אינטראקטיבי + אפשרות להורדת XL לפי הסינון הנוכחי",
+        "when_to_use": [
+            "מנכ״ל/גזבר/מנהל משאבי אנוש צריך ניתוח מהיר של דוח הנוכחות",
+            "השוואה בין תקופות — צמיחה בעובדים, שינוי בשעות, מגמות",
+            "זיהוי חריגות, ניתוח מחלקות, הבנת דפוסי נוכחות",
+            "המשתמש אומר ״דשבורד״, ״BI״, ״ניתוח חכם״, ״סיכום מנכ״ל״, ״ניתוח דוח״",
+        ],
+        "keywords": [
+            "דשבורד", "דשבורדים", "dashboard",
+            "BI", "power bi", "powerbi", "פאוור בי איי",
+            "ניתוח חכם", "ניתוח דוח", "ניתוח נוכחות", "ניתוח כללי",
+            "סיכום מנכ״ל", "סיכום למנהל", "סיכום להנהלה", "דוח להנהלה",
+            "השוואה בין תקופות", "השוואה בין חודשים", "גידול", "צמיחה",
+            "גרף", "גרפים", "עוגה", "תרשים",
+            "תובנות", "אנליטיקס", "analytics",
+            "ניתוח עובדים", "ניתוח מחלקות",
         ],
     },
     "org_hierarchy_report": {
@@ -15079,7 +15497,7 @@ def run_script(script_id):
                                     current_classifications[ev] = saved_classifications[ev]
                                 else:
                                     current_classifications[ev] = classify_event_value(ev)
-                            if script_id == "rimon_home_office_summary":
+                            if script_id in ("rimon_home_office_summary", "powerbi_attendance"):
                                 mapping_confirmation_html = build_home_office_event_classification_form(
                                     script_id, inp, ext, mapping, distinct_events, current_classifications,
                                     mapping_templates,
@@ -15370,15 +15788,28 @@ def run_script(script_id):
         warning_html = ""
         if processing_warnings:
             warning_html = '<div style="text-align:right;background:#fff7ed;border:1px solid #fdba74;color:#9a3412;border-radius:12px;padding:12px 14px;margin-bottom:14px;line-height:1.8">' + "<br>".join(esc(item) for item in processing_warnings) + "</div>"
-        content = (
-            warning_html
-            + '<div class="success-box">'
-            '<div style="font-size:32px;margin-bottom:6px">&#9989;</div>'
-            '<div style="font-size:16px;font-weight:700;color:#15803d;margin-bottom:10px">' + scr["success_title"] + '</div>'
-            '<a href="/download/' + result + '" class="dl-btn">&#8681; ' + scr["success_action"] + '</a>'
-            '<br><br><a href="/run/' + script_id + '" style="font-size:13px;color:#2563eb">' + scr["retry_action"] + '</a>'
-            '</div>'
-        )
+        if script_id == "powerbi_attendance":
+            view_url = "/powerbi/view/" + result
+            content = (
+                warning_html
+                + '<div class="success-box" style="background:linear-gradient(180deg,#eef2ff 0%,#e0e7ff 100%);border-color:#a5b4fc">'
+                + '<div style="font-size:44px;margin-bottom:8px">&#128200;</div>'
+                + '<div style="font-size:18px;font-weight:800;color:#1e3a8a;margin-bottom:4px">' + scr["success_title"] + '</div>'
+                + '<div style="font-size:13px;color:#475569;margin-bottom:14px">הדשבורד כולל KPIs, גרפים, תובנות ודריל-דאון. אפשר גם להוריד XL לפי הסינון.</div>'
+                + '<a href="' + view_url + '" class="dl-btn" style="background:linear-gradient(135deg,#2563eb 0%,#1d4ed8 100%);box-shadow:0 4px 14px rgba(37,99,235,.35)">&#128200; ' + scr["success_action"] + '</a>'
+                + '<br><br><a href="/run/' + script_id + '" style="font-size:13px;color:#2563eb">' + scr["retry_action"] + '</a>'
+                + '</div>'
+            )
+        else:
+            content = (
+                warning_html
+                + '<div class="success-box">'
+                '<div style="font-size:32px;margin-bottom:6px">&#9989;</div>'
+                '<div style="font-size:16px;font-weight:700;color:#15803d;margin-bottom:10px">' + scr["success_title"] + '</div>'
+                '<a href="/download/' + result + '" class="dl-btn">&#8681; ' + scr["success_action"] + '</a>'
+                '<br><br><a href="/run/' + script_id + '" style="font-size:13px;color:#2563eb">' + scr["retry_action"] + '</a>'
+                '</div>'
+            )
     else:
         extra_uploads_html = ""
         for upload in scr.get("extra_uploads", []):
@@ -15543,6 +15974,818 @@ def download(filename):
     if script:
         log_user_activity("download_report", "הוריד דוח", script.get("id", ""), script.get("name", ""), download_name)
     return send_file(path, as_attachment=True, download_name=download_name)
+
+
+# ============================================================
+# POWERBI Attendance — routes for viewing, comparing,
+# and exporting the interactive dashboard payload.
+# ============================================================
+
+def _load_powerbi_payload(filename):
+    if not filename.endswith(".json") or "/" in filename or "\\" in filename:
+        return None, None
+    path = OUTPUT_FOLDER / filename
+    if not path.exists():
+        return None, None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f), path
+    except (OSError, json.JSONDecodeError):
+        return None, None
+
+
+@app.route("/powerbi/view/<filename>")
+@login_required
+def powerbi_view(filename):
+    payload, _ = _load_powerbi_payload(filename)
+    if payload is None:
+        add_flash("הדשבורד לא נמצא או פג תוקף.")
+        return redirect("/dashboard")
+    log_user_activity("view_powerbi", "צפה בדשבורד POWERBI", "powerbi_attendance", "POWERBI — ניתוח חכם של נוכחות", filename)
+    html_body = render_powerbi_dashboard_html(filename, payload)
+    return html_body
+
+
+@app.route("/powerbi/compare/<filename>", methods=["POST"])
+@login_required
+def powerbi_compare(filename):
+    payload, path = _load_powerbi_payload(filename)
+    if payload is None:
+        add_flash("הדשבורד לא נמצא או פג תוקף.")
+        return redirect("/dashboard")
+    file_obj = request.files.get("compare_file")
+    if not file_obj or not file_obj.filename:
+        add_flash("לא נבחר קובץ להשוואה")
+        return redirect("/powerbi/view/" + filename)
+    ext = get_extension(file_obj.filename)
+    if ext not in ("xls", "xlsx"):
+        add_flash("יש להעלות דוח מפורט חודשי מסוג XLS או XLSX")
+        return redirect("/powerbi/view/" + filename)
+    uid = str(uuid.uuid4())[:8]
+    compare_path = str(UPLOAD_FOLDER / f"{uid}_compare.{ext}")
+    file_obj.save(compare_path)
+    try:
+        mapping = payload.get("mapping") or default_rimon_mapping()
+        classifications = payload.get("event_classifications") or {}
+        previous_label = (request.form.get("previous_label") or "תקופה קודמת").strip() or "תקופה קודמת"
+        previous = parse_attendance_for_dashboard(
+            compare_path, ext, mapping,
+            event_classifications=classifications, label=previous_label,
+        )
+        payload["previous"] = previous
+        payload["has_comparison"] = True
+        payload["comparison"] = compute_period_comparison(payload["current"], previous)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False)
+        log_user_activity("compare_powerbi", "הוסיף השוואה לדשבורד POWERBI", "powerbi_attendance", "POWERBI — ניתוח חכם של נוכחות", filename)
+    except Exception as e:
+        add_flash("לא ניתן היה לעבד את דוח ההשוואה: " + str(e))
+    finally:
+        try:
+            os.remove(compare_path)
+        except OSError:
+            pass
+    return redirect("/powerbi/view/" + filename)
+
+
+@app.route("/powerbi/export/<filename>", methods=["POST"])
+@login_required
+def powerbi_export(filename):
+    payload, _ = _load_powerbi_payload(filename)
+    if payload is None:
+        return jsonify({"error": "not found"}), 404
+    try:
+        state = json.loads(request.get_data(as_text=True) or "{}")
+    except (TypeError, ValueError):
+        state = {}
+    xl_bytes = build_powerbi_excel_export(payload, state)
+    log_user_activity("export_powerbi", "הוריד XL מדשבורד POWERBI", "powerbi_attendance", "POWERBI — ניתוח חכם של נוכחות", filename)
+    from flask import Response
+    response = Response(xl_bytes, mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    response.headers["Content-Disposition"] = 'attachment; filename="powerbi_dashboard.xlsx"'
+    return response
+
+
+def build_powerbi_excel_export(payload, state):
+    """Build a styled XL file from the dashboard payload + current filter state."""
+    state = state or {}
+    dept_filter = set(state.get("departments") or [])
+    search_text = (state.get("search") or "").strip().lower()
+    view_mode = (state.get("view_mode") or "current").strip()
+
+    source = payload.get("previous") if view_mode == "previous" and payload.get("previous") else payload.get("current") or {}
+    employees = list(source.get("employees") or [])
+    if dept_filter:
+        employees = [e for e in employees if e.get("department") in dept_filter]
+    if search_text:
+        employees = [e for e in employees if search_text in (e.get("name") or "").lower() or search_text in str(e.get("payroll_number") or "")]
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "סיכום כולל"
+    ws.sheet_view.rightToLeft = True
+
+    title_fill = PatternFill(start_color="1E3A8A", end_color="1E3A8A", fill_type="solid")
+    header_fill = PatternFill(start_color="DBEAFE", end_color="DBEAFE", fill_type="solid")
+    alt_fill = PatternFill(start_color="F8FAFC", end_color="F8FAFC", fill_type="solid")
+    title_font = Font(bold=True, size=16, color="FFFFFF")
+    header_font = Font(bold=True, size=11, color="1E3A8A")
+    body_font = Font(size=11, color="0F172A")
+    thin = Side(style="thin", color="CBD5E1")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+    ws.merge_cells("A1:I1")
+    cell = ws.cell(row=1, column=1, value=f"דשבורד POWERBI — {source.get('label', '')}")
+    cell.font = title_font
+    cell.fill = title_fill
+    cell.alignment = Alignment(horizontal="center", vertical="center")
+    ws.row_dimensions[1].height = 32
+
+    ws.merge_cells("A2:I2")
+    company_cell = ws.cell(row=2, column=1, value=f"{source.get('company_name', '')} — {source.get('report_month', '')}")
+    company_cell.font = Font(size=12, italic=True, color="475569")
+    company_cell.alignment = Alignment(horizontal="center")
+
+    kpis = source.get("kpis") or {}
+    kpi_rows = [
+        ("סה״כ עובדים", kpis.get("total_employees", 0)),
+        ("סה״כ ימי עבודה", kpis.get("total_work_days", 0)),
+        ("ימי משרד", kpis.get("total_office_days", 0)),
+        ("ימי עבודה מהבית", kpis.get("total_home_days", 0)),
+        ("ימי היעדרות", kpis.get("total_absence_days", 0)),
+        ("שעות תקן (סה״כ)", kpis.get("total_standard_hhmm", "00:00")),
+        ("שעות חוסר (סה״כ)", kpis.get("total_missing_hhmm", "00:00")),
+        ("ממוצע שעות לעובד", kpis.get("avg_hours_per_employee", 0)),
+        ("שיעור עבודה מהבית", f"{int((kpis.get('home_ratio', 0) or 0) * 100)}%"),
+        ("שיעור היעדרויות", f"{int((kpis.get('absence_ratio', 0) or 0) * 100)}%"),
+    ]
+    r = 4
+    for label, value in kpi_rows:
+        ws.cell(row=r, column=1, value=label).font = Font(bold=True, color="1E3A8A", size=11)
+        ws.cell(row=r, column=2, value=value).font = body_font
+        r += 1
+
+    r += 2
+    headers = ["שם עובד", "מספר שכר", "מחלקה", "ימי משרד", "ימי עבודה מהבית", "ימי היעדרות", "ימי שגיאה", "שעות תקן", "שעות חוסר"]
+    for col_idx, h in enumerate(headers, 1):
+        c = ws.cell(row=r, column=col_idx, value=h)
+        c.font = header_font
+        c.fill = header_fill
+        c.border = border
+        c.alignment = Alignment(horizontal="center")
+    r += 1
+    for idx, emp in enumerate(employees):
+        fill = alt_fill if idx % 2 == 0 else None
+        values = [
+            emp.get("name", ""),
+            emp.get("payroll_number", ""),
+            emp.get("department", ""),
+            emp.get("office_days", 0),
+            emp.get("home_days", 0),
+            emp.get("absence_days", 0),
+            emp.get("error_days", 0),
+            emp.get("standard_hours_hhmm", "00:00"),
+            emp.get("missing_hours_hhmm", "00:00"),
+        ]
+        for col_idx, v in enumerate(values, 1):
+            c = ws.cell(row=r, column=col_idx, value=v)
+            c.font = body_font
+            c.border = border
+            if fill:
+                c.fill = fill
+        r += 1
+
+    widths = [22, 12, 18, 12, 16, 12, 12, 14, 14]
+    for i, w in enumerate(widths, 1):
+        ws.column_dimensions[get_column_letter(i)].width = w
+
+    # Second sheet — departments
+    ws2 = wb.create_sheet("מחלקות")
+    ws2.sheet_view.rightToLeft = True
+    ws2.merge_cells("A1:H1")
+    c = ws2.cell(row=1, column=1, value="פילוח לפי מחלקה")
+    c.font = title_font
+    c.fill = title_fill
+    c.alignment = Alignment(horizontal="center")
+    ws2.row_dimensions[1].height = 30
+    dept_headers = ["שם מחלקה", "מספר עובדים", "ימי משרד", "ימי עבודה מהבית", "ימי היעדרות", "שעות תקן", "שעות חוסר", "% עבודה מהבית"]
+    for col_idx, h in enumerate(dept_headers, 1):
+        c = ws2.cell(row=3, column=col_idx, value=h)
+        c.font = header_font
+        c.fill = header_fill
+        c.border = border
+        c.alignment = Alignment(horizontal="center")
+    r = 4
+    for dept in (source.get("departments") or []):
+        values = [
+            dept.get("name", ""), dept.get("employees", 0),
+            dept.get("office_days", 0), dept.get("home_days", 0),
+            dept.get("absence_days", 0), dept.get("standard_hours_hhmm", "00:00"),
+            dept.get("missing_hours_hhmm", "00:00"),
+            f"{int((dept.get('home_ratio', 0) or 0) * 100)}%",
+        ]
+        for col_idx, v in enumerate(values, 1):
+            cell = ws2.cell(row=r, column=col_idx, value=v)
+            cell.font = body_font
+            cell.border = border
+        r += 1
+    for i, w in enumerate([22, 14, 12, 16, 14, 14, 14, 16], 1):
+        ws2.column_dimensions[get_column_letter(i)].width = w
+
+    buf = BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def render_powerbi_dashboard_html(filename, payload):
+    """Render the full interactive HTML dashboard for a POWERBI payload."""
+    user_name = esc(session.get("name") or session.get("user_name") or "")
+    payload_json = json.dumps(payload, ensure_ascii=False)
+    filename_safe = esc(filename)
+    return POWERBI_DASHBOARD_TEMPLATE.replace("__PAYLOAD_JSON__", payload_json).replace("__FILENAME__", filename_safe).replace("__USER_NAME__", user_name)
+
+
+POWERBI_DASHBOARD_TEMPLATE = r"""<!DOCTYPE html>
+<html dir="rtl" lang="he">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>POWERBI — ניתוח חכם של נוכחות</title>
+<link href="https://fonts.googleapis.com/css2?family=Heebo:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: 'Heebo', 'Segoe UI', Arial, sans-serif; background: linear-gradient(180deg, #f8fafc 0%, #eff6ff 100%); min-height: 100vh; color: #0f172a; direction: rtl; }
+.topbar { background: linear-gradient(135deg, #0f1b3d 0%, #1e3a8a 100%); color: white; padding: 0 1.5rem; height: 64px; display: flex; align-items: center; justify-content: space-between; box-shadow: 0 4px 20px rgba(15,23,42,.2); position: sticky; top: 0; z-index: 50; }
+.topbar-brand { display: flex; align-items: center; gap: 12px; font-size: 17px; font-weight: 800; letter-spacing: -0.3px; }
+.topbar-brand .logo { font-size: 22px; }
+.topbar-actions { display: flex; align-items: center; gap: 14px; font-size: 13px; }
+.topbar-actions a { color: #93c5fd; text-decoration: none; transition: color .2s; }
+.topbar-actions a:hover { color: #ffffff; }
+.topbar-actions .user-chip { background: rgba(255,255,255,.08); padding: 6px 12px; border-radius: 999px; font-weight: 600; }
+.wrap { max-width: 1440px; margin: 1.5rem auto 3rem; padding: 0 1.25rem; animation: fadeUp .5s ease-out; }
+@keyframes fadeUp { from { opacity: 0; transform: translateY(14px);} to { opacity: 1; transform: translateY(0);} }
+@keyframes fadeIn { from { opacity: 0;} to { opacity: 1;} }
+.hero { background: linear-gradient(135deg, #1e3a8a 0%, #2563eb 50%, #3b82f6 100%); border-radius: 20px; padding: 1.75rem 2rem; color: white; margin-bottom: 1.25rem; box-shadow: 0 10px 40px rgba(30,58,138,.25); position: relative; overflow: hidden; }
+.hero::before { content: ''; position: absolute; top: -60px; left: -60px; width: 200px; height: 200px; background: radial-gradient(circle, rgba(147,197,253,.3) 0%, transparent 70%); }
+.hero::after { content: ''; position: absolute; bottom: -80px; right: -80px; width: 260px; height: 260px; background: radial-gradient(circle, rgba(59,130,246,.25) 0%, transparent 70%); }
+.hero-inner { position: relative; z-index: 1; display: grid; grid-template-columns: 1fr auto; gap: 1rem; align-items: center; }
+.hero h1 { font-size: 24px; font-weight: 800; margin-bottom: 4px; letter-spacing: -0.5px; }
+.hero .company { font-size: 15px; opacity: .85; font-weight: 500; }
+.hero .meta { font-size: 13px; margin-top: 8px; opacity: .8; display: flex; gap: 14px; flex-wrap: wrap; }
+.hero-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+.btn { border: none; border-radius: 12px; padding: 9px 16px; font-size: 13px; font-weight: 700; cursor: pointer; font-family: inherit; transition: all .2s cubic-bezier(.4,0,.2,1); display: inline-flex; align-items: center; gap: 6px; text-decoration: none; }
+.btn:active { transform: scale(.97); }
+.btn-light { background: rgba(255,255,255,.2); color: white; backdrop-filter: blur(10px); }
+.btn-light:hover { background: rgba(255,255,255,.3); }
+.btn-white { background: white; color: #1e3a8a; }
+.btn-white:hover { background: #eff6ff; }
+.btn-blue { background: linear-gradient(135deg, #2563eb, #1d4ed8); color: white; box-shadow: 0 4px 14px rgba(37,99,235,.35); }
+.btn-blue:hover { transform: translateY(-1px); box-shadow: 0 6px 20px rgba(37,99,235,.4); }
+.btn-gray { background: #f1f5f9; color: #475569; border: 1px solid #e2e8f0; }
+.btn-gray:hover { background: #e2e8f0; }
+.btn-green { background: linear-gradient(135deg, #16a34a, #15803d); color: white; box-shadow: 0 4px 14px rgba(22,163,74,.3); }
+.btn-green:hover { transform: translateY(-1px); }
+.view-toggle { display: inline-flex; background: rgba(255,255,255,.12); border-radius: 999px; padding: 3px; gap: 2px; }
+.view-toggle button { border: none; background: transparent; color: rgba(255,255,255,.75); font-size: 12px; font-weight: 700; padding: 7px 16px; border-radius: 999px; cursor: pointer; transition: all .2s; font-family: inherit; }
+.view-toggle button.active { background: white; color: #1e3a8a; box-shadow: 0 2px 8px rgba(0,0,0,.15); }
+.view-toggle button:hover:not(.active) { color: white; }
+.insights { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 10px; margin-bottom: 1.25rem; }
+.insight { background: white; border-radius: 12px; padding: 12px 16px; box-shadow: 0 2px 8px rgba(15,23,42,.05); border: 1px solid #e2e8f0; display: flex; gap: 10px; align-items: center; transition: all .2s; }
+.insight:hover { transform: translateY(-2px); box-shadow: 0 4px 16px rgba(15,23,42,.08); }
+.insight.warning { border-color: #fdba74; background: linear-gradient(180deg, #fff7ed 0%, #ffffff 100%); }
+.insight.info { border-color: #93c5fd; background: linear-gradient(180deg, #eff6ff 0%, #ffffff 100%); }
+.insight .icon { font-size: 22px; line-height: 1; }
+.insight .text { font-size: 13px; color: #334155; font-weight: 500; line-height: 1.5; }
+.kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 1.25rem; }
+.kpi { background: white; border-radius: 14px; padding: 1rem 1.25rem; box-shadow: 0 2px 12px rgba(15,23,42,.06); border: 1px solid #e2e8f0; transition: all .25s; position: relative; overflow: hidden; cursor: pointer; }
+.kpi::before { content: ''; position: absolute; top: 0; right: 0; width: 70px; height: 70px; background: radial-gradient(circle, rgba(37,99,235,.08) 0%, transparent 70%); }
+.kpi:hover { transform: translateY(-3px); box-shadow: 0 8px 28px rgba(37,99,235,.15); border-color: #bfdbfe; }
+.kpi-label { font-size: 12px; color: #64748b; font-weight: 600; margin-bottom: 4px; letter-spacing: .2px; }
+.kpi-value { font-size: 26px; font-weight: 800; color: #0f172a; letter-spacing: -0.5px; }
+.kpi-sub { font-size: 11px; color: #94a3b8; margin-top: 2px; }
+.kpi-delta { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 700; padding: 3px 8px; border-radius: 999px; margin-top: 6px; }
+.kpi-delta.up { background: #dcfce7; color: #166534; }
+.kpi-delta.down { background: #fee2e2; color: #b91c1c; }
+.kpi-delta.flat { background: #f1f5f9; color: #64748b; }
+.charts-row { display: grid; grid-template-columns: 2fr 1fr; gap: 12px; margin-bottom: 1.25rem; }
+@media (max-width: 1024px) { .charts-row { grid-template-columns: 1fr; } }
+.card { background: white; border-radius: 14px; padding: 1.25rem; box-shadow: 0 2px 12px rgba(15,23,42,.06); border: 1px solid #e2e8f0; }
+.card h3 { font-size: 15px; font-weight: 800; color: #1e3a8a; margin-bottom: 12px; display: flex; align-items: center; gap: 8px; }
+.card h3 .dot { width: 8px; height: 8px; border-radius: 999px; background: #2563eb; }
+.chart-wrap { position: relative; height: 260px; }
+.chart-wrap-sm { position: relative; height: 240px; }
+.section { margin-bottom: 1.25rem; }
+.section-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; gap: 10px; flex-wrap: wrap; }
+.section-head h2 { font-size: 17px; font-weight: 800; color: #0f172a; display: flex; align-items: center; gap: 8px; }
+.section-head h2 .emoji { font-size: 22px; }
+.search-wrap { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.search-input { padding: 9px 14px; border: 1.5px solid #e2e8f0; border-radius: 10px; font-size: 13px; font-family: inherit; outline: none; width: 220px; background: white; transition: all .2s; }
+.search-input:focus { border-color: #2563eb; box-shadow: 0 0 0 3px rgba(37,99,235,.12); }
+.dept-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+.dept-chip { background: white; border: 1px solid #e2e8f0; border-radius: 999px; padding: 6px 14px; font-size: 12px; font-weight: 600; color: #475569; cursor: pointer; transition: all .2s; }
+.dept-chip:hover { border-color: #93c5fd; background: #eff6ff; color: #1e3a8a; }
+.dept-chip.active { background: #1e3a8a; color: white; border-color: #1e3a8a; box-shadow: 0 2px 8px rgba(30,58,138,.25); }
+.data-table { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 13px; }
+.data-table th { text-align: start; padding: 11px 14px; background: linear-gradient(180deg, #f8fafc, #f1f5f9); color: #475569; font-weight: 700; font-size: 11px; text-transform: uppercase; letter-spacing: .4px; border-bottom: 2px solid #e2e8f0; position: sticky; top: 0; z-index: 5; cursor: pointer; user-select: none; white-space: nowrap; }
+.data-table th:hover { background: #e2e8f0; color: #1e3a8a; }
+.data-table th.sorted { color: #2563eb; }
+.data-table th .sort-arrow { font-size: 10px; opacity: .7; margin-right: 4px; }
+.data-table td { padding: 10px 14px; border-bottom: 1px solid #f1f5f9; vertical-align: middle; }
+.data-table tbody tr { transition: background .15s; cursor: pointer; }
+.data-table tbody tr:hover { background: #eff6ff; }
+.data-table tbody tr.hidden { display: none; }
+.data-table .num { font-variant-numeric: tabular-nums; font-weight: 600; }
+.badge { display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 11px; font-weight: 700; }
+.badge-blue { background: #dbeafe; color: #1e40af; }
+.badge-green { background: #dcfce7; color: #166534; }
+.badge-purple { background: #ede9fe; color: #5b21b6; }
+.badge-amber { background: #fef3c7; color: #92400e; }
+.badge-red { background: #fee2e2; color: #b91c1c; }
+.badge-gray { background: #f1f5f9; color: #475569; }
+.table-wrap { background: white; border-radius: 14px; box-shadow: 0 2px 12px rgba(15,23,42,.06); border: 1px solid #e2e8f0; overflow: hidden; }
+.table-scroll { max-height: 560px; overflow-y: auto; }
+.empty-state { padding: 40px 20px; text-align: center; color: #94a3b8; font-size: 14px; }
+.modal-bg { display: none; position: fixed; inset: 0; background: rgba(15,23,42,.6); backdrop-filter: blur(6px); z-index: 100; align-items: center; justify-content: center; padding: 20px; animation: fadeIn .2s; }
+.modal-bg.open { display: flex; }
+.modal { background: white; border-radius: 20px; padding: 1.5rem; width: 100%; max-width: 920px; max-height: 90vh; overflow-y: auto; box-shadow: 0 20px 60px rgba(15,23,42,.3); animation: fadeUp .25s; }
+.modal h2 { font-size: 20px; font-weight: 800; color: #0f172a; margin-bottom: 4px; }
+.modal .emp-meta { display: flex; gap: 16px; flex-wrap: wrap; color: #64748b; font-size: 13px; margin-bottom: 1rem; padding-bottom: 1rem; border-bottom: 1px solid #e2e8f0; }
+.modal .close-x { position: absolute; top: 12px; left: 12px; background: #f1f5f9; border: none; width: 32px; height: 32px; border-radius: 999px; font-size: 18px; cursor: pointer; color: #475569; font-family: inherit; transition: all .2s; }
+.modal .close-x:hover { background: #e2e8f0; transform: rotate(90deg); }
+.modal-inner { position: relative; }
+.emp-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 8px; margin-bottom: 1rem; }
+.emp-stat { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 10px; padding: 10px 12px; }
+.emp-stat .lbl { font-size: 11px; color: #64748b; font-weight: 600; margin-bottom: 2px; }
+.emp-stat .val { font-size: 18px; font-weight: 800; color: #0f172a; }
+.daily-table { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 12px; }
+.daily-table th { padding: 8px 10px; background: #eff6ff; color: #1e3a8a; font-weight: 700; text-align: start; border-bottom: 1.5px solid #bfdbfe; }
+.daily-table td { padding: 7px 10px; border-bottom: 1px solid #f1f5f9; }
+.daily-table tr.weekend td { background: #fafafa; color: #94a3b8; }
+.daily-table tr.error td { background: #fff1f2; }
+.upload-drop { border: 2px dashed #bfdbfe; border-radius: 14px; padding: 20px; text-align: center; background: linear-gradient(180deg, #fafcff 0%, #eff6ff 100%); transition: all .2s; }
+.upload-drop:hover { border-color: #2563eb; background: linear-gradient(180deg, #eff6ff 0%, #dbeafe 100%); }
+.loader { display: inline-block; width: 14px; height: 14px; border: 2px solid rgba(255,255,255,.3); border-top-color: white; border-radius: 50%; animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.footer-hint { text-align: center; color: #94a3b8; font-size: 12px; margin-top: 2rem; padding-top: 1rem; border-top: 1px solid #e2e8f0; }
+</style>
+</head>
+<body>
+<div class="topbar">
+  <div class="topbar-brand"><span class="logo">📊</span>POWERBI — ניתוח חכם של נוכחות</div>
+  <div class="topbar-actions">
+    <span class="user-chip">שלום, __USER_NAME__</span>
+    <a href="/dashboard">← חזרה לכלים</a>
+  </div>
+</div>
+
+<div class="wrap">
+  <div id="root">טוען דשבורד…</div>
+  <div class="footer-hint">הדשבורד מבוסס על הנתונים שהועלו לכלי POWERBI — ניתוח חכם של נוכחות · הדפס | שתף | הורד</div>
+</div>
+
+<!-- Employee drill-down modal -->
+<div class="modal-bg" id="empModal" onclick="closeEmpModal(event)">
+  <div class="modal" onclick="event.stopPropagation()">
+    <div class="modal-inner">
+      <button class="close-x" onclick="closeEmpModal()">&times;</button>
+      <div id="empModalBody"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Compare upload modal -->
+<div class="modal-bg" id="compareModal" onclick="closeCompareModal(event)">
+  <div class="modal" style="max-width:520px" onclick="event.stopPropagation()">
+    <div class="modal-inner">
+      <button class="close-x" onclick="closeCompareModal()">&times;</button>
+      <h2>השוואה לתקופה קודמת</h2>
+      <div style="color:#64748b;font-size:13px;margin-bottom:1rem;line-height:1.7">העלו דוח של תקופה קודמת כדי להשוות מגמות: גדילת עובדים, שינוי שעות, שיעור עבודה מהבית. יש להעלות דוח באותו פורמט כמו הדוח הנוכחי.</div>
+      <form id="compareForm" method="POST" action="/powerbi/compare/__FILENAME__" enctype="multipart/form-data">
+        <div class="upload-drop" style="margin-bottom:1rem">
+          <div style="font-size:32px;margin-bottom:6px">📁</div>
+          <div style="font-size:14px;font-weight:700;color:#1e40af;margin-bottom:8px">בחר קובץ להשוואה</div>
+          <input type="file" name="compare_file" accept=".xls,.xlsx" required style="font-family:inherit;margin-top:6px">
+        </div>
+        <div style="margin-bottom:1rem">
+          <label style="font-size:12px;font-weight:600;color:#475569;display:block;margin-bottom:4px">תווית התקופה הקודמת (אופציונלי)</label>
+          <input type="text" name="previous_label" placeholder="לדוגמה: מרץ 2025" style="padding:9px 14px;border:1.5px solid #e2e8f0;border-radius:10px;font-size:13px;font-family:inherit;width:100%;outline:none">
+        </div>
+        <div style="display:flex;gap:10px;justify-content:flex-end">
+          <button type="button" class="btn btn-gray" onclick="closeCompareModal()">ביטול</button>
+          <button type="submit" class="btn btn-blue" id="compareSubmit">הוסף השוואה</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<script>
+const PAYLOAD = __PAYLOAD_JSON__;
+const FILENAME = "__FILENAME__";
+let STATE = {
+  view: "current",
+  departments: new Set(),
+  search: "",
+  sortField: "name",
+  sortDir: "asc",
+};
+let CHART_REFS = {};
+
+function heSource() {
+  if (STATE.view === "previous" && PAYLOAD.previous) return PAYLOAD.previous;
+  return PAYLOAD.current;
+}
+
+function comparisonDelta(key) {
+  const c = PAYLOAD.comparison;
+  if (!c || !c.kpis || !c.kpis[key]) return null;
+  return c.kpis[key];
+}
+
+function fmtNum(n) { if (n === null || n === undefined) return "—"; return Number(n).toLocaleString("he-IL"); }
+function fmtPct(n) { if (n === null || n === undefined) return "—"; return (Number(n) * 100).toFixed(0) + "%"; }
+function fmtDelta(delta, isPct) {
+  if (!delta) return "";
+  const dv = delta.delta_abs;
+  if (dv === 0) return '<span class="kpi-delta flat">= 0</span>';
+  const up = dv > 0;
+  const arrow = up ? "▲" : "▼";
+  const cls = up ? "up" : "down";
+  let text;
+  if (isPct) {
+    text = (dv > 0 ? "+" : "") + (dv * 100).toFixed(1) + " נק׳";
+  } else if (delta.delta_pct !== null && delta.delta_pct !== undefined && Math.abs(delta.delta_pct) < 10) {
+    text = (dv > 0 ? "+" : "") + (delta.delta_pct * 100).toFixed(0) + "%";
+  } else {
+    text = (dv > 0 ? "+" : "") + fmtNum(dv);
+  }
+  return '<span class="kpi-delta ' + cls + '">' + arrow + " " + text + "</span>";
+}
+
+function renderHero() {
+  const src = heSource();
+  const hasPrev = !!PAYLOAD.previous;
+  const toggles = hasPrev ? `
+    <div class="view-toggle">
+      <button data-view="current" class="${STATE.view === 'current' ? 'active' : ''}" onclick="switchView('current')">${PAYLOAD.current.label || 'נוכחי'}</button>
+      <button data-view="previous" class="${STATE.view === 'previous' ? 'active' : ''}" onclick="switchView('previous')">${PAYLOAD.previous.label || 'קודם'}</button>
+      <button data-view="compare" class="${STATE.view === 'compare' ? 'active' : ''}" onclick="switchView('compare')">השוואה</button>
+    </div>` : '';
+  const compareBtn = hasPrev ? '' : `<button class="btn btn-light" onclick="openCompareModal()">📊 השווה לתקופה קודמת</button>`;
+  const metaParts = [];
+  if (src.report_month) metaParts.push(`📅 ${src.report_month}`);
+  if (src.date_range && src.date_range.start) metaParts.push(`${src.date_range.start} – ${src.date_range.end}`);
+  metaParts.push(`${src.identified_day_count || 0} ימים זוהו`);
+  return `
+    <div class="hero">
+      <div class="hero-inner">
+        <div>
+          <h1>📊 דשבורד ${src.label || 'נוכחי'}</h1>
+          <div class="company">${src.company_name || '—'}</div>
+          <div class="meta">${metaParts.map(p => `<span>${p}</span>`).join('')}</div>
+        </div>
+        <div class="hero-actions">
+          ${toggles}
+          ${compareBtn}
+          <button class="btn btn-white" onclick="exportExcel()">⬇ הורד XL</button>
+        </div>
+      </div>
+    </div>`;
+}
+
+function renderInsights() {
+  const src = heSource();
+  const insights = [...(src.insights || [])];
+  if (STATE.view === "compare" && PAYLOAD.comparison && PAYLOAD.comparison.insights) {
+    insights.unshift(...PAYLOAD.comparison.insights);
+  }
+  if (!insights.length) return '';
+  return '<div class="insights">' + insights.map(i =>
+    `<div class="insight ${i.level || 'info'}"><span class="icon">${i.icon || 'ℹ️'}</span><span class="text">${i.text || ''}</span></div>`
+  ).join('') + '</div>';
+}
+
+function renderKPIs() {
+  const src = heSource();
+  const k = src.kpis || {};
+  const showDeltas = STATE.view === "compare" && PAYLOAD.comparison;
+  const tiles = [
+    { label: "סה״כ עובדים", value: fmtNum(k.total_employees), delta: showDeltas ? comparisonDelta("total_employees") : null },
+    { label: "ימי עבודה", value: fmtNum(k.total_work_days), delta: showDeltas ? comparisonDelta("total_work_days") : null },
+    { label: "שעות תקן", value: k.total_standard_hhmm || "00:00", sub: fmtNum(k.total_standard_hours) + " שעות", delta: showDeltas ? comparisonDelta("total_standard_hours") : null },
+    { label: "שעות חוסר", value: k.total_missing_hhmm || "00:00", sub: fmtPct(k.missing_ratio) + " מהתקן", delta: showDeltas ? comparisonDelta("total_missing_hours") : null },
+    { label: "ממוצע שעות לעובד", value: fmtNum(k.avg_hours_per_employee), sub: "שעות בחודש", delta: showDeltas ? comparisonDelta("avg_hours_per_employee") : null },
+    { label: "% עבודה מהבית", value: fmtPct(k.home_ratio), sub: fmtNum(k.total_home_days) + " ימים", delta: showDeltas ? comparisonDelta("home_ratio") : null, isPct: true },
+    { label: "% היעדרויות", value: fmtPct(k.absence_ratio), sub: fmtNum(k.total_absence_days) + " ימים", delta: showDeltas ? comparisonDelta("absence_ratio") : null, isPct: true },
+    { label: "ימי משרד", value: fmtNum(k.total_office_days), sub: fmtPct(k.office_ratio) + " מהעבודה" },
+  ];
+  return '<div class="kpi-grid">' + tiles.map(t => `
+    <div class="kpi">
+      <div class="kpi-label">${t.label}</div>
+      <div class="kpi-value">${t.value}</div>
+      ${t.sub ? `<div class="kpi-sub">${t.sub}</div>` : ''}
+      ${t.delta ? fmtDelta(t.delta, t.isPct) : ''}
+    </div>`).join('') + '</div>';
+}
+
+function renderCharts() {
+  return `
+    <div class="charts-row">
+      <div class="card">
+        <h3><span class="dot"></span>מגמה יומית — נוכחות לאורך התקופה</h3>
+        <div class="chart-wrap"><canvas id="trendChart"></canvas></div>
+      </div>
+      <div class="card">
+        <h3><span class="dot"></span>פילוח ימי עבודה</h3>
+        <div class="chart-wrap"><canvas id="splitChart"></canvas></div>
+      </div>
+    </div>
+    <div class="charts-row" style="grid-template-columns:1fr 1fr">
+      <div class="card">
+        <h3><span class="dot"></span>עובדים לפי מחלקה</h3>
+        <div class="chart-wrap-sm"><canvas id="deptChart"></canvas></div>
+      </div>
+      <div class="card">
+        <h3><span class="dot"></span>התפלגות כניסות / יציאות לפי שעה</h3>
+        <div class="chart-wrap-sm"><canvas id="hoursChart"></canvas></div>
+      </div>
+    </div>`;
+}
+
+function drawCharts() {
+  const src = heSource();
+  Object.values(CHART_REFS).forEach(c => { try { c.destroy(); } catch (e) {} });
+  CHART_REFS = {};
+
+  const trend = src.daily_trend || [];
+  if (document.getElementById("trendChart") && trend.length) {
+    CHART_REFS.trend = new Chart(document.getElementById("trendChart"), {
+      type: "line",
+      data: {
+        labels: trend.map(t => t.date.slice(5)),
+        datasets: [
+          { label: "משרד", data: trend.map(t => t.office), borderColor: "#2563eb", backgroundColor: "rgba(37,99,235,.15)", tension: .3, fill: true },
+          { label: "בית", data: trend.map(t => t.home), borderColor: "#7c3aed", backgroundColor: "rgba(124,58,237,.15)", tension: .3, fill: true },
+          { label: "היעדרות", data: trend.map(t => t.absence), borderColor: "#f59e0b", backgroundColor: "rgba(245,158,11,.15)", tension: .3, fill: true },
+        ],
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { position: "bottom", labels: { font: { family: "'Heebo',sans-serif", size: 12 } } } },
+        scales: { y: { beginAtZero: true }, x: { ticks: { maxRotation: 0, autoSkip: true, maxTicksLimit: 10 } } },
+      },
+    });
+  }
+
+  const k = src.kpis || {};
+  const splitEl = document.getElementById("splitChart");
+  if (splitEl) {
+    CHART_REFS.split = new Chart(splitEl, {
+      type: "doughnut",
+      data: {
+        labels: ["משרד", "מהבית", "היעדרות", "שגיאות"],
+        datasets: [{
+          data: [k.total_office_days || 0, k.total_home_days || 0, k.total_absence_days || 0, k.total_error_days || 0],
+          backgroundColor: ["#2563eb", "#7c3aed", "#f59e0b", "#dc2626"],
+          borderWidth: 0,
+        }],
+      },
+      options: { responsive: true, maintainAspectRatio: false, cutout: "62%", plugins: { legend: { position: "bottom", labels: { font: { family: "'Heebo',sans-serif", size: 12 } } } } },
+    });
+  }
+
+  const depts = (src.departments || []).slice(0, 10);
+  const deptEl = document.getElementById("deptChart");
+  if (deptEl && depts.length) {
+    CHART_REFS.dept = new Chart(deptEl, {
+      type: "bar",
+      data: {
+        labels: depts.map(d => d.name),
+        datasets: [{ label: "עובדים", data: depts.map(d => d.employees), backgroundColor: "#2563eb", borderRadius: 6 }],
+      },
+      options: {
+        indexAxis: "y",
+        responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { display: false } },
+        scales: { x: { beginAtZero: true, ticks: { precision: 0 } } },
+      },
+    });
+  }
+
+  const hoursEl = document.getElementById("hoursChart");
+  const entries = src.entry_hour_distribution || [];
+  const exits = src.exit_hour_distribution || [];
+  if (hoursEl) {
+    const allHours = Array.from(new Set([...entries.map(e => e.hour), ...exits.map(e => e.hour)])).sort((a, b) => a - b);
+    const emap = Object.fromEntries(entries.map(e => [e.hour, e.count]));
+    const xmap = Object.fromEntries(exits.map(e => [e.hour, e.count]));
+    CHART_REFS.hours = new Chart(hoursEl, {
+      type: "line",
+      data: {
+        labels: allHours.map(h => String(h).padStart(2, "0") + ":00"),
+        datasets: [
+          { label: "כניסות", data: allHours.map(h => emap[h] || 0), borderColor: "#16a34a", backgroundColor: "rgba(22,163,74,.15)", tension: .3, fill: true },
+          { label: "יציאות", data: allHours.map(h => xmap[h] || 0), borderColor: "#dc2626", backgroundColor: "rgba(220,38,38,.15)", tension: .3, fill: true },
+        ],
+      },
+      options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: "bottom", labels: { font: { family: "'Heebo',sans-serif", size: 12 } } } } },
+    });
+  }
+}
+
+function renderDepartments() {
+  const src = heSource();
+  const depts = src.departments || [];
+  const header = `
+    <div class="section-head">
+      <h2><span class="emoji">🏢</span>פילוח לפי מחלקה</h2>
+      <div class="search-wrap"><span style="color:#64748b;font-size:12px">לחצו על מחלקה כדי לסנן את טבלת העובדים</span></div>
+    </div>`;
+  const chips = `<div class="dept-chips">
+    <div class="dept-chip ${STATE.departments.size === 0 ? 'active' : ''}" onclick="clearDeptFilter()">הכל (${depts.length})</div>
+    ${depts.map(d => `<div class="dept-chip ${STATE.departments.has(d.name) ? 'active' : ''}" onclick="toggleDeptFilter('${d.name.replace(/'/g, "\\'")}')">${d.name} · ${d.employees}</div>`).join('')}
+  </div>`;
+  const tableRows = depts.length ? depts.map(d => `
+    <tr onclick="toggleDeptFilter('${d.name.replace(/'/g, "\\'")}')" ${STATE.departments.has(d.name) ? 'style="background:#eff6ff"' : ''}>
+      <td><strong>${d.name}</strong></td>
+      <td class="num">${d.employees}</td>
+      <td class="num">${d.office_days}</td>
+      <td class="num">${d.home_days}</td>
+      <td class="num">${d.absence_days}</td>
+      <td class="num">${d.standard_hours_hhmm}</td>
+      <td class="num">${d.missing_hours_hhmm}</td>
+      <td>${d.home_ratio > 0 ? '<span class="badge badge-purple">' + fmtPct(d.home_ratio) + '</span>' : '—'}</td>
+    </tr>`).join('') : `<tr><td colspan="8" class="empty-state">אין נתוני מחלקות</td></tr>`;
+  const table = `
+    <div class="table-wrap" style="margin-bottom:1.25rem">
+      <div class="table-scroll" style="max-height:360px">
+        <table class="data-table">
+          <thead><tr><th>מחלקה</th><th>עובדים</th><th>ימי משרד</th><th>עבודה מהבית</th><th>היעדרויות</th><th>שעות תקן</th><th>שעות חוסר</th><th>% בית</th></tr></thead>
+          <tbody>${tableRows}</tbody>
+        </table>
+      </div>
+    </div>`;
+  return header + chips + table;
+}
+
+function filteredEmployees() {
+  const src = heSource();
+  let list = [...(src.employees || [])];
+  if (STATE.departments.size > 0) list = list.filter(e => STATE.departments.has(e.department));
+  if (STATE.search) {
+    const q = STATE.search.toLowerCase();
+    list = list.filter(e => (e.name || "").toLowerCase().includes(q) || String(e.payroll_number || "").includes(q) || (e.department || "").toLowerCase().includes(q));
+  }
+  const dir = STATE.sortDir === "asc" ? 1 : -1;
+  const f = STATE.sortField;
+  list.sort((a, b) => {
+    const va = a[f], vb = b[f];
+    if (typeof va === "number" && typeof vb === "number") return (va - vb) * dir;
+    return String(va || "").localeCompare(String(vb || ""), "he") * dir;
+  });
+  return list;
+}
+
+function renderEmployees() {
+  const list = filteredEmployees();
+  const src = heSource();
+  const total = (src.employees || []).length;
+  const header = `
+    <div class="section-head">
+      <h2><span class="emoji">👥</span>רשימת עובדים <span style="font-size:13px;color:#64748b;font-weight:500;margin-right:4px">· מציג ${list.length} מתוך ${total}</span></h2>
+      <div class="search-wrap">
+        <input class="search-input" placeholder="חיפוש שם / מספר שכר / מחלקה…" value="${STATE.search.replace(/"/g, '&quot;')}" oninput="onSearchChange(event)">
+      </div>
+    </div>`;
+  const th = (field, label) => {
+    const sorted = STATE.sortField === field;
+    const arrow = sorted ? (STATE.sortDir === "asc" ? "▲" : "▼") : "";
+    return `<th class="${sorted ? 'sorted' : ''}" onclick="onSortChange('${field}')">${label}${arrow ? `<span class="sort-arrow">${arrow}</span>` : ''}</th>`;
+  };
+  const rows = list.length ? list.map((e, idx) => `
+    <tr onclick='showEmpDetail(${idx})'>
+      <td><strong>${e.name || '—'}</strong></td>
+      <td class="num">${e.payroll_number || '—'}</td>
+      <td>${e.department ? '<span class="badge badge-gray">' + e.department + '</span>' : '—'}</td>
+      <td class="num">${e.office_days}</td>
+      <td class="num">${e.home_days}</td>
+      <td class="num">${e.absence_days}</td>
+      <td class="num">${e.error_days > 0 ? '<span class="badge badge-red">' + e.error_days + '</span>' : e.error_days}</td>
+      <td class="num">${e.standard_hours_hhmm}</td>
+      <td class="num">${e.missing_hours_hhmm}</td>
+      <td>${e.missing_ratio >= 0.2 ? '<span class="badge badge-red">' + fmtPct(e.missing_ratio) + '</span>' : e.missing_ratio > 0 ? '<span class="badge badge-amber">' + fmtPct(e.missing_ratio) + '</span>' : '<span class="badge badge-green">0%</span>'}</td>
+    </tr>`).join('') : `<tr><td colspan="10" class="empty-state">לא נמצאו עובדים מתאימים לסינון</td></tr>`;
+  const table = `
+    <div class="table-wrap">
+      <div class="table-scroll">
+        <table class="data-table">
+          <thead><tr>${th("name", "שם")} ${th("payroll_number", "מספר שכר")} ${th("department", "מחלקה")} ${th("office_days", "משרד")} ${th("home_days", "בית")} ${th("absence_days", "היעדרות")} ${th("error_days", "שגיאות")} ${th("standard_hours", "שעות תקן")} ${th("missing_hours", "חוסר")} ${th("missing_ratio", "% חוסר")}</tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    </div>`;
+  return header + table;
+}
+
+function showEmpDetail(idx) {
+  const list = filteredEmployees();
+  const emp = list[idx];
+  if (!emp) return;
+  const src = heSource();
+  const daily = (src.daily || []).filter(d => d.payroll_number === emp.payroll_number && d.employee_name === emp.name).sort((a, b) => a.date.localeCompare(b.date));
+  const eventsSummary = Object.entries(emp.events_days || {}).map(([k, v]) => `<span class="badge badge-blue">${k}: ${v} ימים</span>`).join(' ');
+  const stats = `
+    <div class="emp-stats">
+      <div class="emp-stat"><div class="lbl">ימי משרד</div><div class="val">${emp.office_days}</div></div>
+      <div class="emp-stat"><div class="lbl">עבודה מהבית</div><div class="val">${emp.home_days}</div></div>
+      <div class="emp-stat"><div class="lbl">היעדרויות</div><div class="val">${emp.absence_days}</div></div>
+      <div class="emp-stat"><div class="lbl">שעות תקן</div><div class="val">${emp.standard_hours_hhmm}</div></div>
+      <div class="emp-stat"><div class="lbl">שעות חוסר</div><div class="val">${emp.missing_hours_hhmm}</div></div>
+      <div class="emp-stat"><div class="lbl">% חוסר</div><div class="val">${fmtPct(emp.missing_ratio)}</div></div>
+    </div>`;
+  const daysRows = daily.length ? daily.map(d => {
+    const cls = d.is_weekend ? 'weekend' : d.error ? 'error' : '';
+    const classBadge = d.classification === "משרד" ? 'badge-blue' : d.classification === "בית" ? 'badge-purple' : d.classification === "היעדרות" ? 'badge-amber' : d.classification === "סוף שבוע" ? 'badge-gray' : d.classification === "שגיאה" ? 'badge-red' : 'badge-gray';
+    return `<tr class="${cls}"><td>${d.date}</td><td>${d.day_name || '—'}</td><td>${d.entry_time || '—'}</td><td>${d.exit_time || '—'}</td><td>${d.total_hours || '—'}</td><td><span class="badge ${classBadge}">${d.classification || '—'}</span></td><td>${d.event || '—'}</td><td>${d.error_text ? '<span class="badge badge-red">' + d.error_text + '</span>' : ''}</td></tr>`;
+  }).join('') : `<tr><td colspan="8" class="empty-state">אין רשומות יומיות</td></tr>`;
+  document.getElementById("empModalBody").innerHTML = `
+    <h2>${emp.name}</h2>
+    <div class="emp-meta">
+      <span>מספר שכר: <strong>${emp.payroll_number || '—'}</strong></span>
+      <span>ת.ז.: <strong>${emp.id_number || '—'}</strong></span>
+      <span>מחלקה: <strong>${emp.department || '—'}</strong></span>
+    </div>
+    ${stats}
+    ${eventsSummary ? `<div style="margin-bottom:12px;display:flex;flex-wrap:wrap;gap:6px">${eventsSummary}</div>` : ''}
+    <h3 style="font-size:14px;font-weight:800;color:#1e3a8a;margin-bottom:8px">📅 פירוט יומי (${daily.length} ימים)</h3>
+    <div style="max-height:380px;overflow-y:auto;border:1px solid #e2e8f0;border-radius:10px">
+      <table class="daily-table">
+        <thead><tr><th>תאריך</th><th>יום</th><th>כניסה</th><th>יציאה</th><th>סה״כ</th><th>סיווג</th><th>אירוע</th><th>שגיאה</th></tr></thead>
+        <tbody>${daysRows}</tbody>
+      </table>
+    </div>`;
+  document.getElementById("empModal").classList.add("open");
+}
+
+function closeEmpModal(e) { if (e && e.target.id !== "empModal" && e.type !== "click") return; document.getElementById("empModal").classList.remove("open"); }
+function openCompareModal() { document.getElementById("compareModal").classList.add("open"); }
+function closeCompareModal(e) { if (e && e.target && e.target.id !== "compareModal" && e.type !== "click") return; document.getElementById("compareModal").classList.remove("open"); }
+
+function switchView(view) { STATE.view = view; render(); }
+function toggleDeptFilter(name) { if (STATE.departments.has(name)) STATE.departments.delete(name); else STATE.departments.add(name); render(); }
+function clearDeptFilter() { STATE.departments.clear(); render(); }
+function onSearchChange(e) { STATE.search = e.target.value; render({preserveFocus: true}); }
+function onSortChange(field) {
+  if (STATE.sortField === field) { STATE.sortDir = STATE.sortDir === "asc" ? "desc" : "asc"; }
+  else { STATE.sortField = field; STATE.sortDir = ["office_days", "home_days", "absence_days", "error_days", "standard_hours", "missing_hours", "missing_ratio"].includes(field) ? "desc" : "asc"; }
+  render();
+}
+
+function exportExcel() {
+  const body = JSON.stringify({
+    view_mode: STATE.view === "compare" ? "current" : STATE.view,
+    departments: Array.from(STATE.departments),
+    search: STATE.search,
+  });
+  fetch("/powerbi/export/" + FILENAME, { method: "POST", body: body, headers: { "Content-Type": "application/json" } })
+    .then(r => r.blob())
+    .then(blob => {
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url; a.download = "powerbi_dashboard.xlsx"; a.click();
+      URL.revokeObjectURL(url);
+    });
+}
+
+function render(opts) {
+  opts = opts || {};
+  const root = document.getElementById("root");
+  const focusInSearch = opts.preserveFocus && document.activeElement && document.activeElement.classList.contains("search-input");
+  const selStart = focusInSearch ? document.activeElement.selectionStart : null;
+  root.innerHTML = renderHero() + renderInsights() + renderKPIs() + renderCharts() + '<div class="section">' + renderDepartments() + '</div>' + '<div class="section">' + renderEmployees() + '</div>';
+  drawCharts();
+  if (focusInSearch) {
+    const inp = document.querySelector(".search-input");
+    if (inp) { inp.focus(); if (selStart !== null) inp.setSelectionRange(selStart, selStart); }
+  }
+}
+
+document.addEventListener("keydown", function(e) {
+  if (e.key === "Escape") { closeEmpModal(); closeCompareModal(); }
+});
+
+document.getElementById("compareForm").addEventListener("submit", function() {
+  const btn = document.getElementById("compareSubmit");
+  btn.innerHTML = '<span class="loader"></span> מעבד…';
+  btn.disabled = true;
+});
+
+render();
+</script>
+</body>
+</html>
+"""
 
 
 @app.route("/sample-clients-file")
