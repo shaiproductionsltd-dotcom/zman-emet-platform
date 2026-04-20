@@ -3340,22 +3340,26 @@ def parse_rimon_home_office_report(input_path, extension, mapping, event_classif
                 continue
 
             if not row_date:
-                def _is_time_text(text):
-                    t = str(text or "").strip().lstrip("*")
+                def _has_digit(text):
+                    return bool(re.search(r"\d", str(text or "")))
+
+                def _looks_like_time(text):
+                    # Accept empty cells, and any cell that contains an HH:MM pattern.
+                    # Rimon marks uncertain/corrected times with "?" or "*" prefixes
+                    # (e.g. "? *09:00"), which must still be treated as times.
+                    t = str(text or "").strip()
                     if not t:
                         return True
-                    if try_parse_hours_value(t) is not None:
-                        return True
-                    return False
+                    return bool(re.search(r"\d{1,2}:\d{2}", t))
 
                 def _hours_over_day(text):
                     parsed = try_parse_hours_value(text) if text else None
                     return parsed is not None and parsed > 24.0
 
                 has_monthly_total = any(_hours_over_day(v) for v in (total_hours, standard_hours, missing_hours))
-                has_label_in_time_field = (entry_time and not _is_time_text(entry_time)) or (exit_time and not _is_time_text(exit_time))
+                has_label_in_time_field = (entry_time and not _looks_like_time(entry_time)) or (exit_time and not _looks_like_time(exit_time))
                 has_label_in_hours_field = any(
-                    v and try_parse_hours_value(v) is None for v in (total_hours, standard_hours, missing_hours)
+                    v and not _has_digit(v) for v in (total_hours, standard_hours, missing_hours)
                 )
                 lacks_attendance_markers = not entry_time and not exit_time and not event_value and not error_text
 
@@ -4286,11 +4290,14 @@ def scan_distinct_events(input_path, extension, mapping):
                 missing_raw = stringify_excel_value(extract_rimon_mapping_value(sheet, workbook_kind, sheet_mapping.get("missing_hours_source"), row_index))
 
                 if not row_date:
-                    def _is_time_text(text):
-                        t = str(text or "").strip().lstrip("*")
+                    def _looks_like_time(text):
+                        t = str(text or "").strip()
                         if not t:
                             return True
-                        return try_parse_hours_value(t) is not None
+                        return bool(re.search(r"\d{1,2}:\d{2}", t))
+
+                    def _has_digit(text):
+                        return bool(re.search(r"\d", str(text or "")))
 
                     def _hours_over_day(text):
                         parsed = try_parse_hours_value(text) if text else None
@@ -4298,9 +4305,9 @@ def scan_distinct_events(input_path, extension, mapping):
 
                     if any(_hours_over_day(v) for v in (total_raw, std_raw, missing_raw)):
                         break
-                    if (entry_raw and not _is_time_text(entry_raw)) or (exit_raw and not _is_time_text(exit_raw)):
+                    if (entry_raw and not _looks_like_time(entry_raw)) or (exit_raw and not _looks_like_time(exit_raw)):
                         break
-                    if any(v and try_parse_hours_value(v) is None for v in (total_raw, std_raw, missing_raw)):
+                    if any(v and not _has_digit(v) for v in (total_raw, std_raw, missing_raw)):
                         break
 
                 event_value = extract_rimon_mapping_value(sheet, workbook_kind, sheet_mapping.get("event_source"), row_index)
