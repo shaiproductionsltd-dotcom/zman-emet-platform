@@ -3304,9 +3304,33 @@ def parse_rimon_home_office_report(input_path, extension, mapping):
             if not any([row_date, event_value, error_text, entry_time, exit_time, total_hours, standard_hours, missing_hours]):
                 continue
 
-            if not row_date and not entry_time and not exit_time and not event_value and not error_text and (total_hours or standard_hours or missing_hours):
-                # Footer/monthly-totals row — its sums would otherwise be attributed to the last day and double the totals.
-                break
+            if not row_date:
+                def _is_time_text(text):
+                    t = str(text or "").strip().lstrip("*")
+                    if not t:
+                        return True
+                    if try_parse_hours_value(t) is not None:
+                        return True
+                    return False
+
+                def _hours_over_day(text):
+                    parsed = try_parse_hours_value(text) if text else None
+                    return parsed is not None and parsed > 24.0
+
+                has_monthly_total = any(_hours_over_day(v) for v in (total_hours, standard_hours, missing_hours))
+                has_label_in_time_field = (entry_time and not _is_time_text(entry_time)) or (exit_time and not _is_time_text(exit_time))
+                has_label_in_hours_field = any(
+                    v and try_parse_hours_value(v) is None for v in (total_hours, standard_hours, missing_hours)
+                )
+                lacks_attendance_markers = not entry_time and not exit_time and not event_value and not error_text
+
+                if has_monthly_total or has_label_in_time_field or has_label_in_hours_field:
+                    # Footer/summary row that sneaks label text (e.g. "שעות") or monthly totals
+                    # into the mapped columns. Stop so it doesn't pollute the last day.
+                    break
+                if lacks_attendance_markers and (total_hours or standard_hours or missing_hours):
+                    # Plain totals row with no attendance fields.
+                    break
 
             day_key = current_date.isoformat()
             if day_key not in grouped_dates:
