@@ -3304,6 +3304,10 @@ def parse_rimon_home_office_report(input_path, extension, mapping):
             if not any([row_date, event_value, error_text, entry_time, exit_time, total_hours, standard_hours, missing_hours]):
                 continue
 
+            if not row_date and not entry_time and not exit_time and not event_value and not error_text and (total_hours or standard_hours or missing_hours):
+                # Footer/monthly-totals row — its sums would otherwise be attributed to the last day and double the totals.
+                break
+
             day_key = current_date.isoformat()
             if day_key not in grouped_dates:
                 grouped_dates[day_key] = {
