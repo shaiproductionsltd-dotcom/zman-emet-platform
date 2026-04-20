@@ -3692,17 +3692,31 @@ def write_rimon_home_office_summary(ws, employee_rows, report_meta):
         ("סה\"כ שעות תקן", format_hours(total_standard_hours), "E0F2FE"),
         ("סה\"כ שעות חוסר", format_hours(total_missing_hours), "FEF3C7"),
     ])
-    for idx, (label, value, fill_color) in enumerate(metrics, start=4):
-        label_cell = ws.cell(row=idx, column=1, value=label)
-        value_cell = ws.cell(row=idx, column=2, value=value)
-        label_cell.font = Font(bold=True, color="334155")
-        value_cell.font = Font(bold=True, color="0F172A")
-        label_cell.fill = PatternFill(fill_type="solid", fgColor=fill_color)
-        value_cell.fill = PatternFill(fill_type="solid", fgColor=fill_color)
-        label_cell.alignment = Alignment(horizontal="right")
-        value_cell.alignment = Alignment(horizontal="right")
+    metrics_per_row = 4
+    total_cols = len(headers)
+    slot_width = max(3, total_cols // metrics_per_row)
+    metrics_start_row = 4
+    for idx, (label, value, fill_color) in enumerate(metrics):
+        row_offset = idx // metrics_per_row
+        slot = idx % metrics_per_row
+        row_idx = metrics_start_row + row_offset
+        label_col = 1 + slot * slot_width
+        value_col = label_col + slot_width - 1
+        label_cell = ws.cell(row=row_idx, column=label_col, value=label)
+        value_cell = ws.cell(row=row_idx, column=value_col, value=value)
+        if value_col > label_col + 1:
+            ws.merge_cells(start_row=row_idx, start_column=label_col, end_row=row_idx, end_column=value_col - 1)
+        label_cell.font = Font(bold=True, size=11, color="334155")
+        value_cell.font = Font(bold=True, size=13, color="0F172A")
+        fill = PatternFill(fill_type="solid", fgColor=fill_color)
+        for c in range(label_col, value_col + 1):
+            ws.cell(row=row_idx, column=c).fill = fill
+        label_cell.alignment = Alignment(horizontal="right", vertical="center", indent=1)
+        value_cell.alignment = Alignment(horizontal="center", vertical="center")
+        ws.row_dimensions[row_idx].height = 26
 
-    header_row = len(metrics) + 5
+    metrics_rows_used = (len(metrics) + metrics_per_row - 1) // metrics_per_row
+    header_row = metrics_start_row + metrics_rows_used + 1
     ws.freeze_panes = "A" + str(header_row + 1)
     for col, header in enumerate(headers, start=1):
         cell = ws.cell(row=header_row, column=col, value=header)
