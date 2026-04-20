@@ -3257,10 +3257,11 @@ def build_rimon_mapping_warnings(mapping):
     return warnings
 
 
-def parse_rimon_home_office_report(input_path, extension, mapping):
+def parse_rimon_home_office_report(input_path, extension, mapping, event_classifications=None):
     workbook_kind, workbook = open_excel_workbook(input_path, extension)
     employee_rows = []
     daily_rows = []
+    event_classifications = event_classifications or {}
     detected_company_name = ""
     detected_months = []
     detected_dates = set()
@@ -3383,77 +3384,84 @@ def parse_rimon_home_office_report(input_path, extension, mapping):
         missing_hours_total = 0.0
         events_hours = {}
         events_days = {}
+        custom_bucket_days = {}
+        custom_bucket_hours = {}
 
         absence_keywords = ("חופשה", "מחלה", "היעדר", "חג", "אבל", "מילואים")
+        bucket_rank = {"custom": 0, "office": 1, "home": 2, "absence": 3, "leave": 4}
+
+        def bucket_for_event(event_text):
+            user_choice = event_classifications.get(event_text)
+            if user_choice in ("office", "home", "absence", "custom", "leave", "ignore"):
+                return user_choice
+            if "פיטור" in event_text or "התפטר" in event_text:
+                return "leave"
+            if any(kw in event_text for kw in absence_keywords):
+                return "absence"
+            if event_text == "עבודה מהבית":
+                return "home"
+            return "office"
 
         for day_key in sorted(grouped_dates):
             grouped = grouped_dates[day_key]
-            has_home_event = grouped["home_office"]
             normalized_events = [str(event).strip() for event in grouped["events"] if str(event).strip()]
-            has_leave_event = any("פיטור" in event or "התפטר" in event for event in normalized_events)
-            has_absence_event = any(
-                keyword in event
-                for event in normalized_events
-                for keyword in absence_keywords
-            )
-            has_other_work_event = any(
-                event != "עבודה מהבית"
-                and "פיטור" not in event
-                and "התפטר" not in event
-                and not any(keyword in event for keyword in absence_keywords)
-                for event in normalized_events
-            )
             has_entry = bool(grouped["entry_time"])
             has_exit = bool(grouped["exit_time"])
             has_complete_attendance = has_entry and has_exit
             has_partial_attendance = (has_entry and not has_exit) or (has_exit and not has_entry)
-            office_work = has_other_work_event or (has_complete_attendance and not has_home_event)
-            left_employee = has_leave_event and not office_work and not has_home_event and not has_complete_attendance
-            grouped["missing_absence"] = has_absence_event and not left_employee and not office_work and not has_home_event and not has_complete_attendance
             date_obj = datetime.fromisoformat(grouped["date"])
             is_weekend = date_obj.weekday() in (4, 5)
-            has_any_activity = has_entry or has_exit or bool(normalized_events)
+
+            event_bucket_pairs = [(ev, bucket_for_event(ev)) for ev in normalized_events]
+            active_pairs = [(ev, b) for ev, b in event_bucket_pairs if b != "ignore"]
+            if active_pairs:
+                active_pairs.sort(key=lambda pair: (bucket_rank.get(pair[1], 99), pair[0]))
+                winning_event, winning_bucket = active_pairs[0]
+            else:
+                winning_event, winning_bucket = None, None
+
+            if winning_bucket is None and has_complete_attendance:
+                winning_bucket = "office"
+                winning_event = ""
+
+            grouped["home_office"] = winning_bucket == "home"
+            grouped["missing_absence"] = winning_bucket == "absence"
+            left_employee = winning_bucket == "leave"
+
+            has_any_activity = has_entry or has_exit or bool(active_pairs)
             missing_day_error = (
-                not has_complete_attendance
+                winning_bucket is None
+                and not has_complete_attendance
                 and not has_partial_attendance
-                and not normalized_events
-                and not grouped["missing_absence"]
-                and not left_employee
                 and not is_weekend
             )
             if has_partial_attendance and "חסר דיווח" not in grouped["errors"]:
                 grouped["errors"].append("חסר דיווח")
             if missing_day_error and "יום חסר" not in grouped["errors"]:
                 grouped["errors"].append("יום חסר")
-            grouped["error"] = grouped["error"] or missing_day_error or has_partial_attendance
+            grouped["error"] = missing_day_error or has_partial_attendance
 
-            if office_work:
+            bucket_label = ""
+            if winning_bucket == "custom":
+                classification = winning_event or "עמודה נפרדת"
+                primary_event = winning_event or ""
+                bucket_label = winning_event or ""
+            elif winning_bucket == "office":
                 classification = "משרד"
-                primary_event = next(
-                    (
-                        event for event in normalized_events
-                        if event != "עבודה מהבית"
-                        and "פיטור" not in event
-                        and "התפטר" not in event
-                        and not any(kw in event for kw in absence_keywords)
-                    ),
-                    "עבודה מהמשרד",
-                )
-            elif has_home_event:
+                primary_event = winning_event or "עבודה מהמשרד"
+                bucket_label = "משרד"
+            elif winning_bucket == "home":
                 classification = "בית"
-                primary_event = "עבודה מהבית"
-            elif left_employee:
+                primary_event = winning_event or "עבודה מהבית"
+                bucket_label = "בית"
+            elif winning_bucket == "leave":
                 classification = "עזיבה"
-                primary_event = next(
-                    (event for event in normalized_events if "פיטור" in event or "התפטר" in event),
-                    "עזיבה",
-                )
-            elif grouped["missing_absence"]:
+                primary_event = winning_event or "עזיבה"
+                bucket_label = "עזיבה"
+            elif winning_bucket == "absence":
                 classification = "היעדרות"
-                primary_event = next(
-                    (event for event in normalized_events if any(kw in event for kw in absence_keywords)),
-                    "היעדרות",
-                )
+                primary_event = winning_event or "היעדרות"
+                bucket_label = "היעדרות"
             elif is_weekend and not has_any_activity:
                 classification = "סוף שבוע"
                 primary_event = ""
@@ -3466,14 +3474,15 @@ def parse_rimon_home_office_report(input_path, extension, mapping):
 
             grouped["classification"] = classification
             grouped["primary_event"] = primary_event
+            grouped["bucket"] = bucket_label
 
-            if has_home_event and not office_work:
-                home_office_days += 1
-            if office_work:
+            if winning_bucket == "office":
                 office_days += 1
-            if grouped["missing_absence"]:
+            if winning_bucket == "home":
+                home_office_days += 1
+            if winning_bucket == "absence":
                 missing_absence_days += 1
-            if left_employee:
+            if winning_bucket == "leave":
                 left_days += 1
             if grouped["error"]:
                 error_days += 1
@@ -3482,12 +3491,20 @@ def parse_rimon_home_office_report(input_path, extension, mapping):
             detected_months.append(date_obj.month)
             detected_dates.add(grouped["date"])
 
+            hours_for_event = parse_hours_or_zero(grouped["total_hours"])
+            if hours_for_event == 0:
+                hours_for_event = parse_hours_or_zero(grouped["standard_hours"])
+
             if primary_event and classification in ("משרד", "בית", "היעדרות", "עזיבה"):
                 events_days[primary_event] = events_days.get(primary_event, 0) + 1
-                hours_for_event = parse_hours_or_zero(grouped["total_hours"])
-                if hours_for_event == 0:
-                    hours_for_event = parse_hours_or_zero(grouped["standard_hours"])
                 events_hours[primary_event] = events_hours.get(primary_event, 0.0) + hours_for_event
+            elif winning_bucket == "custom" and winning_event:
+                events_days[winning_event] = events_days.get(winning_event, 0) + 1
+                events_hours[winning_event] = events_hours.get(winning_event, 0.0) + hours_for_event
+
+            if winning_bucket == "custom" and winning_event:
+                custom_bucket_days[winning_event] = custom_bucket_days.get(winning_event, 0) + 1
+                custom_bucket_hours[winning_event] = custom_bucket_hours.get(winning_event, 0.0) + hours_for_event
 
             daily_rows.append(
                 {
@@ -3499,7 +3516,7 @@ def parse_rimon_home_office_report(input_path, extension, mapping):
                     "entry_time": grouped["entry_time"],
                     "exit_time": grouped["exit_time"],
                     "home_office": grouped["home_office"],
-                    "office_work": office_work,
+                    "office_work": winning_bucket == "office",
                     "missing_absence": grouped["missing_absence"],
                     "error": grouped["error"],
                     "is_weekend": is_weekend,
@@ -3530,6 +3547,8 @@ def parse_rimon_home_office_report(input_path, extension, mapping):
                 "missing_hours_total": missing_hours_total,
                 "events_hours": events_hours,
                 "events_days": events_days,
+                "custom_bucket_days": custom_bucket_days,
+                "custom_bucket_hours": custom_bucket_hours,
             }
         )
 
@@ -3566,6 +3585,20 @@ def write_rimon_home_office_summary(ws, employee_rows, report_meta):
     ws.sheet_view.rightToLeft = True
     ws.sheet_view.showGridLines = False
 
+    custom_buckets = []
+    seen_custom = set()
+    for emp in employee_rows:
+        for bucket_name in emp.get("custom_bucket_days", {}) or {}:
+            if bucket_name and bucket_name not in seen_custom:
+                seen_custom.add(bucket_name)
+                custom_buckets.append(bucket_name)
+    meta_custom = report_meta.get("custom_buckets") or []
+    for bucket_name in meta_custom:
+        if bucket_name and bucket_name not in seen_custom:
+            seen_custom.add(bucket_name)
+            custom_buckets.append(bucket_name)
+    custom_buckets.sort()
+
     headers = [
         "שם עובד",
         "מספר שכר",
@@ -3573,13 +3606,17 @@ def write_rimon_home_office_summary(ws, employee_rows, report_meta):
         "מחלקה",
         "ימי עבודה מהמשרד",
         "ימי עבודה מהבית",
+    ]
+    for bucket_name in custom_buckets:
+        headers.append("ימי " + bucket_name)
+    headers.extend([
         "ימי היעדרות",
         "ימי שגיאה",
         "ימי עזיבה",
         "סה\"כ ימי עבודה שזוהו",
         "סה\"כ שעות תקן",
         "סה\"כ שעות חוסר",
-    ]
+    ])
 
     ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(headers))
     ws["A1"] = "דוח סיכום עבודה מהבית מול עבודה מהמשרד"
@@ -3601,18 +3638,26 @@ def write_rimon_home_office_summary(ws, employee_rows, report_meta):
     total_error_days = sum(row["error_days"] for row in employee_rows)
     total_standard_hours = sum(row.get("standard_hours_total", 0.0) or 0.0 for row in employee_rows)
     total_missing_hours = sum(row.get("missing_hours_total", 0.0) or 0.0 for row in employee_rows)
+    total_by_bucket = {}
+    for emp in employee_rows:
+        for bucket_name, days in (emp.get("custom_bucket_days") or {}).items():
+            total_by_bucket[bucket_name] = total_by_bucket.get(bucket_name, 0) + days
     metrics = [
         ("סה\"כ עובדים שנקלטו", len(employee_rows), "E0F2FE"),
         ("סה\"כ ימים לחודש שזוהו", total_days_identified, "E0F2FE"),
         ("חודש הדוח", report_meta.get("report_month", ""), "E0F2FE"),
-        ("סה\"כ ימי עבודה", total_office_days + total_home_days, "DBEAFE"),
+        ("סה\"כ ימי עבודה", total_office_days + total_home_days + sum(total_by_bucket.values()), "DBEAFE"),
         ("סה\"כ ימי עבודה מהבית", total_home_days, "DDD6FE"),
         ("סה\"כ ימי עבודה מהמשרד", total_office_days, "DCFCE7"),
+    ]
+    for bucket_name in custom_buckets:
+        metrics.append(("סה\"כ ימי " + bucket_name, total_by_bucket.get(bucket_name, 0), "FEF3C7"))
+    metrics.extend([
         ("סה\"כ שגיאות", total_error_days, "FEE2E2"),
         ("סה\"כ היעדרויות", total_absence_days, "FEF3C7"),
         ("סה\"כ שעות תקן", format_hours(total_standard_hours), "E0F2FE"),
         ("סה\"כ שעות חוסר", format_hours(total_missing_hours), "FEF3C7"),
-    ]
+    ])
     for idx, (label, value, fill_color) in enumerate(metrics, start=4):
         label_cell = ws.cell(row=idx, column=1, value=label)
         value_cell = ws.cell(row=idx, column=2, value=value)
@@ -3633,6 +3678,8 @@ def write_rimon_home_office_summary(ws, employee_rows, report_meta):
 
     sorted_rows = sorted(employee_rows, key=lambda row: (row["employee_name"], row["payroll_number"]))
     for row_idx, row in enumerate(sorted_rows, start=header_row + 1):
+        custom_days_by_bucket = row.get("custom_bucket_days", {}) or {}
+        custom_day_sum = sum(custom_days_by_bucket.values())
         values = [
             row["employee_name"],
             row["payroll_number"],
@@ -3640,25 +3687,31 @@ def write_rimon_home_office_summary(ws, employee_rows, report_meta):
             row["department"],
             row["office_work_days"],
             row["home_office_days"],
+        ]
+        for bucket_name in custom_buckets:
+            values.append(custom_days_by_bucket.get(bucket_name, 0))
+        values.extend([
             row["missing_absence_days"],
             row["error_days"],
             row.get("left_days", 0),
-            row["office_work_days"] + row["home_office_days"],
+            row["office_work_days"] + row["home_office_days"] + custom_day_sum,
             format_hours(row.get("standard_hours_total", 0.0)),
             format_hours(row.get("missing_hours_total", 0.0)),
-        ]
+        ])
         for col, value in enumerate(values, start=1):
             cell = ws.cell(row=row_idx, column=col, value=value)
             cell.alignment = Alignment(horizontal="right")
             if row_idx % 2 == 0:
                 cell.fill = PatternFill(fill_type="solid", fgColor="F8FAFC")
 
-    widths = [24, 16, 16, 24, 18, 18, 18, 14, 14, 28, 16, 16]
-    for col, width in enumerate(widths, start=1):
+    base_widths = [24, 16, 16, 24, 18, 18]
+    base_widths.extend([18] * len(custom_buckets))
+    base_widths.extend([18, 14, 14, 28, 16, 16])
+    for col, width in enumerate(base_widths, start=1):
         ws.column_dimensions[get_column_letter(col)].width = width
 
 
-def write_rimon_home_office_daily(ws, daily_rows, employee_rows):
+def write_rimon_home_office_daily(ws, daily_rows, employee_rows, report_meta=None):
     ws.title = safe_sheet_title("פירוט יומי", "Daily Breakdown")
     ws.sheet_view.rightToLeft = True
     ws.sheet_view.showGridLines = False
@@ -3684,6 +3737,8 @@ def write_rimon_home_office_daily(ws, daily_rows, employee_rows):
         "שגיאה": "991B1B",
         "סוף שבוע": "475569",
     }
+    custom_fill_default = "FED7AA"
+    custom_text_default = "9A3412"
 
     thin_border = Border(
         left=Side(style="thin", color="E2E8F0"),
@@ -3890,10 +3945,14 @@ def write_rimon_home_office_daily(ws, daily_rows, employee_rows):
                     cell.alignment = Alignment(horizontal="center" if col not in (6, 10) else "right", indent=1 if col in (6, 10) else 0)
                     cell.border = thin_border
                     cell.fill = PatternFill(fill_type="solid", fgColor=stripe_fill)
-                if classification and classification in classification_colors:
+                if classification:
                     class_cell = ws.cell(row=row_idx, column=7)
-                    class_cell.fill = PatternFill(fill_type="solid", fgColor=classification_colors[classification])
-                    class_cell.font = Font(bold=True, color=classification_text_colors.get(classification, "0F172A"))
+                    if classification in classification_colors:
+                        class_cell.fill = PatternFill(fill_type="solid", fgColor=classification_colors[classification])
+                        class_cell.font = Font(bold=True, color=classification_text_colors.get(classification, "0F172A"))
+                    else:
+                        class_cell.fill = PatternFill(fill_type="solid", fgColor=custom_fill_default)
+                        class_cell.font = Font(bold=True, color=custom_text_default)
                 row_idx += 1
 
         row_idx += 2
@@ -3905,10 +3964,26 @@ def run_rimon_home_office_summary(input_path, output_path, extension, options=No
     options = options or {}
     mapping = default_rimon_mapping()
     mapping.update({key: value for key, value in options.items() if key.endswith("_source")})
-    employee_rows, daily_rows, report_meta = parse_rimon_home_office_report(input_path, extension, mapping)
+    event_classifications = {}
+    raw_classifications = options.get("event_classifications_json", "")
+    if raw_classifications:
+        try:
+            parsed = json.loads(raw_classifications)
+            if isinstance(parsed, dict):
+                event_classifications = {str(k): str(v) for k, v in parsed.items() if v}
+        except (TypeError, ValueError):
+            event_classifications = {}
+    custom_bucket_order = []
+    for event_name, bucket in event_classifications.items():
+        if bucket == "custom" and event_name not in custom_bucket_order:
+            custom_bucket_order.append(event_name)
+    employee_rows, daily_rows, report_meta = parse_rimon_home_office_report(
+        input_path, extension, mapping, event_classifications=event_classifications,
+    )
+    report_meta["custom_buckets"] = sorted(custom_bucket_order)
     wb = Workbook()
     write_rimon_home_office_summary(wb.active, employee_rows, report_meta)
-    write_rimon_home_office_daily(wb.create_sheet(), daily_rows, employee_rows)
+    write_rimon_home_office_daily(wb.create_sheet(), daily_rows, employee_rows, report_meta)
     wb.save(output_path)
     return {"warnings": build_rimon_mapping_warnings(mapping)}
 
@@ -7794,6 +7869,7 @@ SCRIPT_REGISTRY["rimon_home_office_summary"] = {
     "processing_note": "המערכת מקבצת תאריכים וסופרת ימי משרד, עבודה מהבית, היעדרות ושגיאות. הפעולה עשויה להימשך כמה דקות.",
     "file_picker_label": "בחירת דוח מפורט חודשי",
     "requires_mapping_confirmation": True,
+    "requires_event_classification": True,
 }
 
 SCRIPT_REGISTRY["attendance_alerts"] = {
@@ -11294,6 +11370,110 @@ def build_rimon_mapping_form(script_id, temp_upload_path, temp_upload_ext, inspe
     )
 
 
+def build_home_office_event_classification_form(script_id, temp_upload_path, temp_upload_ext, mapping, distinct_events, current_classifications, mapping_templates=None, default_template_name=""):
+    category_options = [
+        ("office", "עבודה במשרד", "DCFCE7", "166534"),
+        ("home", "עבודה מהבית", "DDD6FE", "5b21b6"),
+        ("absence", "היעדרות", "FEF3C7", "92400e"),
+        ("custom", "עמודה נפרדת", "FED7AA", "9a3412"),
+        ("ignore", "התעלם", "F1F5F9", "475569"),
+    ]
+
+    rows_html = ""
+    for idx, event_value in enumerate(distinct_events):
+        current = current_classifications.get(event_value) or classify_event_value(event_value)
+        radios_html = ""
+        for cat_id, cat_label, cat_bg, cat_fg in category_options:
+            checked = " checked" if current == cat_id else ""
+            radios_html += (
+                '<label style="display:inline-flex;align-items:center;gap:6px;padding:7px 12px;border-radius:999px;cursor:pointer;background:#' + cat_bg + ';border:1px solid #cbd5e1;color:#' + cat_fg + ';font-size:12px;font-weight:600;margin-inline-end:6px;margin-bottom:4px">'
+                + '<input type="radio" name="event_class__' + esc(event_value) + '" value="' + cat_id + '"' + checked + ' style="margin:0">'
+                + esc(cat_label)
+                + '</label>'
+            )
+        bg_color = "#ffffff" if idx % 2 == 0 else "#f8fafc"
+        rows_html += (
+            '<div style="display:grid;grid-template-columns:minmax(200px,280px) minmax(0,1fr);gap:14px;align-items:center;padding:10px 12px;border-bottom:1px solid #e2e8f0;background:' + bg_color + '">'
+            + '<div style="font-size:14px;font-weight:700;color:#0f172a;word-break:break-word">' + esc(event_value) + '</div>'
+            + '<div style="display:flex;flex-wrap:wrap;align-items:center">' + radios_html + '</div>'
+            + '</div>'
+        )
+
+    if not rows_html:
+        rows_html = '<div style="padding:20px;text-align:center;color:#64748b;font-size:13px">לא נמצאו אירועים בקובץ. הדוח יופק עם הכלל "יום עם כניסה ויציאה ללא אירוע = עבודה מהמשרד".</div>'
+
+    mapping_hidden_fields = ""
+    for key, value in (mapping or {}).items():
+        mapping_hidden_fields += '<input type="hidden" name="' + esc(key) + '" value="' + esc(str(value or "")) + '">'
+
+    mapping_json = json.dumps(mapping or {}, ensure_ascii=False)
+    template_name = default_template_name or "תבנית עוגן"
+
+    templates_payload = []
+    for tpl in (mapping_templates or []):
+        try:
+            tpl_mapping = json.loads(tpl.get("mapping_json") or "{}")
+        except (TypeError, ValueError):
+            tpl_mapping = {}
+        templates_payload.append({
+            "id": tpl.get("id"),
+            "name": tpl.get("name", ""),
+            "event_classifications": tpl_mapping.get("event_classifications") or {},
+        })
+
+    template_options_html = '<option value="">ללא תבנית</option>'
+    for tpl in templates_payload:
+        template_options_html += '<option value="' + str(tpl["id"]) + '">' + esc(tpl["name"]) + '</option>'
+
+    return (
+        '<form method="POST" id="eventClassificationForm">'
+        + '<input type="hidden" name="flow_mode" value="confirm_events">'
+        + '<input type="hidden" name="temp_upload_path" value="' + esc(temp_upload_path) + '">'
+        + '<input type="hidden" name="temp_upload_ext" value="' + esc(temp_upload_ext) + '">'
+        + '<input type="hidden" name="mapping_json" value="' + esc(mapping_json) + '">'
+        + mapping_hidden_fields
+        + '<div style="background:#fafcff;border:1px solid #dbeafe;border-radius:14px;padding:1rem;margin-bottom:1rem">'
+        + '<div style="font-size:15px;font-weight:700;color:#1e3a8a;margin-bottom:6px">סיווג אירועים — שלב 2 מתוך 2</div>'
+        + '<div style="font-size:13px;color:#475569;line-height:1.7;margin-bottom:12px">לכל אירוע שזוהה בקובץ, בחרו איך לספור אותו. מי שסומן "עמודה נפרדת" יקבל עמודת ימים עצמאית בסיכום. מי שסומן "התעלם" לא נכלל בספירה.</div>'
+        + '<div style="background:#fffbeb;border:1px solid #fcd34d;border-radius:10px;padding:10px 14px;margin-bottom:14px;font-size:12px;color:#92400e;line-height:1.7">'
+        + '<strong>כלל קבוע — סדר עדיפות בקונפליקט:</strong> עמודה נפרדת &lt; משרד &lt; בית &lt; היעדרות. כלומר, אם אותו יום מכיל "עבודה מהשטח" וגם "עבודה מהבית" — השטח גובר.'
+        + '</div>'
+        + '<div style="border:1px solid #e2e8f0;border-radius:12px;overflow:hidden;background:#ffffff;margin-bottom:14px">'
+        + '<div style="display:grid;grid-template-columns:minmax(200px,280px) minmax(0,1fr);gap:14px;padding:10px 12px;background:#1e3a8a;color:#ffffff;font-weight:700;font-size:13px">'
+        + '<div>אירוע (כפי שמופיע בקובץ)</div><div>איך לספור?</div>'
+        + '</div>'
+        + rows_html
+        + '</div>'
+        + '<div style="background:#f0fdf4;border:1px solid #86efac;border-radius:12px;padding:12px 14px;margin-bottom:14px">'
+        + '<label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-bottom:6px">'
+        + '<input type="checkbox" name="save_template" id="homeOfficeSaveTemplate" value="1" style="margin:0;width:16px;height:16px">'
+        + '<span style="font-size:14px;font-weight:700;color:#166534">שמירה כתבנית</span>'
+        + '</label>'
+        + '<div style="font-size:12px;color:#475569;line-height:1.6;margin-bottom:8px;margin-inline-start:24px">שמירה כתבנית תשמור את מיפוי העמודות ואת סיווג האירועים שבחרת, כדי שבפעם הבאה לא תצטרך להגדיר מחדש. תוכל לבחור תבנית קיימת בשלב מיפוי העמודות.</div>'
+        + '<div id="homeOfficeTemplateNameWrap" style="display:none;margin-inline-start:24px">'
+        + '<label style="font-size:12px;font-weight:600;color:#475569;display:block;margin-bottom:4px">שם התבנית</label>'
+        + '<input type="text" name="template_name" value="' + esc(template_name) + '" style="padding:7px 10px;border:1.5px solid #86efac;border-radius:8px;font-size:13px;font-family:inherit;width:100%;max-width:320px;outline:none">'
+        + '</div>'
+        + '</div>'
+        + '<div style="display:flex;gap:10px;flex-wrap:wrap;justify-content:center">'
+        + '<button type="submit" id="eventClassifyConfirmButton" class="btn btn-blue" style="min-width:240px">אישור והפקת הדוח</button>'
+        + '<a href="/run/' + script_id + '" class="btn btn-gray" style="text-decoration:none;display:inline-flex;align-items:center;justify-content:center;min-width:150px">העלאת קובץ חדש</a>'
+        + '</div>'
+        + '</div>'
+        + '<div id="eventClassifyOverlay" style="display:none;position:fixed;inset:0;background:rgba(248,250,252,.78);backdrop-filter:blur(2px);z-index:80;align-items:center;justify-content:center;padding:20px">'
+        + '<div style="width:100%;max-width:320px;background:#ffffff;border:1px solid #dbeafe;border-radius:18px;box-shadow:0 20px 50px rgba(15,23,42,.14);padding:24px 20px;text-align:center">'
+        + '<div style="width:42px;height:42px;border-radius:999px;border:3px solid #bfdbfe;border-top-color:#2563eb;margin:0 auto 14px;animation:mappingSpin .9s linear infinite"></div>'
+        + '<div style="font-size:16px;font-weight:800;color:#1e3a8a;margin-bottom:6px">הדוח בהכנה</div>'
+        + '<div style="font-size:13px;line-height:1.7;color:#475569">המערכת משדכת את הסיווגים שלך עם נתוני הנוכחות. הפעולה עשויה להימשך כמה דקות.</div>'
+        + '</div></div>'
+        + '<script>'
+        + '(function(){var form=document.getElementById("eventClassificationForm");var btn=document.getElementById("eventClassifyConfirmButton");var overlay=document.getElementById("eventClassifyOverlay");var saveCheck=document.getElementById("homeOfficeSaveTemplate");var nameWrap=document.getElementById("homeOfficeTemplateNameWrap");if(saveCheck&&nameWrap){saveCheck.addEventListener("change",function(){nameWrap.style.display=saveCheck.checked?"block":"none";});}if(form){form.addEventListener("submit",function(){if(btn){btn.disabled=true;btn.textContent="הפקת הדוח התחילה...";}if(overlay){overlay.style.display="flex";}document.body.style.overflow="hidden";});}})();'
+        + '</script>'
+        + '<style>@keyframes mappingSpin{from{transform:rotate(0deg);}to{transform:rotate(360deg);}}</style>'
+        + '</form>'
+    )
+
+
 def build_event_classification_form(script_id, temp_upload_path, temp_upload_ext, mapping, distinct_events, current_classifications):
     category_options = [
         ("office", "עבודה במשרד", "DCFCE7", "166534"),
@@ -14587,11 +14767,34 @@ def run_script(script_id):
                             error = '<div class="flash-err">' + scr["processing_error"] + '</div>'
                             distinct_events = None
                         if distinct_events is not None:
-                            current_classifications = {ev: classify_event_value(ev) for ev in distinct_events}
-                            mapping_confirmation_html = build_event_classification_form(
-                                script_id, inp, ext, mapping, distinct_events, current_classifications,
-                            )
-                            info_message = '<div class="flash" style="background:#eff6ff;border-color:#bfdbfe;color:#1d4ed8">נמצאו ' + str(len(distinct_events)) + ' סוגי אירועים בקובץ. בחרו לכל אחד את הקטגוריה המתאימה ואז הפיקו את מפת העומס.</div>'
+                            saved_classifications = {}
+                            selected_template_id = request.form.get("selected_template_id", "").strip()
+                            if selected_template_id:
+                                for tpl in mapping_templates:
+                                    if str(tpl.get("id")) == selected_template_id:
+                                        try:
+                                            tpl_mapping = json.loads(tpl.get("mapping_json") or "{}")
+                                            saved_classifications = tpl_mapping.get("event_classifications") or {}
+                                        except (TypeError, ValueError):
+                                            saved_classifications = {}
+                                        break
+                            current_classifications = {}
+                            for ev in distinct_events:
+                                if ev in saved_classifications:
+                                    current_classifications[ev] = saved_classifications[ev]
+                                else:
+                                    current_classifications[ev] = classify_event_value(ev)
+                            if script_id == "rimon_home_office_summary":
+                                mapping_confirmation_html = build_home_office_event_classification_form(
+                                    script_id, inp, ext, mapping, distinct_events, current_classifications,
+                                    mapping_templates,
+                                    request.form.get("template_name", "").strip() or get_next_mapping_template_name(mapping_templates),
+                                )
+                            else:
+                                mapping_confirmation_html = build_event_classification_form(
+                                    script_id, inp, ext, mapping, distinct_events, current_classifications,
+                                )
+                            info_message = '<div class="flash" style="background:#eff6ff;border-color:#bfdbfe;color:#1d4ed8">נמצאו ' + str(len(distinct_events)) + ' סוגי אירועים בקובץ. בחרו לכל אחד את הקטגוריה המתאימה ואז הפיקו את הדוח.</div>'
                 else:
                     # ── Notes classification interception (dept_payroll) ──
                     notes_form_shown = False
@@ -14692,12 +14895,13 @@ def run_script(script_id):
                     mapping = {}
             except (TypeError, ValueError):
                 mapping = {}
+            allowed_classes = ("office", "home", "absence", "custom", "ignore")
             classifications = {}
             prefix = "event_class__"
             for key, val in request.form.items():
                 if key.startswith(prefix):
                     event_value = key[len(prefix):]
-                    if val in ("office", "home", "absence"):
+                    if val in allowed_classes:
                         classifications[event_value] = val
             if not inp or not os.path.exists(inp):
                 error = '<div class="flash-err">הקובץ הזמני לא נמצא. יש להעלות את הדוח מחדש.</div>'
@@ -14712,6 +14916,11 @@ def run_script(script_id):
                     result = result_name
                     processing_warnings = execution_result.get("warnings", [])
                     log_user_activity("generate_report", "הפיק דוח", script_id, scr["name"], result_name)
+                    if request.form.get("save_template") == "1":
+                        template_name = request.form.get("template_name", "").strip() or get_next_mapping_template_name(get_mapping_templates(session["user_id"], script_id))
+                        template_mapping = {k: v for k, v in mapping.items() if isinstance(k, str)}
+                        template_mapping["event_classifications"] = classifications
+                        save_mapping_template(session["user_id"], script_id, template_name, template_mapping)
                 except (xlrd.biffh.XLRDError, BadZipFile, OSError, ValueError):
                     error = '<div class="flash-err">' + scr["processing_error"] + '</div>'
                 except Exception as e:
