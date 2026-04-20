@@ -3257,6 +3257,36 @@ def build_rimon_mapping_warnings(mapping):
     return warnings
 
 
+def detect_rimon_sheet_column_map(sheet, workbook_kind, header_row):
+    """Scan a sheet's header row for known Hebrew column labels and return a
+    per-sheet mapping of field_name → 'col:<idx>'. Handles both the compact
+    (40-col) and extended (63-col) Rimon layouts that can coexist in the same
+    workbook."""
+    label_to_field = {
+        "תאריך": "date_source",
+        "יום": "day_name_source",
+        "כניסה": "entry_time_source",
+        "יציאה": "exit_time_source",
+        "אירוע": "event_source",
+        "סה\"כ": "total_hours_source",
+        "סהכ": "total_hours_source",
+        "תקן": "standard_hours_source",
+        "חוסר": "missing_hours_source",
+        "שגיאות": "error_text_source",
+        "שגיאה": "error_text_source",
+    }
+    _, cols = get_excel_dims(sheet, workbook_kind)
+    detected = {}
+    for col_index in range(cols):
+        token = normalize_token(stringify_excel_value(get_excel_cell(sheet, workbook_kind, header_row, col_index, "")))
+        if not token:
+            continue
+        field = label_to_field.get(token)
+        if field and field not in detected:
+            detected[field] = "col:" + str(col_index)
+    return detected
+
+
 def parse_rimon_home_office_report(input_path, extension, mapping, event_classifications=None):
     workbook_kind, workbook = open_excel_workbook(input_path, extension)
     employee_rows = []
@@ -3269,13 +3299,17 @@ def parse_rimon_home_office_report(input_path, extension, mapping, event_classif
     for sheet in iter_excel_sheets(workbook_kind, workbook):
         rows, _ = get_excel_dims(sheet, workbook_kind)
         header_row = detect_rimon_header_row(sheet, workbook_kind)
-        employee_name = extract_rimon_mapping_value(sheet, workbook_kind, mapping.get("employee_name_source"))
-        department = extract_rimon_mapping_value(sheet, workbook_kind, mapping.get("department_source"))
-        payroll_number = extract_rimon_mapping_value(sheet, workbook_kind, mapping.get("payroll_number_source"))
-        id_number = extract_rimon_mapping_value(sheet, workbook_kind, mapping.get("id_number_source"))
+        sheet_column_map = detect_rimon_sheet_column_map(sheet, workbook_kind, header_row)
+        sheet_mapping = dict(mapping)
+        for field, source in sheet_column_map.items():
+            sheet_mapping[field] = source
+        employee_name = extract_rimon_mapping_value(sheet, workbook_kind, sheet_mapping.get("employee_name_source"))
+        department = extract_rimon_mapping_value(sheet, workbook_kind, sheet_mapping.get("department_source"))
+        payroll_number = extract_rimon_mapping_value(sheet, workbook_kind, sheet_mapping.get("payroll_number_source"))
+        id_number = extract_rimon_mapping_value(sheet, workbook_kind, sheet_mapping.get("id_number_source"))
         if not employee_name:
             employee_name = getattr(sheet, "name", "עובד")
-        if not stringify_excel_value(extract_rimon_mapping_value(sheet, workbook_kind, mapping.get("employee_name_source"))) and not stringify_excel_value(extract_rimon_mapping_value(sheet, workbook_kind, mapping.get("payroll_number_source"))):
+        if not stringify_excel_value(extract_rimon_mapping_value(sheet, workbook_kind, sheet_mapping.get("employee_name_source"))) and not stringify_excel_value(extract_rimon_mapping_value(sheet, workbook_kind, sheet_mapping.get("payroll_number_source"))):
             continue
         if not detected_company_name:
             detected_company_name = stringify_excel_value(get_excel_cell(sheet, workbook_kind, 0, 0, "")) or stringify_excel_value(get_excel_cell(sheet, workbook_kind, 1, 42, ""))
@@ -3287,21 +3321,21 @@ def parse_rimon_home_office_report(input_path, extension, mapping, event_classif
             row_date = parse_excel_date_generic(
                 workbook_kind,
                 workbook,
-                extract_rimon_mapping_value(sheet, workbook_kind, mapping.get("date_source"), row_index),
+                extract_rimon_mapping_value(sheet, workbook_kind, sheet_mapping.get("date_source"), row_index),
             )
             if row_date:
                 current_date = row_date
             if current_date is None:
                 continue
 
-            event_value = extract_rimon_mapping_value(sheet, workbook_kind, mapping.get("event_source"), row_index)
-            error_text = extract_rimon_mapping_value(sheet, workbook_kind, mapping.get("error_text_source"), row_index)
-            day_name = stringify_excel_value(extract_rimon_mapping_value(sheet, workbook_kind, mapping.get("day_name_source"), row_index))
-            entry_time = stringify_excel_value(extract_rimon_mapping_value(sheet, workbook_kind, mapping.get("entry_time_source"), row_index))
-            exit_time = stringify_excel_value(extract_rimon_mapping_value(sheet, workbook_kind, mapping.get("exit_time_source"), row_index))
-            total_hours = stringify_excel_value(extract_rimon_mapping_value(sheet, workbook_kind, mapping.get("total_hours_source"), row_index))
-            standard_hours = stringify_excel_value(extract_rimon_mapping_value(sheet, workbook_kind, mapping.get("standard_hours_source"), row_index))
-            missing_hours = stringify_excel_value(extract_rimon_mapping_value(sheet, workbook_kind, mapping.get("missing_hours_source"), row_index))
+            event_value = extract_rimon_mapping_value(sheet, workbook_kind, sheet_mapping.get("event_source"), row_index)
+            error_text = extract_rimon_mapping_value(sheet, workbook_kind, sheet_mapping.get("error_text_source"), row_index)
+            day_name = stringify_excel_value(extract_rimon_mapping_value(sheet, workbook_kind, sheet_mapping.get("day_name_source"), row_index))
+            entry_time = stringify_excel_value(extract_rimon_mapping_value(sheet, workbook_kind, sheet_mapping.get("entry_time_source"), row_index))
+            exit_time = stringify_excel_value(extract_rimon_mapping_value(sheet, workbook_kind, sheet_mapping.get("exit_time_source"), row_index))
+            total_hours = stringify_excel_value(extract_rimon_mapping_value(sheet, workbook_kind, sheet_mapping.get("total_hours_source"), row_index))
+            standard_hours = stringify_excel_value(extract_rimon_mapping_value(sheet, workbook_kind, sheet_mapping.get("standard_hours_source"), row_index))
+            missing_hours = stringify_excel_value(extract_rimon_mapping_value(sheet, workbook_kind, sheet_mapping.get("missing_hours_source"), row_index))
             if not any([row_date, event_value, error_text, entry_time, exit_time, total_hours, standard_hours, missing_hours]):
                 continue
 
@@ -4190,23 +4224,27 @@ def scan_distinct_events(input_path, extension, mapping):
         for sheet in iter_excel_sheets(workbook_kind, workbook):
             rows, _cols = get_excel_dims(sheet, workbook_kind)
             header_row = detect_rimon_header_row(sheet, workbook_kind)
+            sheet_column_map = detect_rimon_sheet_column_map(sheet, workbook_kind, header_row)
+            sheet_mapping = dict(mapping)
+            for field, source in sheet_column_map.items():
+                sheet_mapping[field] = source
             current_date = None
             for row_index in range(header_row + 1, rows):
                 row_date = parse_excel_date_generic(
                     workbook_kind,
                     workbook,
-                    extract_rimon_mapping_value(sheet, workbook_kind, mapping.get("date_source"), row_index),
+                    extract_rimon_mapping_value(sheet, workbook_kind, sheet_mapping.get("date_source"), row_index),
                 )
                 if row_date:
                     current_date = row_date
                 if current_date is None:
                     continue
 
-                entry_raw = stringify_excel_value(extract_rimon_mapping_value(sheet, workbook_kind, mapping.get("entry_time_source"), row_index))
-                exit_raw = stringify_excel_value(extract_rimon_mapping_value(sheet, workbook_kind, mapping.get("exit_time_source"), row_index))
-                total_raw = stringify_excel_value(extract_rimon_mapping_value(sheet, workbook_kind, mapping.get("total_hours_source"), row_index))
-                std_raw = stringify_excel_value(extract_rimon_mapping_value(sheet, workbook_kind, mapping.get("standard_hours_source"), row_index))
-                missing_raw = stringify_excel_value(extract_rimon_mapping_value(sheet, workbook_kind, mapping.get("missing_hours_source"), row_index))
+                entry_raw = stringify_excel_value(extract_rimon_mapping_value(sheet, workbook_kind, sheet_mapping.get("entry_time_source"), row_index))
+                exit_raw = stringify_excel_value(extract_rimon_mapping_value(sheet, workbook_kind, sheet_mapping.get("exit_time_source"), row_index))
+                total_raw = stringify_excel_value(extract_rimon_mapping_value(sheet, workbook_kind, sheet_mapping.get("total_hours_source"), row_index))
+                std_raw = stringify_excel_value(extract_rimon_mapping_value(sheet, workbook_kind, sheet_mapping.get("standard_hours_source"), row_index))
+                missing_raw = stringify_excel_value(extract_rimon_mapping_value(sheet, workbook_kind, sheet_mapping.get("missing_hours_source"), row_index))
 
                 if not row_date:
                     def _is_time_text(text):
@@ -4226,7 +4264,7 @@ def scan_distinct_events(input_path, extension, mapping):
                     if any(v and try_parse_hours_value(v) is None for v in (total_raw, std_raw, missing_raw)):
                         break
 
-                event_value = extract_rimon_mapping_value(sheet, workbook_kind, mapping.get("event_source"), row_index)
+                event_value = extract_rimon_mapping_value(sheet, workbook_kind, sheet_mapping.get("event_source"), row_index)
                 event_text = stringify_excel_value(event_value).strip()
                 if not event_text:
                     continue
