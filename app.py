@@ -3995,27 +3995,35 @@ def write_rimon_home_office_daily(ws, daily_rows, employee_rows, report_meta=Non
         ws.row_dimensions[row_idx].height = 24
         row_idx += 1
 
+        emp_custom_days = emp.get("custom_bucket_days", {}) or {}
         stats_pairs = [
             ("ימי משרד", emp.get("office_work_days", 0), "DCFCE7", "166534"),
             ("ימי בית", emp.get("home_office_days", 0), "EDE9FE", "5B21B6"),
+        ]
+        for bucket_name in sorted(emp_custom_days.keys()):
+            if emp_custom_days.get(bucket_name, 0) > 0:
+                stats_pairs.append(("ימי " + bucket_name, emp_custom_days[bucket_name], "FED7AA", "9A3412"))
+        stats_pairs.extend([
             ("היעדרות", emp.get("missing_absence_days", 0), "FEF3C7", "92400E"),
             ("עזיבה", emp.get("left_days", 0), "FEE2E2", "991B1B"),
             ("שגיאה", emp.get("error_days", 0), "FECACA", "991B1B"),
             ("סה\"כ זוהו", emp.get("total_grouped_dates", 0), "E0F2FE", "075985"),
             ("תקן", format_hours(emp.get("standard_hours_total", 0.0)), "E0F2FE", "075985"),
             ("חוסר", format_hours(emp.get("missing_hours_total", 0.0)), "FEF3C7", "92400E"),
-        ]
-        stats_row = row_idx
+        ])
+        stats_start_row = row_idx
         for idx, (label, value, fill_color, text_color) in enumerate(stats_pairs):
-            col = idx + 1 if idx < total_cols else total_cols
-            label_text = f"{label}: {value}"
-            cell = ws.cell(row=stats_row, column=col, value=label_text)
+            stats_row_offset = idx // total_cols
+            col = (idx % total_cols) + 1
+            target_row = stats_start_row + stats_row_offset
+            cell = ws.cell(row=target_row, column=col, value=f"{label}: {value}")
             cell.font = Font(bold=True, size=11, color=text_color)
             cell.fill = PatternFill(fill_type="solid", fgColor=fill_color)
             cell.alignment = Alignment(horizontal="center", vertical="center")
             cell.border = thin_border
-        ws.row_dimensions[stats_row].height = 22
-        row_idx += 2
+            ws.row_dimensions[target_row].height = 22
+        stats_rows_used = (len(stats_pairs) + total_cols - 1) // total_cols
+        row_idx = stats_start_row + stats_rows_used + 1
 
         events_hours = emp.get("events_hours", {}) or {}
         events_days = emp.get("events_days", {}) or {}
