@@ -3711,6 +3711,165 @@ def write_rimon_home_office_summary(ws, employee_rows, report_meta):
         ws.column_dimensions[get_column_letter(col)].width = width
 
 
+def write_rimon_home_office_by_department(ws, employee_rows, report_meta=None):
+    ws.title = safe_sheet_title("סיכום לפי מחלקה", "By Department")
+    ws.sheet_view.rightToLeft = True
+    ws.sheet_view.showGridLines = False
+
+    custom_buckets = []
+    seen_custom = set()
+    for emp in employee_rows:
+        for bucket_name in emp.get("custom_bucket_days", {}) or {}:
+            if bucket_name and bucket_name not in seen_custom:
+                seen_custom.add(bucket_name)
+                custom_buckets.append(bucket_name)
+    meta_custom = (report_meta or {}).get("custom_buckets") or []
+    for bucket_name in meta_custom:
+        if bucket_name and bucket_name not in seen_custom:
+            seen_custom.add(bucket_name)
+            custom_buckets.append(bucket_name)
+    custom_buckets.sort()
+
+    dept_buckets = {}
+    for emp in employee_rows:
+        dept = (emp.get("department") or "").strip() or "ללא מחלקה"
+        bucket = dept_buckets.setdefault(dept, {
+            "employees": 0,
+            "office_days": 0,
+            "home_days": 0,
+            "absence_days": 0,
+            "error_days": 0,
+            "left_days": 0,
+            "standard_hours": 0.0,
+            "missing_hours": 0.0,
+            "custom_days": {},
+        })
+        bucket["employees"] += 1
+        bucket["office_days"] += emp.get("office_work_days", 0) or 0
+        bucket["home_days"] += emp.get("home_office_days", 0) or 0
+        bucket["absence_days"] += emp.get("missing_absence_days", 0) or 0
+        bucket["error_days"] += emp.get("error_days", 0) or 0
+        bucket["left_days"] += emp.get("left_days", 0) or 0
+        bucket["standard_hours"] += emp.get("standard_hours_total", 0.0) or 0.0
+        bucket["missing_hours"] += emp.get("missing_hours_total", 0.0) or 0.0
+        for name, days in (emp.get("custom_bucket_days") or {}).items():
+            bucket["custom_days"][name] = bucket["custom_days"].get(name, 0) + days
+
+    headers = ["מחלקה", "עובדים", "ימי משרד", "ימי בית"]
+    for bucket_name in custom_buckets:
+        headers.append("ימי " + bucket_name)
+    headers.extend(["היעדרות", "שגיאה", "עזיבה", "סה\"כ ימי עבודה", "שעות תקן", "שעות חוסר"])
+    total_cols = len(headers)
+
+    widths = [28, 10, 12, 12]
+    widths.extend([14] * len(custom_buckets))
+    widths.extend([12, 12, 12, 18, 14, 14])
+    for col, width in enumerate(widths, start=1):
+        ws.column_dimensions[get_column_letter(col)].width = width
+
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=total_cols)
+    title_cell = ws.cell(row=1, column=1, value="סיכום לפי מחלקה")
+    title_cell.font = Font(bold=True, size=18, color="0F172A")
+    title_cell.fill = PatternFill(fill_type="solid", fgColor="BFDBFE")
+    title_cell.alignment = Alignment(horizontal="center", vertical="center")
+    ws.row_dimensions[1].height = 28
+
+    company_name = (report_meta or {}).get("company_name", "")
+    subtitle_parts = []
+    if company_name:
+        subtitle_parts.append(company_name)
+    if (report_meta or {}).get("report_month"):
+        subtitle_parts.append("חודש " + report_meta["report_month"])
+    if subtitle_parts:
+        ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=total_cols)
+        sub_cell = ws.cell(row=2, column=1, value="  •  ".join(subtitle_parts))
+        sub_cell.font = Font(bold=True, size=12, color="334155")
+        sub_cell.alignment = Alignment(horizontal="center")
+
+    header_row_idx = 4
+    ws.freeze_panes = "A" + str(header_row_idx + 1)
+    for col, header in enumerate(headers, start=1):
+        cell = ws.cell(row=header_row_idx, column=col, value=header)
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = PatternFill(fill_type="solid", fgColor="1E3A8A")
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+    ws.row_dimensions[header_row_idx].height = 24
+
+    sorted_departments = sorted(
+        dept_buckets.items(),
+        key=lambda item: (item[0] == "ללא מחלקה", item[0]),
+    )
+
+    stripe_row = header_row_idx
+    for dept_name, bucket in sorted_departments:
+        stripe_row += 1
+        custom_day_sum = sum(bucket["custom_days"].values())
+        values = [
+            dept_name,
+            bucket["employees"],
+            bucket["office_days"],
+            bucket["home_days"],
+        ]
+        for name in custom_buckets:
+            values.append(bucket["custom_days"].get(name, 0))
+        values.extend([
+            bucket["absence_days"],
+            bucket["error_days"],
+            bucket["left_days"],
+            bucket["office_days"] + bucket["home_days"] + custom_day_sum,
+            format_hours(bucket["standard_hours"]),
+            format_hours(bucket["missing_hours"]),
+        ])
+        stripe_fill = "F8FAFC" if (stripe_row - header_row_idx) % 2 == 0 else "FFFFFF"
+        for col, value in enumerate(values, start=1):
+            cell = ws.cell(row=stripe_row, column=col, value=value)
+            cell.alignment = Alignment(horizontal="center" if col > 1 else "right", indent=1 if col == 1 else 0)
+            cell.fill = PatternFill(fill_type="solid", fgColor=stripe_fill)
+            if col == 1:
+                cell.font = Font(bold=True, color="0F172A")
+
+    if sorted_departments:
+        stripe_row += 1
+        totals = {
+            "employees": sum(b["employees"] for _, b in sorted_departments),
+            "office_days": sum(b["office_days"] for _, b in sorted_departments),
+            "home_days": sum(b["home_days"] for _, b in sorted_departments),
+            "absence_days": sum(b["absence_days"] for _, b in sorted_departments),
+            "error_days": sum(b["error_days"] for _, b in sorted_departments),
+            "left_days": sum(b["left_days"] for _, b in sorted_departments),
+            "standard_hours": sum(b["standard_hours"] for _, b in sorted_departments),
+            "missing_hours": sum(b["missing_hours"] for _, b in sorted_departments),
+        }
+        totals_custom = {}
+        for _, b in sorted_departments:
+            for name, days in b["custom_days"].items():
+                totals_custom[name] = totals_custom.get(name, 0) + days
+        totals_custom_sum = sum(totals_custom.values())
+        totals_values = [
+            "סה\"כ",
+            totals["employees"],
+            totals["office_days"],
+            totals["home_days"],
+        ]
+        for name in custom_buckets:
+            totals_values.append(totals_custom.get(name, 0))
+        totals_values.extend([
+            totals["absence_days"],
+            totals["error_days"],
+            totals["left_days"],
+            totals["office_days"] + totals["home_days"] + totals_custom_sum,
+            format_hours(totals["standard_hours"]),
+            format_hours(totals["missing_hours"]),
+        ])
+        for col, value in enumerate(totals_values, start=1):
+            cell = ws.cell(row=stripe_row, column=col, value=value)
+            cell.font = Font(bold=True, color="0F172A")
+            cell.fill = PatternFill(fill_type="solid", fgColor="DBEAFE")
+            cell.alignment = Alignment(horizontal="center" if col > 1 else "right", indent=1 if col == 1 else 0)
+
+    ws.auto_filter.ref = get_column_letter(1) + str(header_row_idx) + ":" + get_column_letter(total_cols) + str(stripe_row)
+
+
 def write_rimon_home_office_daily(ws, daily_rows, employee_rows, report_meta=None):
     ws.title = safe_sheet_title("פירוט יומי", "Daily Breakdown")
     ws.sheet_view.rightToLeft = True
@@ -3983,6 +4142,7 @@ def run_rimon_home_office_summary(input_path, output_path, extension, options=No
     report_meta["custom_buckets"] = sorted(custom_bucket_order)
     wb = Workbook()
     write_rimon_home_office_summary(wb.active, employee_rows, report_meta)
+    write_rimon_home_office_by_department(wb.create_sheet(), employee_rows, report_meta)
     write_rimon_home_office_daily(wb.create_sheet(), daily_rows, employee_rows, report_meta)
     wb.save(output_path)
     return {"warnings": build_rimon_mapping_warnings(mapping)}
@@ -10853,7 +11013,7 @@ def find_rimon_meta_value(sheet, workbook_kind, labels, fallback_cells=()):
         for col_index in range(cols):
             token = normalize_token(stringify_excel_value(get_excel_cell(sheet, workbook_kind, row_index, col_index, "")))
             if token in normalized_labels:
-                for next_col in range(col_index + 1, min(cols, col_index + 6)):
+                for next_col in range(col_index + 1, min(cols, col_index + 15)):
                     candidate = stringify_excel_value(get_excel_cell(sheet, workbook_kind, row_index, next_col, ""))
                     if candidate and normalize_token(candidate) in RIMON_META_LABEL_TOKENS:
                         break
