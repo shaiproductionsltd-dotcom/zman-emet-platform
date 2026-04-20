@@ -4132,19 +4132,36 @@ def write_rimon_home_office_daily(ws, daily_rows, employee_rows, report_meta=Non
             empty_cell.font = Font(color="94A3B8", italic=True)
             row_idx += 1
         else:
+            classification_fallback_event = {
+                "משרד": "עבודה מהמשרד (ללא תנועה במקור)",
+                "בית": "עבודה מהבית",
+                "היעדרות": "היעדרות (ללא סוג ספציפי)",
+                "עזיבה": "עזיבה",
+                "שגיאה": "אין נתוני תנועה",
+                "סוף שבוע": "סוף שבוע",
+            }
             for i, row in enumerate(visible_rows):
                 classification = row.get("classification", "") or ""
+                raw_event = (row.get("event") or "").strip()
+                primary_event = (row.get("primary_event") or "").strip()
+                if raw_event:
+                    event_text = raw_event
+                elif primary_event and primary_event not in ("עבודה מהמשרד", "עבודה מהבית", "היעדרות", "עזיבה"):
+                    event_text = primary_event
+                else:
+                    event_text = classification_fallback_event.get(classification, "—")
+                error_text = (row.get("error_text") or "").strip() or "—"
                 values = [
                     row["date"],
-                    row["day_name"],
-                    row["entry_time"],
-                    row["exit_time"],
-                    row["total_hours"],
-                    row["event"],
-                    classification,
-                    row["standard_hours"],
-                    row["missing_hours"],
-                    row["error_text"],
+                    row["day_name"] or "—",
+                    row["entry_time"] or "—",
+                    row["exit_time"] or "—",
+                    row["total_hours"] or "—",
+                    event_text,
+                    classification or "—",
+                    row["standard_hours"] or "—",
+                    row["missing_hours"] or "—",
+                    error_text,
                 ]
                 stripe_fill = "F8FAFC" if i % 2 == 0 else "FFFFFF"
                 for col, value in enumerate(values, start=1):
