@@ -509,7 +509,10 @@ def format_hours(hours_value):
 
 
 def parse_hours_or_zero(value):
-    parsed = parse_hours_value(value)
+    try:
+        parsed = parse_hours_value(value)
+    except (ValueError, TypeError):
+        return 0.0
     return 0.0 if parsed is None else parsed
 
 
@@ -3261,7 +3264,14 @@ def detect_rimon_sheet_column_map(sheet, workbook_kind, header_row):
     """Scan a sheet's header row for known Hebrew column labels and return a
     per-sheet mapping of field_name → 'col:<idx>'. Handles both the compact
     (40-col) and extended (63-col) Rimon layouts that can coexist in the same
-    workbook."""
+    workbook.
+
+    Some Rimon variants use merged header cells where the visible label sits
+    one column away from the actual data (e.g., header "תאריך" at col 1 but
+    date values live at col 0). For every detected field, we verify at least
+    one data cell below the header has content; if not, we shift to the
+    adjacent column that does.
+    """
     label_to_field = {
         "תאריך": "date_source",
         "יום": "day_name_source",
@@ -3275,7 +3285,17 @@ def detect_rimon_sheet_column_map(sheet, workbook_kind, header_row):
         "שגיאות": "error_text_source",
         "שגיאה": "error_text_source",
     }
-    _, cols = get_excel_dims(sheet, workbook_kind)
+    rows, cols = get_excel_dims(sheet, workbook_kind)
+
+    def _col_has_data(c):
+        if c < 0 or c >= cols:
+            return False
+        for r in range(header_row + 1, min(header_row + 12, rows)):
+            v = stringify_excel_value(get_excel_cell(sheet, workbook_kind, r, c, "")).strip()
+            if v:
+                return True
+        return False
+
     detected = {}
     for col_index in range(cols):
         token = normalize_token(stringify_excel_value(get_excel_cell(sheet, workbook_kind, header_row, col_index, "")))
@@ -3283,7 +3303,14 @@ def detect_rimon_sheet_column_map(sheet, workbook_kind, header_row):
             continue
         field = label_to_field.get(token)
         if field and field not in detected:
-            detected[field] = "col:" + str(col_index)
+            resolved = col_index
+            if not _col_has_data(col_index):
+                for offset in (-1, 1, -2, 2):
+                    candidate = col_index + offset
+                    if _col_has_data(candidate):
+                        resolved = candidate
+                        break
+            detected[field] = "col:" + str(resolved)
     return detected
 
 
