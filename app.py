@@ -14860,17 +14860,37 @@ def dashboard():
     if status["status_key"] == "trial" and status["days_remaining"] is not None:
         service_compact += (" • נותרו " + str(status["days_remaining"]) + " ימים" if lang == "he" else f" • {status['days_remaining']} days left")
 
+    PREMIUM_SCRIPTS = {"powerbi_attendance"}
     cards = ""
-    for script in allowed:
-        cards += (
-            '<a href="/run/' + script["id"] + '" style="background:white;border:1px solid #e2e8f0;border-radius:18px;box-shadow:0 2px 12px rgba(37,99,235,.06);padding:1.5rem;text-decoration:none;display:block;transition:all .3s cubic-bezier(.4,0,.2,1)"'
-            ' onmouseenter="this.style.transform=\'translateY(-3px)\';this.style.boxShadow=\'0 8px 28px rgba(37,99,235,.12)\';this.style.borderColor=\'#bfdbfe\'"'
-            ' onmouseleave="this.style.transform=\'none\';this.style.boxShadow=\'0 2px 12px rgba(37,99,235,.06)\';this.style.borderColor=\'#e2e8f0\'">'
-            '<div style="width:48px;height:48px;border-radius:14px;background:linear-gradient(135deg,#eff6ff,#dbeafe);display:flex;align-items:center;justify-content:center;font-size:24px;margin-bottom:.75rem">' + script["icon"] + "</div>"
-            '<div style="font-size:15px;font-weight:800;color:#0f172a;margin-bottom:4px">' + script["name"] + "</div>"
-            '<div style="font-size:12px;color:#64748b;line-height:1.6">' + script["desc"] + "</div>"
-            "</a>"
-        )
+    # Sort so premium tools appear first
+    allowed_sorted = sorted(allowed, key=lambda s: 0 if s["id"] in PREMIUM_SCRIPTS else 1)
+    for script in allowed_sorted:
+        is_premium = script["id"] in PREMIUM_SCRIPTS
+        if is_premium:
+            cards += (
+                '<a href="/run/' + script["id"] + '" style="position:relative;background:linear-gradient(135deg,#0f1b3d 0%,#1e3a8a 45%,#2563eb 100%);border:1px solid #3b82f6;border-radius:18px;box-shadow:0 8px 28px rgba(37,99,235,.25);padding:1.5rem;text-decoration:none;display:block;transition:all .3s cubic-bezier(.4,0,.2,1);overflow:hidden"'
+                ' onmouseenter="this.style.transform=\'translateY(-4px)\';this.style.boxShadow=\'0 14px 40px rgba(37,99,235,.38)\'"'
+                ' onmouseleave="this.style.transform=\'none\';this.style.boxShadow=\'0 8px 28px rgba(37,99,235,.25)\'">'
+                '<div style="position:absolute;top:-40px;left:-40px;width:140px;height:140px;background:radial-gradient(circle,rgba(147,197,253,.35) 0%,transparent 70%);pointer-events:none"></div>'
+                '<div style="position:absolute;bottom:-50px;right:-50px;width:160px;height:160px;background:radial-gradient(circle,rgba(59,130,246,.25) 0%,transparent 70%);pointer-events:none"></div>'
+                '<div style="position:absolute;top:14px;left:14px;display:inline-flex;align-items:center;gap:5px;background:linear-gradient(135deg,#fbbf24,#f59e0b);color:#78350f;font-size:10px;font-weight:800;padding:4px 10px;border-radius:999px;box-shadow:0 2px 10px rgba(245,158,11,.4);letter-spacing:.3px;text-transform:uppercase">⚡ פרימיום</div>'
+                '<div style="position:relative;z-index:1">'
+                '<div style="width:52px;height:52px;border-radius:14px;background:linear-gradient(135deg,rgba(255,255,255,.2),rgba(255,255,255,.08));backdrop-filter:blur(8px);display:flex;align-items:center;justify-content:center;font-size:26px;margin-bottom:.75rem;border:1px solid rgba(255,255,255,.18)">' + script["icon"] + "</div>"
+                '<div style="font-size:16px;font-weight:800;color:#ffffff;margin-bottom:5px;letter-spacing:-0.2px">' + script["name"] + "</div>"
+                '<div style="font-size:12px;color:#bfdbfe;line-height:1.6">' + script["desc"] + "</div>"
+                '</div>'
+                "</a>"
+            )
+        else:
+            cards += (
+                '<a href="/run/' + script["id"] + '" style="background:white;border:1px solid #e2e8f0;border-radius:18px;box-shadow:0 2px 12px rgba(37,99,235,.06);padding:1.5rem;text-decoration:none;display:block;transition:all .3s cubic-bezier(.4,0,.2,1)"'
+                ' onmouseenter="this.style.transform=\'translateY(-3px)\';this.style.boxShadow=\'0 8px 28px rgba(37,99,235,.12)\';this.style.borderColor=\'#bfdbfe\'"'
+                ' onmouseleave="this.style.transform=\'none\';this.style.boxShadow=\'0 2px 12px rgba(37,99,235,.06)\';this.style.borderColor=\'#e2e8f0\'">'
+                '<div style="width:48px;height:48px;border-radius:14px;background:linear-gradient(135deg,#eff6ff,#dbeafe);display:flex;align-items:center;justify-content:center;font-size:24px;margin-bottom:.75rem">' + script["icon"] + "</div>"
+                '<div style="font-size:15px;font-weight:800;color:#0f172a;margin-bottom:4px">' + script["name"] + "</div>"
+                '<div style="font-size:12px;color:#64748b;line-height:1.6">' + script["desc"] + "</div>"
+                "</a>"
+            )
     # Add installed marketplace tools
     for mt in installed_tools:
         cards += (
