@@ -4245,14 +4245,22 @@ def _format_hours_hhmm(hours):
     return f"{total_minutes // 60:02d}:{total_minutes % 60:02d}"
 
 
-def parse_attendance_for_dashboard(input_path, extension, mapping, event_classifications=None, label=""):
+def parse_attendance_for_dashboard(input_path, extension, mapping, event_classifications=None, field_classifications=None, label=""):
     """Parse a Rimon-style report and emit a JSON-serialisable dashboard payload."""
     if extension not in {"xls", "xlsx"}:
         raise ValueError("POWERBI currently supports XLS and XLSX uploads only")
     event_classifications = event_classifications or {}
+    field_classifications = field_classifications or {}
     employee_rows, daily_rows, report_meta = parse_rimon_home_office_report(
         input_path, extension, mapping, event_classifications=event_classifications,
     )
+    # Collect values for every dynamic extra field the user opted-in to.
+    extras_by_emp = {}
+    if field_classifications:
+        try:
+            extras_by_emp = collect_rimon_dashboard_field_values(input_path, extension, mapping, field_classifications)
+        except Exception:
+            extras_by_emp = {}
 
     dept_agg = {}
     all_dates = set()
@@ -4328,9 +4336,36 @@ def parse_attendance_for_dashboard(input_path, extension, mapping, event_classif
         bucket["standard_hours"] += standard_hours
         bucket["missing_hours"] += missing_hours
 
+        emp_name = emp.get("employee_name") or ""
+        emp_payroll = str(emp.get("payroll_number") or "")
+        emp_extras_raw = extras_by_emp.get((emp_name, emp_payroll), {}) or {}
+        emp_extras = {}
+        for header, spec in field_classifications.items():
+            t = spec.get("type")
+            if t == "hours":
+                total = float(emp_extras_raw.get("totals", {}).get(header, 0.0) or 0.0)
+                emp_extras[header] = {
+                    "type": "hours",
+                    "value": round(total, 2),
+                    "display": _format_hours_hhmm(total),
+                }
+            elif t == "number":
+                total = float(emp_extras_raw.get("totals", {}).get(header, 0.0) or 0.0)
+                emp_extras[header] = {
+                    "type": "number",
+                    "value": round(total, 4),
+                    "display": f"{total:g}" if total else "—",
+                }
+            elif t == "text":
+                values = emp_extras_raw.get("text", {}).get(header) or []
+                emp_extras[header] = {
+                    "type": "text",
+                    "value": values,
+                    "display": ", ".join(values[:3]) + (" …" if len(values) > 3 else "") if values else "—",
+                }
         normalized_employees.append({
-            "name": emp.get("employee_name") or "",
-            "payroll_number": str(emp.get("payroll_number") or ""),
+            "name": emp_name,
+            "payroll_number": emp_payroll,
             "id_number": str(emp.get("id_number") or ""),
             "department": dept,
             "office_days": office,
@@ -4347,6 +4382,8 @@ def parse_attendance_for_dashboard(input_path, extension, mapping, event_classif
             "home_ratio": round((home / work_days) if work_days > 0 else 0.0, 4),
             "events_days": {str(k): int(v) for k, v in (emp.get("events_days") or {}).items()},
             "custom_bucket_days": {str(k): int(v) for k, v in (emp.get("custom_bucket_days") or {}).items()},
+            "extras": emp_extras,
+            "_daily_extras": emp_extras_raw.get("daily", {}),
         })
 
     total_employees = len(normalized_employees)
@@ -4449,6 +4486,66 @@ def parse_attendance_for_dashboard(input_path, extension, mapping, event_classif
     if not insights:
         insights.append({"level": "info", "icon": "✅", "text": "לא זוהו חריגות מרכזיות בדוח הזה"})
 
+    # Enrich daily rows with extras keyed by (employee_name, payroll_number, date)
+    if field_classifications:
+        emp_daily_lookup = {}
+        for emp in normalized_employees:
+            emp_daily_lookup[(emp["name"], emp["payroll_number"])] = emp.get("_daily_extras", {}) or {}
+        for row in normalized_daily:
+            extras_for_day = emp_daily_lookup.get((row["employee_name"], row["payroll_number"]), {}).get(row["date"], {}) or {}
+            row_extras = {}
+            for header, val in extras_for_day.items():
+                spec = field_classifications.get(header) or {}
+                t = spec.get("type")
+                if t == "hours":
+                    try:
+                        row_extras[header] = {"type": "hours", "value": round(float(val), 2), "display": _format_hours_hhmm(float(val))}
+                    except (TypeError, ValueError):
+                        pass
+                elif t == "number":
+                    try:
+                        row_extras[header] = {"type": "number", "value": round(float(val), 4), "display": f"{float(val):g}"}
+                    except (TypeError, ValueError):
+                        pass
+                elif t == "text":
+                    row_extras[header] = {"type": "text", "value": str(val), "display": str(val)}
+            if row_extras:
+                row["extras"] = row_extras
+
+    # Build company-level extra totals per field
+    extra_fields_summary = []
+    for header, spec in (field_classifications or {}).items():
+        t = spec.get("type")
+        if t == "ignore":
+            continue
+        entry = {"header": header, "type": t}
+        if t == "hours":
+            total = sum(
+                (e.get("extras", {}).get(header) or {}).get("value") or 0.0
+                for e in normalized_employees
+            )
+            entry["total"] = round(total, 2)
+            entry["display"] = _format_hours_hhmm(total)
+        elif t == "number":
+            total = sum(
+                (e.get("extras", {}).get(header) or {}).get("value") or 0.0
+                for e in normalized_employees
+            )
+            entry["total"] = round(total, 4)
+            entry["display"] = f"{total:g}" if total else "—"
+        else:
+            count = sum(
+                1 for e in normalized_employees
+                if ((e.get("extras", {}).get(header) or {}).get("value"))
+            )
+            entry["total"] = count
+            entry["display"] = f"{count} עובדים"
+        extra_fields_summary.append(entry)
+
+    # Strip internal bookkeeping before returning
+    for emp in normalized_employees:
+        emp.pop("_daily_extras", None)
+
     return {
         "label": label or (report_meta.get("report_month") or "הדוח הנוכחי"),
         "company_name": report_meta.get("company_name") or "",
@@ -4467,6 +4564,8 @@ def parse_attendance_for_dashboard(input_path, extension, mapping, event_classif
         "entry_hour_distribution": [{"hour": i, "count": entry_hour_counts[i]} for i in range(24) if entry_hour_counts[i] > 0],
         "exit_hour_distribution": [{"hour": i, "count": exit_hour_counts[i]} for i in range(24) if exit_hour_counts[i] > 0],
         "insights": insights,
+        "extra_fields": extra_fields_summary,
+        "field_classifications": field_classifications,
     }
 
 
@@ -4508,6 +4607,255 @@ def compute_period_comparison(current, previous):
     return {"kpis": comparisons, "insights": insights}
 
 
+# ------------------------------------------------------------
+# Dynamic field discovery for POWERBI — scans every column in
+# the report (not just the preset Rimon fields) and lets the
+# user confirm which fields to include in the dashboard.
+# ------------------------------------------------------------
+
+POWERBI_KNOWN_HEADERS_TO_IGNORE = {
+    "תאריך", "יום", "כניסה", "יציאה", "אירוע", "סהכ", "תקן", "חוסר",
+    "שגיאות", "שגיאה", "הערות",
+}
+
+POWERBI_HOURS_HEADER_KEYWORDS = (
+    "שעה", "שעות", "שעת", "רגילות", "נוספות", "עודפות", "עודף",
+    "לילה", "שבת", "חג", "חגים", "הפסקה", "הנקה", "כוננות",
+    "100%", "125%", "150%", "175%", "200%", "מ.שבועי", "שבועי", "מנוחה",
+    "מחלה", "חופשה", "מילואים", "עודף", "שלילי", "חיובי", "אבל",
+    "ש.נ", "ש\"נ", "שנ", "ש.לילה", "ש.חג", "ש.שבת",
+)
+POWERBI_NUMBER_HEADER_KEYWORDS = (
+    "תעריף", "שכר", "סכום", "החזר", "נסיעות", "קמ", "ק\"מ", "ק''מ",
+    "מחלקה", "מס'", "מספר מפעל", "תמורת", "קצובה", "תוספת",
+)
+POWERBI_TEXT_HEADER_KEYWORDS = (
+    "הערה", "הערות", "מיקום", "הסכם", "זיהוי", "סטטוס",
+    "מבנה", "תפקיד", "משמרת",
+)
+
+
+def _powerbi_is_time_value(text):
+    t = str(text or "").strip()
+    return bool(re.search(r"\d{1,2}:\d{2}", t))
+
+
+def _powerbi_is_numeric_value(text):
+    t = str(text or "").strip()
+    if not t:
+        return False
+    t2 = t.replace(",", ".").replace("%", "").replace("+", "").lstrip("-")
+    try:
+        float(t2)
+        return True
+    except (TypeError, ValueError):
+        return False
+
+
+def classify_dashboard_field(header, samples):
+    """Guess whether a column is hours / number / text / ignore based on header + samples."""
+    h_raw = str(header or "").strip()
+    if not h_raw:
+        return "ignore"
+    h_norm = normalize_token(h_raw)
+    if h_norm in POWERBI_KNOWN_HEADERS_TO_IGNORE:
+        return "ignore"
+    # Header-based hints take priority; number keywords first so
+    # "תעריף שעתי" (hourly wage) classifies as number, not hours.
+    for kw in POWERBI_NUMBER_HEADER_KEYWORDS:
+        if kw in h_raw:
+            return "number"
+    for kw in POWERBI_TEXT_HEADER_KEYWORDS:
+        if kw in h_raw:
+            return "text"
+    for kw in POWERBI_HOURS_HEADER_KEYWORDS:
+        if kw in h_raw:
+            return "hours"
+    # Fall back to sample inspection
+    n_time = n_num = n_text = 0
+    for s in samples:
+        if not s:
+            continue
+        if _powerbi_is_time_value(s):
+            n_time += 1
+        elif _powerbi_is_numeric_value(s):
+            n_num += 1
+        else:
+            n_text += 1
+    if n_time and n_time >= max(n_num, n_text):
+        return "hours"
+    if n_num and n_num >= n_text:
+        return "number"
+    if n_text:
+        return "text"
+    return "ignore"
+
+
+def _sheet_header_row_is_valid(sheet, kind, header_row):
+    """True only if the detected row actually contains Rimon anchor headers
+    (so we don't treat a stray data row like '03:30' as a header)."""
+    _, cols = get_excel_dims(sheet, kind)
+    anchors = {"תאריך", "יום", "כניסה", "יציאה", "אירוע", "סהכ", "תקן", "חוסר", "שגיאות", "שגיאה"}
+    for col_idx in range(cols):
+        token = normalize_token(stringify_excel_value(get_excel_cell(sheet, kind, header_row, col_idx, "")))
+        if token in anchors:
+            return True
+    return False
+
+
+def scan_dashboard_fields(input_path, extension, known_mapping=None):
+    """Scan every sheet for columns that aren't already mapped to known Rimon fields.
+    Returns a deterministic list of {header, samples, suggested_type} dicts."""
+    kind, wb = open_excel_workbook(input_path, extension)
+    known_mapping = known_mapping or {}
+    known_col_values = {str(v) for v in known_mapping.values() if v and str(v).startswith("col:")}
+    fields = {}
+    try:
+        for sheet in iter_excel_sheets(kind, wb):
+            rows, cols = get_excel_dims(sheet, kind)
+            header_row = detect_rimon_header_row(sheet, kind)
+            if not _sheet_header_row_is_valid(sheet, kind, header_row):
+                continue
+            sheet_map = detect_rimon_sheet_column_map(sheet, kind, header_row)
+            sheet_known = set(known_col_values)
+            for v in sheet_map.values():
+                if v and str(v).startswith("col:"):
+                    sheet_known.add(str(v))
+            for col_idx in range(cols):
+                if ("col:" + str(col_idx)) in sheet_known:
+                    continue
+                header = stringify_excel_value(get_excel_cell(sheet, kind, header_row, col_idx, "")).strip()
+                if not header:
+                    continue
+                if normalize_token(header) in POWERBI_KNOWN_HEADERS_TO_IGNORE:
+                    continue
+                entry = fields.setdefault(header, {"header": header, "samples": [], "occurrences": 0})
+                entry["occurrences"] += 1
+                if len(entry["samples"]) < 5:
+                    for r in range(header_row + 1, min(header_row + 20, rows)):
+                        v = stringify_excel_value(get_excel_cell(sheet, kind, r, col_idx, "")).strip()
+                        if v and v not in entry["samples"]:
+                            entry["samples"].append(v)
+                        if len(entry["samples"]) >= 5:
+                            break
+    finally:
+        if kind == "xlsx":
+            wb.close()
+    result = []
+    for header, info in fields.items():
+        suggested = classify_dashboard_field(header, info["samples"])
+        result.append({
+            "header": header,
+            "samples": info["samples"],
+            "occurrences": info["occurrences"],
+            "suggested_type": suggested,
+        })
+    type_order = {"hours": 0, "number": 1, "text": 2, "ignore": 3}
+    result.sort(key=lambda x: (type_order.get(x["suggested_type"], 9), x["header"]))
+    return result
+
+
+def collect_rimon_dashboard_field_values(input_path, extension, mapping, field_specs):
+    """Second pass over the report to extract values for every field in field_specs.
+
+    field_specs: {header: {"type": "hours"|"number"|"text"|"ignore"}}
+    Returns {(employee_name, payroll_number): {
+        "totals": {header: sum_hours_or_number},
+        "daily":  {date_iso: {header: value}},
+        "text":   {header: set_of_values}
+    }}.
+    Hours columns are summed as float hours. Number columns summed as float.
+    Text columns are collected as a list of unique values.
+    """
+    active_specs = {h: spec for h, spec in (field_specs or {}).items() if spec.get("type") and spec.get("type") != "ignore"}
+    if not active_specs:
+        return {}
+    kind, wb = open_excel_workbook(input_path, extension)
+    out = {}
+    try:
+        for sheet in iter_excel_sheets(kind, wb):
+            rows, cols = get_excel_dims(sheet, kind)
+            header_row = detect_rimon_header_row(sheet, kind)
+            if not _sheet_header_row_is_valid(sheet, kind, header_row):
+                continue
+            sheet_col_map = detect_rimon_sheet_column_map(sheet, kind, header_row)
+            sheet_mapping = dict(mapping)
+            for field, source in sheet_col_map.items():
+                sheet_mapping[field] = source
+
+            col_for_header = {}
+            for col_idx in range(cols):
+                h = stringify_excel_value(get_excel_cell(sheet, kind, header_row, col_idx, "")).strip()
+                if h in active_specs and h not in col_for_header:
+                    col_for_header[h] = col_idx
+            if not col_for_header:
+                continue
+
+            employee_name = stringify_excel_value(extract_rimon_mapping_value(sheet, kind, sheet_mapping.get("employee_name_source")))
+            payroll_number = stringify_excel_value(extract_rimon_mapping_value(sheet, kind, sheet_mapping.get("payroll_number_source")))
+            if not employee_name:
+                employee_name = getattr(sheet, "name", "עובד")
+            emp_key = (employee_name, payroll_number)
+            emp_data = out.setdefault(emp_key, {"totals": {}, "daily": {}, "text": {}})
+
+            current_date = None
+            for row_idx in range(header_row + 1, rows):
+                row_date = parse_excel_date_generic(
+                    kind, wb,
+                    extract_rimon_mapping_value(sheet, kind, sheet_mapping.get("date_source"), row_idx),
+                )
+                if row_date:
+                    current_date = row_date
+                # Footer guard: stop if we hit a monthly-totals row
+                total_v = stringify_excel_value(extract_rimon_mapping_value(sheet, kind, sheet_mapping.get("total_hours_source"), row_idx))
+                std_v = stringify_excel_value(extract_rimon_mapping_value(sheet, kind, sheet_mapping.get("standard_hours_source"), row_idx))
+                missing_v = stringify_excel_value(extract_rimon_mapping_value(sheet, kind, sheet_mapping.get("missing_hours_source"), row_idx))
+                if not row_date:
+                    def _hours_over_day(text):
+                        parsed = try_parse_hours_value(text) if text else None
+                        return parsed is not None and parsed > 24.0
+                    has_monthly_total = any(_hours_over_day(v) for v in (total_v, std_v, missing_v))
+                    if has_monthly_total:
+                        break
+
+                if current_date is None:
+                    continue
+
+                day_iso = current_date.isoformat()
+                for header, col_idx in col_for_header.items():
+                    spec = active_specs[header]
+                    raw = stringify_excel_value(get_excel_cell(sheet, kind, row_idx, col_idx, "")).strip()
+                    if not raw:
+                        continue
+                    t = spec.get("type")
+                    if t == "hours":
+                        parsed = try_parse_hours_value(raw)
+                        if parsed is not None:
+                            emp_data["totals"][header] = emp_data["totals"].get(header, 0.0) + parsed
+                            day_map = emp_data["daily"].setdefault(day_iso, {})
+                            day_map[header] = day_map.get(header, 0.0) + parsed
+                    elif t == "number":
+                        num_raw = raw.replace(",", ".").replace("%", "").replace("+", "")
+                        try:
+                            num_val = float(num_raw)
+                            emp_data["totals"][header] = emp_data["totals"].get(header, 0.0) + num_val
+                            day_map = emp_data["daily"].setdefault(day_iso, {})
+                            day_map[header] = day_map.get(header, 0.0) + num_val
+                        except (TypeError, ValueError):
+                            pass
+                    elif t == "text":
+                        bucket = emp_data["text"].setdefault(header, [])
+                        if raw not in bucket and len(bucket) < 120:
+                            bucket.append(raw)
+                        day_map = emp_data["daily"].setdefault(day_iso, {})
+                        if header not in day_map:
+                            day_map[header] = raw
+    finally:
+        if kind == "xlsx":
+            wb.close()
+    return out
+
+
 def run_powerbi_attendance(input_path, output_path, extension, options=None):
     """Produce a POWERBI JSON payload from one or two attendance reports.
 
@@ -4527,12 +4875,25 @@ def run_powerbi_attendance(input_path, output_path, extension, options=None):
         except (TypeError, ValueError):
             event_classifications = {}
 
+    field_classifications = {}
+    raw_fields = options.get("field_classifications_json", "")
+    if raw_fields:
+        try:
+            parsed_fields = json.loads(raw_fields)
+            if isinstance(parsed_fields, dict):
+                for header, spec in parsed_fields.items():
+                    if isinstance(spec, dict) and spec.get("type") in ("hours", "number", "text", "ignore"):
+                        field_classifications[str(header)] = {"type": str(spec["type"])}
+        except (TypeError, ValueError):
+            field_classifications = {}
+
     current_label = (options.get("current_label") or "הדוח הנוכחי").strip() or "הדוח הנוכחי"
     previous_label = (options.get("previous_label") or "תקופה קודמת").strip() or "תקופה קודמת"
 
     current = parse_attendance_for_dashboard(
         input_path, extension, mapping,
         event_classifications=event_classifications,
+        field_classifications=field_classifications,
         label=current_label,
     )
     previous = None
@@ -4543,6 +4904,7 @@ def run_powerbi_attendance(input_path, output_path, extension, options=None):
             previous = parse_attendance_for_dashboard(
                 compare_path, compare_ext, mapping,
                 event_classifications=event_classifications,
+                field_classifications=field_classifications,
                 label=previous_label,
             )
         except Exception:
@@ -4559,6 +4921,7 @@ def run_powerbi_attendance(input_path, output_path, extension, options=None):
         "comparison": comparison,
         "mapping": mapping,
         "event_classifications": event_classifications,
+        "field_classifications": field_classifications,
     }
 
     with open(output_path, "w", encoding="utf-8") as f:
@@ -8601,6 +8964,7 @@ SCRIPT_REGISTRY["powerbi_attendance"] = {
     "output_extension": "json",
     "requires_mapping_confirmation": True,
     "requires_event_classification": True,
+    "requires_field_detection": True,
     "success_title": "הדשבורד מוכן",
     "success_action": "פתח דשבורד",
     "retry_action": "עיבוד דוח נוסף",
@@ -12190,6 +12554,120 @@ def build_home_office_event_classification_form(script_id, temp_upload_path, tem
     )
 
 
+def build_powerbi_field_classification_form(
+    script_id, temp_upload_path, temp_upload_ext, mapping,
+    event_classifications, detected_fields,
+    current_field_classifications=None, save_as_template=False, template_name_value="",
+):
+    """Step 3 of POWERBI flow: show every extra field detected in the report and
+    let the user choose how it should be presented (hours / number / text / ignore)."""
+    current_field_classifications = current_field_classifications or {}
+
+    category_options = [
+        ("hours", "שעות (סכום HH:MM)", "DBEAFE", "1e40af"),
+        ("number", "מספר (סכום)", "DCFCE7", "166534"),
+        ("text", "טקסט (איסוף ערכים)", "FEF3C7", "92400e"),
+        ("ignore", "לא רלוונטי", "F1F5F9", "475569"),
+    ]
+
+    rows_html = ""
+    for idx, field in enumerate(detected_fields):
+        header = field["header"]
+        suggested = current_field_classifications.get(header, {}).get("type") or field.get("suggested_type") or "ignore"
+        samples_preview = ", ".join(field.get("samples", [])[:3])
+        radios_html = ""
+        for cat_id, cat_label, cat_bg, cat_fg in category_options:
+            checked = " checked" if suggested == cat_id else ""
+            radios_html += (
+                '<label style="display:inline-flex;align-items:center;gap:6px;padding:7px 12px;border-radius:999px;cursor:pointer;background:#' + cat_bg + ';border:1px solid #cbd5e1;color:#' + cat_fg + ';font-size:12px;font-weight:600;margin-inline-end:6px;margin-bottom:4px">'
+                + '<input type="radio" name="field_type__' + esc(header) + '" value="' + cat_id + '"' + checked + ' style="margin:0">'
+                + esc(cat_label)
+                + '</label>'
+            )
+        bg_color = "#ffffff" if idx % 2 == 0 else "#f8fafc"
+        rows_html += (
+            '<div style="display:grid;grid-template-columns:minmax(200px,280px) minmax(0,1fr);gap:14px;align-items:center;padding:10px 12px;border-bottom:1px solid #e2e8f0;background:' + bg_color + '">'
+            + '<div>'
+            + '<div style="font-size:14px;font-weight:700;color:#0f172a;word-break:break-word">' + esc(header) + '</div>'
+            + ('<div style="font-size:11px;color:#64748b;margin-top:2px">דוגמאות: ' + esc(samples_preview) + '</div>' if samples_preview else '')
+            + '</div>'
+            + '<div style="display:flex;flex-wrap:wrap;align-items:center">' + radios_html + '</div>'
+            + '</div>'
+        )
+
+    if not rows_html:
+        rows_html = '<div style="padding:20px;text-align:center;color:#64748b;font-size:13px">לא נמצאו שדות נוספים מעבר לשדות שכבר מופו. לחצו על "הפקת דשבורד" להמשך.</div>'
+
+    mapping_hidden_fields = ""
+    for key, value in (mapping or {}).items():
+        mapping_hidden_fields += '<input type="hidden" name="' + esc(key) + '" value="' + esc(str(value or "")) + '">'
+
+    mapping_json = json.dumps(mapping or {}, ensure_ascii=False)
+    classifications_json = json.dumps(event_classifications or {}, ensure_ascii=False)
+
+    save_checked = " checked" if save_as_template else ""
+    name_display = "" if not save_as_template else "block"
+
+    return (
+        '<form method="POST" id="fieldClassificationForm">'
+        + '<input type="hidden" name="flow_mode" value="confirm_fields">'
+        + '<input type="hidden" name="temp_upload_path" value="' + esc(temp_upload_path) + '">'
+        + '<input type="hidden" name="temp_upload_ext" value="' + esc(temp_upload_ext) + '">'
+        + '<input type="hidden" name="mapping_json" value="' + esc(mapping_json) + '">'
+        + '<input type="hidden" name="event_classifications_json" value="' + esc(classifications_json) + '">'
+        + mapping_hidden_fields
+        + '<div style="background:#fafcff;border:1px solid #dbeafe;border-radius:14px;padding:1rem;margin-bottom:1rem">'
+        + '<div style="font-size:15px;font-weight:700;color:#1e3a8a;margin-bottom:6px">שדות שזוהו בדוח — שלב 3 מתוך 3</div>'
+        + '<div style="font-size:13px;color:#475569;line-height:1.7;margin-bottom:12px">מצאנו '
+        + str(len(detected_fields))
+        + ' שדות נוספים בדוח שלא קיבלו התייחסות במיפוי הבסיסי. סמנו לכל שדה איך להציג אותו בדשבורד. "שעות" מסכם HH:MM. "מספר" מסכם כמספר. "טקסט" אוסף את הערכים. "לא רלוונטי" מתעלם לחלוטין.</div>'
+        + '<div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:10px;padding:10px 14px;margin-bottom:14px;font-size:12px;color:#1e40af;line-height:1.7">'
+        + '💡 ברירת המחדל היא החכמה שלנו — שעות ושעות עודפות סומנו אוטומטית כ"שעות", מספרי מחלקה וק"מ כ"מספר", והערות ומיקומים כ"טקסט".'
+        + '</div>'
+        + '<div style="border:1px solid #e2e8f0;border-radius:12px;overflow:hidden;background:#ffffff;margin-bottom:14px">'
+        + '<div style="display:grid;grid-template-columns:minmax(200px,280px) minmax(0,1fr);gap:14px;padding:10px 12px;background:#1e3a8a;color:#ffffff;font-weight:700;font-size:13px">'
+        + '<div>שם השדה בדוח</div><div>סוג התצוגה</div>'
+        + '</div>'
+        + rows_html
+        + '</div>'
+        + '<div style="background:#f0fdf4;border:1px solid #86efac;border-radius:12px;padding:12px 14px;margin-bottom:14px">'
+        + '<label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-bottom:6px">'
+        + '<input type="checkbox" name="save_template" id="powerbiSaveTemplate" value="1"' + save_checked + ' style="margin:0;width:16px;height:16px">'
+        + '<span style="font-size:14px;font-weight:700;color:#166534">שמירה כתבנית</span>'
+        + '</label>'
+        + '<div style="font-size:12px;color:#475569;line-height:1.6;margin-bottom:8px;margin-inline-start:24px">שמירה כתבנית תשמור את מיפוי השדות, סיווג האירועים וסיווג השדות הנוספים — בפעם הבאה שהלקוח יעלה דוח באותו פורמט, הכל יטען אוטומטית.</div>'
+        + '<div id="powerbiTemplateNameWrap" style="display:' + name_display + ';margin-inline-start:24px">'
+        + '<label style="font-size:12px;font-weight:600;color:#475569;display:block;margin-bottom:4px">שם התבנית</label>'
+        + '<input type="text" name="template_name" value="' + esc(template_name_value) + '" placeholder="לדוגמה: תבנית פלמינגו" style="padding:7px 10px;border:1.5px solid #86efac;border-radius:8px;font-size:13px;font-family:inherit;width:100%;max-width:320px;outline:none">'
+        + '</div>'
+        + '</div>'
+        + '<div style="display:flex;gap:10px;flex-wrap:wrap;justify-content:center">'
+        + '<button type="submit" id="fieldClassifyConfirmButton" class="btn btn-blue" style="min-width:240px">📊 הפקת הדשבורד</button>'
+        + '<a href="/run/' + script_id + '" class="btn btn-gray" style="text-decoration:none;display:inline-flex;align-items:center;justify-content:center;min-width:150px">העלאת קובץ חדש</a>'
+        + '</div>'
+        + '</div>'
+        + '<div id="fieldClassifyOverlay" style="display:none;position:fixed;inset:0;background:rgba(248,250,252,.78);backdrop-filter:blur(2px);z-index:80;align-items:center;justify-content:center;padding:20px">'
+        + '<div style="width:100%;max-width:320px;background:#ffffff;border:1px solid #dbeafe;border-radius:18px;box-shadow:0 20px 50px rgba(15,23,42,.14);padding:24px 20px;text-align:center">'
+        + '<div style="width:42px;height:42px;border-radius:999px;border:3px solid #bfdbfe;border-top-color:#2563eb;margin:0 auto 14px;animation:mappingSpin .9s linear infinite"></div>'
+        + '<div style="font-size:16px;font-weight:800;color:#1e3a8a;margin-bottom:6px">הדשבורד בהכנה</div>'
+        + '<div style="font-size:13px;line-height:1.7;color:#475569">המערכת סוחפת את כל השדות ובונה את הדשבורד. הפעולה עשויה להימשך מעט זמן בדוחות גדולים.</div>'
+        + '</div></div>'
+        + '<script>'
+        + '(function(){'
+        + 'var form=document.getElementById("fieldClassificationForm");'
+        + 'var btn=document.getElementById("fieldClassifyConfirmButton");'
+        + 'var overlay=document.getElementById("fieldClassifyOverlay");'
+        + 'var saveCheck=document.getElementById("powerbiSaveTemplate");'
+        + 'var nameWrap=document.getElementById("powerbiTemplateNameWrap");'
+        + 'if(saveCheck&&nameWrap){saveCheck.addEventListener("change",function(){nameWrap.style.display=saveCheck.checked?"block":"none";});}'
+        + 'if(form){form.addEventListener("submit",function(){if(btn){btn.disabled=true;btn.textContent="הפקת הדשבורד התחילה...";}if(overlay){overlay.style.display="flex";}document.body.style.overflow="hidden";});}'
+        + '})();'
+        + '</script>'
+        + '<style>@keyframes mappingSpin{from{transform:rotate(0deg);}to{transform:rotate(360deg);}}</style>'
+        + '</form>'
+    )
+
+
 def build_event_classification_form(script_id, temp_upload_path, temp_upload_ext, mapping, distinct_events, current_classifications):
     category_options = [
         ("office", "עבודה במשרד", "DCFCE7", "166534"),
@@ -14695,7 +15173,7 @@ def run_script(script_id):
 
     if request.method == "POST":
         flow_mode = request.form.get("flow_mode", "").strip()
-        if scr.get("requires_mapping_confirmation") and flow_mode not in ("confirm_mapping", "confirm_events", "confirm_notes"):
+        if scr.get("requires_mapping_confirmation") and flow_mode not in ("confirm_mapping", "confirm_events", "confirm_notes", "confirm_fields"):
             file_obj = request.files.get("file")
             validation_error, ext = validate_upload(file_obj)
             if validation_error == "missing":
@@ -15618,6 +16096,31 @@ def run_script(script_id):
                         classifications[event_value] = val
             if not inp or not os.path.exists(inp):
                 error = '<div class="flash-err">הקובץ הזמני לא נמצא. יש להעלות את הדוח מחדש.</div>'
+            elif scr.get("requires_field_detection"):
+                # POWERBI: insert step 3 — field classification — before running the processor.
+                try:
+                    detected_fields = scan_dashboard_fields(inp, ext, mapping)
+                except (xlrd.biffh.XLRDError, BadZipFile, OSError, ValueError):
+                    detected_fields = []
+                    error = '<div class="flash-err">' + scr["processing_error"] + '</div>'
+                saved_field_classifications = {}
+                mapping_templates = get_mapping_templates(session["user_id"], script_id)
+                selected_template_id = request.form.get("selected_template_id", "").strip()
+                for tpl in mapping_templates:
+                    if str(tpl.get("id")) == selected_template_id:
+                        tpl_mapping = tpl.get("mapping") or {}
+                        fc = tpl_mapping.get("field_classifications") or {}
+                        if isinstance(fc, dict):
+                            saved_field_classifications = {k: v if isinstance(v, dict) else {"type": str(v)} for k, v in fc.items()}
+                        break
+                mapping_confirmation_html = build_powerbi_field_classification_form(
+                    script_id, inp, ext, mapping,
+                    classifications, detected_fields,
+                    current_field_classifications=saved_field_classifications,
+                    save_as_template=request.form.get("save_template") == "1",
+                    template_name_value=request.form.get("template_name", "").strip() or get_next_mapping_template_name(mapping_templates),
+                )
+                info_message = '<div class="flash" style="background:#eff6ff;border-color:#bfdbfe;color:#1d4ed8">זיהינו ' + str(len(detected_fields)) + ' שדות נוספים בדוח. סמנו איך להציג כל אחד בדשבורד ואז לחצו "הפקת הדשבורד".</div>'
             else:
                 uid = str(uuid.uuid4())[:8]
                 options = {key: value for key, value in mapping.items() if isinstance(key, str)}
@@ -15633,6 +16136,60 @@ def run_script(script_id):
                         template_name = request.form.get("template_name", "").strip() or get_next_mapping_template_name(get_mapping_templates(session["user_id"], script_id))
                         template_mapping = {k: v for k, v in mapping.items() if isinstance(k, str)}
                         template_mapping["event_classifications"] = classifications
+                        save_mapping_template(session["user_id"], script_id, template_name, template_mapping)
+                except (xlrd.biffh.XLRDError, BadZipFile, OSError, ValueError):
+                    error = '<div class="flash-err">' + scr["processing_error"] + '</div>'
+                except Exception as e:
+                    error = '<div class="flash-err">' + text["run_unexpected_error_prefix"] + str(e) + "</div>"
+                finally:
+                    try:
+                        os.remove(inp)
+                    except OSError:
+                        pass
+        elif scr.get("requires_field_detection") and flow_mode == "confirm_fields":
+            inp = request.form.get("temp_upload_path", "").strip()
+            ext = request.form.get("temp_upload_ext", "").strip().lower()
+            mapping_json = request.form.get("mapping_json", "").strip() or "{}"
+            events_json = request.form.get("event_classifications_json", "").strip() or "{}"
+            try:
+                mapping = json.loads(mapping_json)
+                if not isinstance(mapping, dict):
+                    mapping = {}
+            except (TypeError, ValueError):
+                mapping = {}
+            try:
+                event_classifications = json.loads(events_json)
+                if not isinstance(event_classifications, dict):
+                    event_classifications = {}
+            except (TypeError, ValueError):
+                event_classifications = {}
+            allowed_field_types = ("hours", "number", "text", "ignore")
+            field_classifications = {}
+            field_prefix = "field_type__"
+            for key, val in request.form.items():
+                if key.startswith(field_prefix):
+                    header = key[len(field_prefix):]
+                    if val in allowed_field_types:
+                        field_classifications[header] = {"type": val}
+            if not inp or not os.path.exists(inp):
+                error = '<div class="flash-err">הקובץ הזמני לא נמצא. יש להעלות את הדוח מחדש.</div>'
+            else:
+                uid = str(uuid.uuid4())[:8]
+                options = {key: value for key, value in mapping.items() if isinstance(key, str)}
+                options["event_classifications_json"] = json.dumps(event_classifications, ensure_ascii=False)
+                options["field_classifications_json"] = json.dumps(field_classifications, ensure_ascii=False)
+                result_name = build_output_filename(scr, uid, options)
+                out = str(OUTPUT_FOLDER / result_name)
+                try:
+                    execution_result = execute_script(scr, inp, out, ext, options) or {}
+                    result = result_name
+                    processing_warnings = execution_result.get("warnings", [])
+                    log_user_activity("generate_report", "הפיק דוח", script_id, scr["name"], result_name)
+                    if request.form.get("save_template") == "1":
+                        template_name = request.form.get("template_name", "").strip() or get_next_mapping_template_name(get_mapping_templates(session["user_id"], script_id))
+                        template_mapping = {k: v for k, v in mapping.items() if isinstance(k, str)}
+                        template_mapping["event_classifications"] = event_classifications
+                        template_mapping["field_classifications"] = field_classifications
                         save_mapping_template(session["user_id"], script_id, template_name, template_mapping)
                 except (xlrd.biffh.XLRDError, BadZipFile, OSError, ValueError):
                     error = '<div class="flash-err">' + scr["processing_error"] + '</div>'
@@ -16119,6 +16676,10 @@ def build_powerbi_excel_export(payload, state):
         ("שיעור עבודה מהבית", f"{int((kpis.get('home_ratio', 0) or 0) * 100)}%"),
         ("שיעור היעדרויות", f"{int((kpis.get('absence_ratio', 0) or 0) * 100)}%"),
     ]
+    extra_fields = source.get("extra_fields") or []
+    for x in extra_fields:
+        if x.get("type") in ("hours", "number"):
+            kpi_rows.append((f"{x['header']} (סה״כ)", x.get("display", "—")))
     r = 4
     for label, value in kpi_rows:
         ws.cell(row=r, column=1, value=label).font = Font(bold=True, color="1E3A8A", size=11)
@@ -16126,7 +16687,9 @@ def build_powerbi_excel_export(payload, state):
         r += 1
 
     r += 2
-    headers = ["שם עובד", "מספר שכר", "מחלקה", "ימי משרד", "ימי עבודה מהבית", "ימי היעדרות", "ימי שגיאה", "שעות תקן", "שעות חוסר"]
+    numeric_extras = [x for x in extra_fields if x.get("type") in ("hours", "number")]
+    extra_headers = [x["header"] for x in numeric_extras]
+    headers = ["שם עובד", "מספר שכר", "מחלקה", "ימי משרד", "ימי עבודה מהבית", "ימי היעדרות", "ימי שגיאה", "שעות תקן", "שעות חוסר"] + extra_headers
     for col_idx, h in enumerate(headers, 1):
         c = ws.cell(row=r, column=col_idx, value=h)
         c.font = header_font
@@ -16147,6 +16710,9 @@ def build_powerbi_excel_export(payload, state):
             emp.get("standard_hours_hhmm", "00:00"),
             emp.get("missing_hours_hhmm", "00:00"),
         ]
+        for header in extra_headers:
+            ext = (emp.get("extras") or {}).get(header)
+            values.append(ext.get("display") if ext else "—")
         for col_idx, v in enumerate(values, 1):
             c = ws.cell(row=r, column=col_idx, value=v)
             c.font = body_font
@@ -16155,7 +16721,7 @@ def build_powerbi_excel_export(payload, state):
                 c.fill = fill
         r += 1
 
-    widths = [22, 12, 18, 12, 16, 12, 12, 14, 14]
+    widths = [22, 12, 18, 12, 16, 12, 12, 14, 14] + [14] * len(extra_headers)
     for i, w in enumerate(widths, 1):
         ws.column_dimensions[get_column_letter(i)].width = w
 
@@ -16389,6 +16955,7 @@ let STATE = {
   search: "",
   sortField: "name",
   sortDir: "asc",
+  hiddenExtras: new Set(),
 };
 let CHART_REFS = {};
 
@@ -16487,6 +17054,27 @@ function renderKPIs() {
       ${t.sub ? `<div class="kpi-sub">${t.sub}</div>` : ''}
       ${t.delta ? fmtDelta(t.delta, t.isPct) : ''}
     </div>`).join('') + '</div>';
+}
+
+function renderExtraFields() {
+  const src = heSource();
+  const extras = src.extra_fields || [];
+  const active = extras.filter(x => x.type !== "ignore");
+  if (!active.length) return '';
+  const tileFor = (x) => {
+    const typeBadge = x.type === "hours" ? '<span class="badge badge-blue">שעות</span>' : x.type === "number" ? '<span class="badge badge-green">מספר</span>' : '<span class="badge badge-amber">טקסט</span>';
+    return `
+      <div class="kpi">
+        <div class="kpi-label">${x.header}${' ' + typeBadge}</div>
+        <div class="kpi-value" style="font-size:22px">${x.display || '—'}</div>
+        <div class="kpi-sub">סכום על כל העובדים</div>
+      </div>`;
+  };
+  return `
+    <div class="section-head" style="margin-bottom:10px">
+      <h2><span class="emoji">✨</span>שעות ושדות נוספים שזוהו בדוח <span style="font-size:13px;color:#64748b;font-weight:500;margin-right:4px">· ${active.length} שדות</span></h2>
+    </div>
+    <div class="kpi-grid">${active.map(tileFor).join('')}</div>`;
 }
 
 function renderCharts() {
@@ -16639,31 +17227,59 @@ function filteredEmployees() {
   }
   const dir = STATE.sortDir === "asc" ? 1 : -1;
   const f = STATE.sortField;
+  const getVal = (emp) => {
+    if (f.startsWith("extra:")) {
+      const h = f.slice(6);
+      const ext = (emp.extras || {})[h];
+      return ext ? ext.value : 0;
+    }
+    return emp[f];
+  };
   list.sort((a, b) => {
-    const va = a[f], vb = b[f];
+    const va = getVal(a), vb = getVal(b);
     if (typeof va === "number" && typeof vb === "number") return (va - vb) * dir;
     return String(va || "").localeCompare(String(vb || ""), "he") * dir;
   });
   return list;
 }
 
+function visibleExtraFields() {
+  const src = heSource();
+  const extras = (src.extra_fields || []).filter(x => x.type === "hours" || x.type === "number");
+  return extras.filter(x => !STATE.hiddenExtras.has(x.header));
+}
+
 function renderEmployees() {
   const list = filteredEmployees();
   const src = heSource();
   const total = (src.employees || []).length;
+  const extras = visibleExtraFields();
+  const allExtras = (src.extra_fields || []).filter(x => x.type === "hours" || x.type === "number");
+  const toggleBtns = allExtras.length ? allExtras.map(x => {
+    const on = !STATE.hiddenExtras.has(x.header);
+    return `<button class="dept-chip${on ? ' active' : ''}" style="font-size:11px" onclick="toggleExtraColumn('${x.header.replace(/'/g, "\\'")}')">${on ? '✓' : '○'} ${x.header}</button>`;
+  }).join('') : '';
   const header = `
     <div class="section-head">
       <h2><span class="emoji">👥</span>רשימת עובדים <span style="font-size:13px;color:#64748b;font-weight:500;margin-right:4px">· מציג ${list.length} מתוך ${total}</span></h2>
       <div class="search-wrap">
         <input class="search-input" placeholder="חיפוש שם / מספר שכר / מחלקה…" value="${STATE.search.replace(/"/g, '&quot;')}" oninput="onSearchChange(event)">
       </div>
-    </div>`;
+    </div>
+    ${allExtras.length ? `<div style="margin-bottom:10px;display:flex;align-items:center;flex-wrap:wrap;gap:6px"><span style="font-size:12px;color:#64748b;margin-left:4px">עמודות נוספות:</span>${toggleBtns}</div>` : ''}`;
   const th = (field, label) => {
     const sorted = STATE.sortField === field;
     const arrow = sorted ? (STATE.sortDir === "asc" ? "▲" : "▼") : "";
     return `<th class="${sorted ? 'sorted' : ''}" onclick="onSortChange('${field}')">${label}${arrow ? `<span class="sort-arrow">${arrow}</span>` : ''}</th>`;
   };
-  const rows = list.length ? list.map((e, idx) => `
+  const extraTh = extras.map(x => `<th class="${STATE.sortField === 'extra:' + x.header ? 'sorted' : ''}" onclick="onSortChange('extra:${x.header.replace(/'/g, "\\'")}')">${x.header}${STATE.sortField === 'extra:' + x.header ? ('<span class="sort-arrow">' + (STATE.sortDir === 'asc' ? '▲' : '▼') + '</span>') : ''}</th>`).join('');
+  const rows = list.length ? list.map((e, idx) => {
+    const extraCells = extras.map(x => {
+      const ext = (e.extras || {})[x.header];
+      const disp = ext ? ext.display : '—';
+      return `<td class="num">${disp}</td>`;
+    }).join('');
+    return `
     <tr onclick='showEmpDetail(${idx})'>
       <td><strong>${e.name || '—'}</strong></td>
       <td class="num">${e.payroll_number || '—'}</td>
@@ -16675,12 +17291,14 @@ function renderEmployees() {
       <td class="num">${e.standard_hours_hhmm}</td>
       <td class="num">${e.missing_hours_hhmm}</td>
       <td>${e.missing_ratio >= 0.2 ? '<span class="badge badge-red">' + fmtPct(e.missing_ratio) + '</span>' : e.missing_ratio > 0 ? '<span class="badge badge-amber">' + fmtPct(e.missing_ratio) + '</span>' : '<span class="badge badge-green">0%</span>'}</td>
-    </tr>`).join('') : `<tr><td colspan="10" class="empty-state">לא נמצאו עובדים מתאימים לסינון</td></tr>`;
+      ${extraCells}
+    </tr>`;
+  }).join('') : `<tr><td colspan="${10 + extras.length}" class="empty-state">לא נמצאו עובדים מתאימים לסינון</td></tr>`;
   const table = `
     <div class="table-wrap">
       <div class="table-scroll">
         <table class="data-table">
-          <thead><tr>${th("name", "שם")} ${th("payroll_number", "מספר שכר")} ${th("department", "מחלקה")} ${th("office_days", "משרד")} ${th("home_days", "בית")} ${th("absence_days", "היעדרות")} ${th("error_days", "שגיאות")} ${th("standard_hours", "שעות תקן")} ${th("missing_hours", "חוסר")} ${th("missing_ratio", "% חוסר")}</tr></thead>
+          <thead><tr>${th("name", "שם")} ${th("payroll_number", "מספר שכר")} ${th("department", "מחלקה")} ${th("office_days", "משרד")} ${th("home_days", "בית")} ${th("absence_days", "היעדרות")} ${th("error_days", "שגיאות")} ${th("standard_hours", "שעות תקן")} ${th("missing_hours", "חוסר")} ${th("missing_ratio", "% חוסר")}${extraTh}</tr></thead>
           <tbody>${rows}</tbody>
         </table>
       </div>
@@ -16695,6 +17313,15 @@ function showEmpDetail(idx) {
   const src = heSource();
   const daily = (src.daily || []).filter(d => d.payroll_number === emp.payroll_number && d.employee_name === emp.name).sort((a, b) => a.date.localeCompare(b.date));
   const eventsSummary = Object.entries(emp.events_days || {}).map(([k, v]) => `<span class="badge badge-blue">${k}: ${v} ימים</span>`).join(' ');
+  const empExtras = emp.extras || {};
+  const extraStatTiles = Object.entries(empExtras)
+    .filter(([_, ext]) => ext && (ext.type === "hours" || ext.type === "number") && ext.value && ext.value !== 0)
+    .map(([k, ext]) => `<div class="emp-stat"><div class="lbl">${k}</div><div class="val" style="font-size:15px">${ext.display}</div></div>`)
+    .join('');
+  const textExtras = Object.entries(empExtras)
+    .filter(([_, ext]) => ext && ext.type === "text" && ext.display && ext.display !== '—')
+    .map(([k, ext]) => `<div style="background:#fef3c7;border:1px solid #fcd34d;border-radius:8px;padding:6px 10px;font-size:11px"><strong>${k}:</strong> ${ext.display}</div>`)
+    .join('');
   const stats = `
     <div class="emp-stats">
       <div class="emp-stat"><div class="lbl">ימי משרד</div><div class="val">${emp.office_days}</div></div>
@@ -16703,12 +17330,27 @@ function showEmpDetail(idx) {
       <div class="emp-stat"><div class="lbl">שעות תקן</div><div class="val">${emp.standard_hours_hhmm}</div></div>
       <div class="emp-stat"><div class="lbl">שעות חוסר</div><div class="val">${emp.missing_hours_hhmm}</div></div>
       <div class="emp-stat"><div class="lbl">% חוסר</div><div class="val">${fmtPct(emp.missing_ratio)}</div></div>
+      ${extraStatTiles}
     </div>`;
+  // Daily extras columns — only non-empty hours/number fields
+  const dailyExtraHeaders = [];
+  for (const d of daily) {
+    for (const [h, ext] of Object.entries(d.extras || {})) {
+      if (ext && (ext.type === "hours" || ext.type === "number") && !dailyExtraHeaders.includes(h)) {
+        dailyExtraHeaders.push(h);
+      }
+    }
+  }
   const daysRows = daily.length ? daily.map(d => {
     const cls = d.is_weekend ? 'weekend' : d.error ? 'error' : '';
     const classBadge = d.classification === "משרד" ? 'badge-blue' : d.classification === "בית" ? 'badge-purple' : d.classification === "היעדרות" ? 'badge-amber' : d.classification === "סוף שבוע" ? 'badge-gray' : d.classification === "שגיאה" ? 'badge-red' : 'badge-gray';
-    return `<tr class="${cls}"><td>${d.date}</td><td>${d.day_name || '—'}</td><td>${d.entry_time || '—'}</td><td>${d.exit_time || '—'}</td><td>${d.total_hours || '—'}</td><td><span class="badge ${classBadge}">${d.classification || '—'}</span></td><td>${d.event || '—'}</td><td>${d.error_text ? '<span class="badge badge-red">' + d.error_text + '</span>' : ''}</td></tr>`;
-  }).join('') : `<tr><td colspan="8" class="empty-state">אין רשומות יומיות</td></tr>`;
+    const extraCells = dailyExtraHeaders.map(h => {
+      const ext = (d.extras || {})[h];
+      return `<td>${ext ? ext.display : '—'}</td>`;
+    }).join('');
+    return `<tr class="${cls}"><td>${d.date}</td><td>${d.day_name || '—'}</td><td>${d.entry_time || '—'}</td><td>${d.exit_time || '—'}</td><td>${d.total_hours || '—'}</td><td><span class="badge ${classBadge}">${d.classification || '—'}</span></td><td>${d.event || '—'}</td>${extraCells}<td>${d.error_text ? '<span class="badge badge-red">' + d.error_text + '</span>' : ''}</td></tr>`;
+  }).join('') : `<tr><td colspan="${8 + dailyExtraHeaders.length}" class="empty-state">אין רשומות יומיות</td></tr>`;
+  const extraThead = dailyExtraHeaders.map(h => `<th>${h}</th>`).join('');
   document.getElementById("empModalBody").innerHTML = `
     <h2>${emp.name}</h2>
     <div class="emp-meta">
@@ -16718,14 +17360,21 @@ function showEmpDetail(idx) {
     </div>
     ${stats}
     ${eventsSummary ? `<div style="margin-bottom:12px;display:flex;flex-wrap:wrap;gap:6px">${eventsSummary}</div>` : ''}
+    ${textExtras ? `<div style="margin-bottom:12px;display:flex;flex-wrap:wrap;gap:6px">${textExtras}</div>` : ''}
     <h3 style="font-size:14px;font-weight:800;color:#1e3a8a;margin-bottom:8px">📅 פירוט יומי (${daily.length} ימים)</h3>
-    <div style="max-height:380px;overflow-y:auto;border:1px solid #e2e8f0;border-radius:10px">
+    <div style="max-height:420px;overflow:auto;border:1px solid #e2e8f0;border-radius:10px">
       <table class="daily-table">
-        <thead><tr><th>תאריך</th><th>יום</th><th>כניסה</th><th>יציאה</th><th>סה״כ</th><th>סיווג</th><th>אירוע</th><th>שגיאה</th></tr></thead>
+        <thead><tr><th>תאריך</th><th>יום</th><th>כניסה</th><th>יציאה</th><th>סה״כ</th><th>סיווג</th><th>אירוע</th>${extraThead}<th>שגיאה</th></tr></thead>
         <tbody>${daysRows}</tbody>
       </table>
     </div>`;
   document.getElementById("empModal").classList.add("open");
+}
+
+function toggleExtraColumn(header) {
+  if (STATE.hiddenExtras.has(header)) STATE.hiddenExtras.delete(header);
+  else STATE.hiddenExtras.add(header);
+  render();
 }
 
 function closeEmpModal(e) { if (e && e.target.id !== "empModal" && e.type !== "click") return; document.getElementById("empModal").classList.remove("open"); }
@@ -16763,7 +17412,7 @@ function render(opts) {
   const root = document.getElementById("root");
   const focusInSearch = opts.preserveFocus && document.activeElement && document.activeElement.classList.contains("search-input");
   const selStart = focusInSearch ? document.activeElement.selectionStart : null;
-  root.innerHTML = renderHero() + renderInsights() + renderKPIs() + renderCharts() + '<div class="section">' + renderDepartments() + '</div>' + '<div class="section">' + renderEmployees() + '</div>';
+  root.innerHTML = renderHero() + renderInsights() + renderKPIs() + '<div class="section">' + renderExtraFields() + '</div>' + renderCharts() + '<div class="section">' + renderDepartments() + '</div>' + '<div class="section">' + renderEmployees() + '</div>';
   drawCharts();
   if (focusInSearch) {
     const inp = document.querySelector(".search-input");
