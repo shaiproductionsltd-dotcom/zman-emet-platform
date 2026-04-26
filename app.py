@@ -9704,6 +9704,17 @@ def init_db():
             contact_id INTEGER NOT NULL,
             PRIMARY KEY (list_id, contact_id))"""
         )
+        db.execute(
+            """CREATE TABLE IF NOT EXISTS msg_templates (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            body TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL)"""
+        )
+        db.execute("CREATE INDEX IF NOT EXISTS idx_msg_templates_user ON msg_templates(user_id)")
+        db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_msg_templates_user_name ON msg_templates(user_id, name)")
         # ── End messaging tables ────────────────────────────────────
 
         existing_columns = get_table_columns(db, "users")
@@ -23133,8 +23144,8 @@ def admin_retention():
 
 
 # ════════════════════════════════════════════════════════════════════
-# Messaging V1 — Phase 1 (Contacts + Lists CRUD only)
-# Strict scope: NO sending, NO templates, NO scheduling, NO providers.
+# Messaging V1 — Phases 1+2 (Contacts, Lists, Templates)
+# Strict scope: contacts, lists, templates only. NO sending, NO scheduling, NO providers.
 # Feature-gated by ENABLE_MESSAGING env var. Returns 404 when disabled.
 # All data scoped by session["user_id"] (matches existing convention).
 # ════════════════════════════════════════════════════════════════════
@@ -23199,8 +23210,281 @@ def _msg_nav():
         '<a href="/messaging" style="padding:8px 14px;background:#eef2ff;color:#3730a3;border-radius:8px;text-decoration:none;font-size:13px;font-weight:600">בית</a>'
         '<a href="/messaging/contacts" style="padding:8px 14px;background:#f1f5f9;color:#0f172a;border-radius:8px;text-decoration:none;font-size:13px;font-weight:600">אנשי קשר</a>'
         '<a href="/messaging/lists" style="padding:8px 14px;background:#f1f5f9;color:#0f172a;border-radius:8px;text-decoration:none;font-size:13px;font-weight:600">רשימות</a>'
+        '<a href="/messaging/templates" style="padding:8px 14px;background:#f1f5f9;color:#0f172a;border-radius:8px;text-decoration:none;font-size:13px;font-weight:600">תבניות</a>'
         '</div>'
     )
+
+
+# ── Phase 2: Templates ─────────────────────────────────────────────
+_MSG_KNOWN_VARS = ("first_name", "last_name", "employee_number", "phone")
+_MSG_PLACEHOLDER_RE = re.compile(r"\{\{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\}\}")
+
+
+def _msg_extract_placeholders(body):
+    if not body:
+        return []
+    return list(_MSG_PLACEHOLDER_RE.findall(body))
+
+
+def _msg_unknown_placeholders(body):
+    found = _msg_extract_placeholders(body)
+    return [p for p in dict.fromkeys(found) if p not in _MSG_KNOWN_VARS]
+
+
+def _msg_render_template(body, vars_dict):
+    if not body:
+        return ""
+    def _sub(m):
+        key = m.group(1)
+        if key in _MSG_KNOWN_VARS:
+            val = vars_dict.get(key, "")
+            return "" if val is None else str(val)
+        return m.group(0)
+    return _MSG_PLACEHOLDER_RE.sub(_sub, body)
+
+
+def _msg_validate_template_fields(name, body):
+    name = (name or "").strip()
+    body = (body or "").rstrip("\n").rstrip()
+    body_for_check = body.strip()
+    if not name:
+        return None, None, "שם תבנית הוא שדה חובה"
+    if len(name) > 80:
+        return None, None, "שם תבנית ארוך מדי (מקסימום 80 תווים)"
+    if not body_for_check:
+        return None, None, "גוף ההודעה הוא שדה חובה"
+    if len(body) > 1000:
+        return None, None, "גוף ההודעה ארוך מדי (מקסימום 1000 תווים)"
+    unknown = _msg_unknown_placeholders(body)
+    if unknown:
+        allowed = ", ".join(_MSG_KNOWN_VARS)
+        return None, None, "משתנים לא מוכרים: " + ", ".join(unknown) + " — מותרים רק: " + allowed
+    return name, body, None
+
+
+def _msg_get_my_template(db, user_id, template_id):
+    return db.execute(
+        "SELECT * FROM msg_templates WHERE id=? AND user_id=?",
+        (template_id, user_id),
+    ).fetchone()
+
+
+def _msg_render_templates_page(uid, selected_id=None, preview_html=None, edit_id=None):
+    with get_db() as db:
+        templates = db.execute(
+            "SELECT * FROM msg_templates WHERE user_id=? ORDER BY updated_at DESC, id DESC",
+            (uid,),
+        ).fetchall()
+        contacts = db.execute(
+            "SELECT * FROM msg_contacts WHERE user_id=? ORDER BY last_name, first_name",
+            (uid,),
+        ).fetchall()
+    rows_html = ""
+    for t in templates:
+        is_editing = (edit_id is not None and edit_id == t["id"])
+        if is_editing:
+            rows_html += (
+                '<tr style="background:#fef9c3">'
+                + '<td colspan="3">'
+                + '<form method="POST" action="/messaging/templates/' + str(t["id"]) + '/edit" style="display:flex;flex-direction:column;gap:6px">'
+                + '<input name="name" value="' + esc(t["name"]) + '" required style="padding:8px">'
+                + '<textarea name="body" rows="4" required style="padding:8px;font-family:inherit">' + esc(t["body"]) + '</textarea>'
+                + '<div style="display:flex;gap:6px">'
+                + '<button type="submit" class="btn btn-blue" style="padding:6px 14px;font-size:12px">שמור</button>'
+                + '<a href="/messaging/templates" class="btn" style="padding:6px 14px;font-size:12px;background:#f1f5f9;color:#0f172a;text-decoration:none">ביטול</a>'
+                + '</div>'
+                + '</form>'
+                + '</td>'
+                + '</tr>'
+            )
+            continue
+        body_preview = (t["body"] or "")
+        if len(body_preview) > 120:
+            body_preview = body_preview[:120] + "…"
+        rows_html += (
+            '<tr>'
+            + '<td style="font-weight:600">' + esc(t["name"]) + '</td>'
+            + '<td style="color:#475569;white-space:pre-wrap">' + esc(body_preview) + '</td>'
+            + '<td style="white-space:nowrap">'
+            + '<form method="POST" action="/messaging/templates/' + str(t["id"]) + '/preview" style="display:inline-flex;gap:4px;align-items:center">'
+            + '<select name="contact_id" style="padding:4px;font-size:12px;max-width:150px">'
+            + '<option value="">— ללא איש קשר (דוגמה) —</option>'
+            + "".join(
+                '<option value="' + str(c["id"]) + '"' + (' selected' if (selected_id == t["id"] and str(c["id"]) == request.form.get("contact_id", "")) else '') + '>'
+                + esc(((c["first_name"] or "") + " " + (c["last_name"] or "")).strip() or c["phone"])
+                + '</option>'
+                for c in contacts
+            )
+            + '</select>'
+            + '<button type="submit" class="btn btn-blue" style="padding:4px 10px;font-size:12px">תצוגה</button>'
+            + '</form>'
+            + ' <a href="/messaging/templates?edit=' + str(t["id"]) + '" class="btn" style="padding:4px 10px;font-size:12px;background:#dbeafe;color:#1e40af;border:1px solid #bfdbfe;text-decoration:none">ערוך</a>'
+            + ' <form method="POST" action="/messaging/templates/' + str(t["id"]) + '/delete" style="display:inline" onsubmit="return confirm(\'למחוק תבנית?\')">'
+            + '<button type="submit" class="btn" style="padding:4px 10px;font-size:12px;background:#fee2e2;color:#991b1b;border:1px solid #fecaca">מחק</button>'
+            + '</form>'
+            + '</td>'
+            + '</tr>'
+        )
+    if not rows_html:
+        rows_html = '<tr><td colspan="3" style="text-align:center;padding:20px;color:#94a3b8">אין תבניות עדיין</td></tr>'
+
+    preview_block = ""
+    if preview_html:
+        preview_block = (
+            '<div style="background:#ecfdf5;border:1px solid #86efac;border-radius:10px;padding:14px;margin-bottom:18px">'
+            + '<div style="font-size:13px;font-weight:700;color:#065f46;margin-bottom:8px">תצוגה מקדימה</div>'
+            + '<div style="background:#fff;border-radius:8px;padding:12px;white-space:pre-wrap;line-height:1.6">' + preview_html + '</div>'
+            + '</div>'
+        )
+
+    body = (
+        '<div class="card">'
+        + _msg_nav()
+        + '<h2 style="margin:0 0 12px 0">תבניות הודעות</h2>'
+        + '<p style="color:#64748b;margin:0 0 18px 0;font-size:13px">משתנים מותרים: '
+        + ", ".join("<code>{{" + v + "}}</code>" for v in _MSG_KNOWN_VARS)
+        + '</p>'
+        + preview_block
+        + '<form method="POST" action="/messaging/templates/new" style="display:flex;flex-direction:column;gap:6px;margin-bottom:18px;padding:12px;background:#f8fafc;border-radius:10px">'
+        + '<input name="name" placeholder="שם תבנית" required style="padding:8px">'
+        + '<textarea name="body" placeholder="תוכן ההודעה. למשל: שלום {{first_name}}, מס׳ עובד {{employee_number}}." rows="3" required style="padding:8px;font-family:inherit"></textarea>'
+        + '<button type="submit" class="btn btn-blue" style="align-self:flex-start">צור תבנית</button>'
+        + '</form>'
+        + '<table style="width:100%;border-collapse:collapse;background:#fff;border:1px solid #e2e8f0;border-radius:10px;overflow:hidden">'
+        + '<thead><tr style="background:#f1f5f9"><th style="padding:8px;text-align:right">שם</th><th style="padding:8px;text-align:right">תוכן</th><th style="padding:8px;text-align:right">פעולות</th></tr></thead>'
+        + '<tbody>' + rows_html + '</tbody>'
+        + '</table>'
+        + '</div>'
+    )
+    return _msg_layout("תבניות", body)
+
+
+@app.route("/messaging/templates", methods=["GET"])
+@login_required
+def messaging_templates():
+    if not is_messaging_enabled():
+        return _msg_404()
+    uid = session["user_id"]
+    edit_raw = (request.args.get("edit") or "").strip()
+    edit_id = int(edit_raw) if edit_raw.isdigit() else None
+    if edit_id is not None:
+        with get_db() as db:
+            if not _msg_get_my_template(db, uid, edit_id):
+                return _msg_404()
+    return _msg_render_templates_page(uid, edit_id=edit_id)
+
+
+@app.route("/messaging/templates/new", methods=["POST"])
+@login_required
+def messaging_templates_new():
+    if not is_messaging_enabled():
+        return _msg_404()
+    uid = session["user_id"]
+    name_raw = request.form.get("name") or ""
+    body_raw = request.form.get("body") or ""
+    name, body, err = _msg_validate_template_fields(name_raw, body_raw)
+    if err:
+        add_flash('<span style="color:#b91c1c">' + esc(err) + '</span>')
+        return redirect("/messaging/templates")
+    now = datetime.utcnow().isoformat()
+    try:
+        with get_db() as db:
+            db.execute(
+                "INSERT INTO msg_templates(user_id,name,body,created_at,updated_at) VALUES (?,?,?,?,?)",
+                (uid, name, body, now, now),
+            )
+            db.commit()
+    except Exception as exc:
+        if is_integrity_error(exc):
+            add_flash('<span style="color:#b91c1c">קיימת תבנית בשם זה</span>')
+            return redirect("/messaging/templates")
+        raise
+    add_flash('<span style="color:#047857">תבנית נוצרה</span>')
+    return redirect("/messaging/templates")
+
+
+@app.route("/messaging/templates/<int:template_id>/edit", methods=["POST"])
+@login_required
+def messaging_templates_edit(template_id):
+    if not is_messaging_enabled():
+        return _msg_404()
+    uid = session["user_id"]
+    name_raw = request.form.get("name") or ""
+    body_raw = request.form.get("body") or ""
+    name, body, err = _msg_validate_template_fields(name_raw, body_raw)
+    if err:
+        add_flash('<span style="color:#b91c1c">' + esc(err) + '</span>')
+        return redirect("/messaging/templates?edit=" + str(template_id))
+    with get_db() as db:
+        existing = _msg_get_my_template(db, uid, template_id)
+        if not existing:
+            return _msg_404()
+        clash = db.execute(
+            "SELECT id FROM msg_templates WHERE user_id=? AND name=? AND id<>?",
+            (uid, name, template_id),
+        ).fetchone()
+        if clash:
+            add_flash('<span style="color:#b91c1c">קיימת תבנית אחרת בשם זה</span>')
+            return redirect("/messaging/templates?edit=" + str(template_id))
+        db.execute(
+            "UPDATE msg_templates SET name=?, body=?, updated_at=? WHERE id=? AND user_id=?",
+            (name, body, datetime.utcnow().isoformat(), template_id, uid),
+        )
+        db.commit()
+    add_flash('<span style="color:#047857">תבנית עודכנה</span>')
+    return redirect("/messaging/templates")
+
+
+@app.route("/messaging/templates/<int:template_id>/delete", methods=["POST"])
+@login_required
+def messaging_templates_delete(template_id):
+    if not is_messaging_enabled():
+        return _msg_404()
+    uid = session["user_id"]
+    with get_db() as db:
+        existing = _msg_get_my_template(db, uid, template_id)
+        if not existing:
+            return _msg_404()
+        db.execute("DELETE FROM msg_templates WHERE id=? AND user_id=?", (template_id, uid))
+        db.commit()
+    add_flash('<span style="color:#047857">תבנית נמחקה</span>')
+    return redirect("/messaging/templates")
+
+
+@app.route("/messaging/templates/<int:template_id>/preview", methods=["POST"])
+@login_required
+def messaging_templates_preview(template_id):
+    if not is_messaging_enabled():
+        return _msg_404()
+    uid = session["user_id"]
+    with get_db() as db:
+        tpl = _msg_get_my_template(db, uid, template_id)
+        if not tpl:
+            return _msg_404()
+        contact_id_raw = (request.form.get("contact_id") or "").strip()
+        if contact_id_raw.isdigit():
+            contact = _msg_get_my_contact(db, uid, int(contact_id_raw))
+            if not contact:
+                return _msg_404()
+            vars_dict = {
+                "first_name": contact["first_name"] or "",
+                "last_name": contact["last_name"] or "",
+                "employee_number": contact["employee_number"] or "",
+                "phone": contact["phone"] or "",
+            }
+        else:
+            vars_dict = {
+                "first_name": "דוגמה",
+                "last_name": "שם משפחה",
+                "employee_number": "12345",
+                "phone": "+972500000000",
+            }
+    rendered = _msg_render_template(tpl["body"], vars_dict)
+    preview_html = esc(rendered)
+    return _msg_render_templates_page(uid, selected_id=template_id, preview_html=preview_html)
+
+
+# ── End Phase 2: Templates ─────────────────────────────────────────
 
 
 @app.route("/messaging")
@@ -23667,7 +23951,7 @@ def messaging_lists_members_remove(list_id, contact_id):
 
 
 # ════════════════════════════════════════════════════════════════════
-# End Messaging V1 — Phase 1
+# End Messaging V1 — Phases 1+2
 # ════════════════════════════════════════════════════════════════════
 
 
