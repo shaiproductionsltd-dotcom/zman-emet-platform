@@ -9715,6 +9715,26 @@ def init_db():
         )
         db.execute("CREATE INDEX IF NOT EXISTS idx_msg_templates_user ON msg_templates(user_id)")
         db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_msg_templates_user_name ON msg_templates(user_id, name)")
+        db.execute(
+            """CREATE TABLE IF NOT EXISTS msg_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            contact_id INTEGER,
+            template_id INTEGER,
+            channel TEXT NOT NULL,
+            provider TEXT NOT NULL,
+            provider_message_id TEXT,
+            provider_status TEXT,
+            provider_cost INTEGER DEFAULT 0,
+            fallback_used INTEGER DEFAULT 0,
+            error_code TEXT,
+            error_raw TEXT,
+            to_phone TEXT NOT NULL,
+            body_rendered TEXT NOT NULL,
+            created_at TEXT NOT NULL)"""
+        )
+        db.execute("CREATE INDEX IF NOT EXISTS idx_msg_logs_user_created ON msg_logs(user_id, created_at)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_msg_logs_provider ON msg_logs(provider)")
         # ── End messaging tables ────────────────────────────────────
 
         existing_columns = get_table_columns(db, "users")
@@ -23485,6 +23505,353 @@ def messaging_templates_preview(template_id):
 
 
 # ── End Phase 2: Templates ─────────────────────────────────────────
+
+
+# ── Phase 3: Provider abstraction (backend-only, no routes) ────────
+# Pure infrastructure: defines a uniform MessagingProvider interface,
+# ships ONE working adapter (MockProvider) and FOUR NotImplementedError
+# stubs (Inforu, 019, Twilio, Meta). No HTTP calls. No real SMS.
+# No new @app.route(...) is added in this phase — verification is via
+# direct helper calls in smoke scripts.
+
+_MSG_VALID_PROVIDER_STATUSES = ("queued", "sent", "delivered", "failed", "unknown")
+_MSG_VALID_ERROR_CODES = (
+    "invalid_recipient",
+    "vendor_unavailable",
+    "rate_limited",
+    "auth_failed",
+    "content_rejected",
+    "not_implemented",
+    "unknown",
+)
+
+
+class MessagingProvider:
+    """Abstract base for messaging providers. Adapters MUST conform to this
+    interface exactly: 4 methods + 3 class attributes. The dispatcher never
+    branches on adapter identity — it talks only through these methods."""
+
+    name = "abstract"
+    channel = "sms"
+    requires_secrets = ()
+
+    def send(self, to_phone, body, sender_id=None, metadata=None):
+        raise NotImplementedError
+
+    def get_status(self, provider_message_id):
+        raise NotImplementedError
+
+    def normalize_error(self, raw_error):
+        raise NotImplementedError
+
+    def estimate_cost(self, message_meta):
+        raise NotImplementedError
+
+
+class MockProvider(MessagingProvider):
+    """Test/dev adapter. Performs no network I/O. Returns success unless
+    the rendered phone ends with `0000` (then simulates invalid_recipient).
+    Used as the default when DEFAULT_SMS_PROVIDER is unset."""
+
+    name = "mock"
+    channel = "sms"
+    requires_secrets = ()
+
+    def send(self, to_phone, body, sender_id=None, metadata=None):
+        if not to_phone:
+            return {
+                "success": False,
+                "provider_message_id": None,
+                "provider_status": "failed",
+                "provider_cost": 0,
+                "error_code": "invalid_recipient",
+                "error_raw": "empty to_phone",
+            }
+        if str(to_phone).endswith("0000"):
+            return {
+                "success": False,
+                "provider_message_id": None,
+                "provider_status": "failed",
+                "provider_cost": 0,
+                "error_code": "invalid_recipient",
+                "error_raw": "mock simulated failure: phone ends with 0000",
+            }
+        return {
+            "success": True,
+            "provider_message_id": "mock-" + uuid.uuid4().hex[:16],
+            "provider_status": "delivered",
+            "provider_cost": 0,
+            "error_code": None,
+            "error_raw": None,
+        }
+
+    def get_status(self, provider_message_id):
+        return {"provider_status": "delivered", "raw": None}
+
+    def normalize_error(self, raw_error):
+        return "unknown"
+
+    def estimate_cost(self, message_meta):
+        return 0
+
+
+def _stub_method(provider_name):
+    def _raise(self, *args, **kwargs):
+        raise NotImplementedError("provider '" + provider_name + "' not implemented in V1")
+    return _raise
+
+
+class InforuProvider(MessagingProvider):
+    name = "inforu"
+    channel = "sms"
+    requires_secrets = ("INFORU_USERNAME", "INFORU_API_TOKEN")
+    send = _stub_method("inforu")
+    get_status = _stub_method("inforu")
+    normalize_error = _stub_method("inforu")
+    estimate_cost = _stub_method("inforu")
+
+
+class OneNineProvider(MessagingProvider):
+    name = "019"
+    channel = "sms"
+    requires_secrets = ("ONENINE_USERNAME", "ONENINE_API_TOKEN")
+    send = _stub_method("019")
+    get_status = _stub_method("019")
+    normalize_error = _stub_method("019")
+    estimate_cost = _stub_method("019")
+
+
+class TwilioProvider(MessagingProvider):
+    name = "twilio"
+    channel = "sms"
+    requires_secrets = ("TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_FROM")
+    send = _stub_method("twilio")
+    get_status = _stub_method("twilio")
+    normalize_error = _stub_method("twilio")
+    estimate_cost = _stub_method("twilio")
+
+
+class MetaCloudProvider(MessagingProvider):
+    name = "meta"
+    channel = "whatsapp"
+    requires_secrets = ("META_PHONE_NUMBER_ID", "META_ACCESS_TOKEN")
+    send = _stub_method("meta")
+    get_status = _stub_method("meta")
+    normalize_error = _stub_method("meta")
+    estimate_cost = _stub_method("meta")
+
+
+_MSG_PROVIDER_REGISTRY = {
+    "mock":   MockProvider,
+    "inforu": InforuProvider,
+    "019":    OneNineProvider,
+    "twilio": TwilioProvider,
+    "meta":   MetaCloudProvider,
+}
+
+_MSG_REQUIRED_METHODS = ("send", "get_status", "normalize_error", "estimate_cost")
+_MSG_REQUIRED_ATTRS = ("name", "channel", "requires_secrets")
+
+
+def _assert_provider_interface():
+    """Fail-fast guard: every registered provider must conform to the
+    interface (3 attrs + 4 methods). Called once at module load."""
+    for key, cls in _MSG_PROVIDER_REGISTRY.items():
+        for attr in _MSG_REQUIRED_ATTRS:
+            if not hasattr(cls, attr):
+                raise RuntimeError("MessagingProvider '" + key + "' missing attr: " + attr)
+        for meth in _MSG_REQUIRED_METHODS:
+            fn = getattr(cls, meth, None)
+            if not callable(fn):
+                raise RuntimeError("MessagingProvider '" + key + "' missing method: " + meth)
+
+
+_assert_provider_interface()
+
+_MSG_TWILIO_DEFAULT_WARNED = False
+
+
+def _resolve_provider(provider_name=None):
+    """Resolve a provider name to a class. Selection order:
+       1. explicit `provider_name` argument
+       2. env var DEFAULT_SMS_PROVIDER
+       3. fallback to 'mock'
+    Raises ValueError on unknown name."""
+    global _MSG_TWILIO_DEFAULT_WARNED
+    chosen = (provider_name or os.environ.get("DEFAULT_SMS_PROVIDER") or "mock").strip().lower()
+    if chosen not in _MSG_PROVIDER_REGISTRY:
+        raise ValueError("unknown messaging provider: " + repr(chosen))
+    if (
+        provider_name is None
+        and chosen == "twilio"
+        and not _MSG_TWILIO_DEFAULT_WARNED
+    ):
+        app.logger.warning(
+            "DEFAULT_SMS_PROVIDER=twilio detected; per parent brief, twilio should not be the primary SMS provider."
+        )
+        _MSG_TWILIO_DEFAULT_WARNED = True
+    return _MSG_PROVIDER_REGISTRY[chosen]
+
+
+def _msg_log_attempt(uid, contact_id, template_id, channel, provider_name,
+                     to_phone, body_rendered, result, fallback_used=False):
+    """Insert a single row into msg_logs and return its id.
+    Uses RETURNING id on PostgreSQL and last_insert_rowid() on SQLite, matching
+    the existing pattern in this file (see report_jobs insert)."""
+    params = (
+        uid,
+        contact_id,
+        template_id,
+        channel,
+        provider_name,
+        result.get("provider_message_id"),
+        result.get("provider_status"),
+        int(result.get("provider_cost") or 0),
+        1 if fallback_used else 0,
+        result.get("error_code"),
+        (result.get("error_raw") or "")[:500] if result.get("error_raw") else None,
+        to_phone,
+        body_rendered,
+        datetime.utcnow().isoformat(),
+    )
+    with get_db() as db:
+        if db.is_postgres:
+            row = db.execute(
+                "INSERT INTO msg_logs(user_id,contact_id,template_id,channel,provider,"
+                "provider_message_id,provider_status,provider_cost,fallback_used,"
+                "error_code,error_raw,to_phone,body_rendered,created_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?) RETURNING id",
+                params,
+            ).fetchone()
+        else:
+            db.execute(
+                "INSERT INTO msg_logs(user_id,contact_id,template_id,channel,provider,"
+                "provider_message_id,provider_status,provider_cost,fallback_used,"
+                "error_code,error_raw,to_phone,body_rendered,created_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                params,
+            )
+            row = db.execute("SELECT last_insert_rowid() AS id").fetchone()
+        db.commit()
+        return int(row["id"]) if row else None
+
+
+def dispatch_send_message(user_id, template_id=None, contact_id=None,
+                          to_phone=None, free_text_body=None,
+                          provider_name=None):
+    """Resolve template+contact (or free-text+phone) → render body → pick
+    provider → call provider.send → persist msg_logs row → return result.
+
+    NOTE: dispatch_send_message is backend infrastructure and does NOT
+    enforce ENABLE_MESSAGING. Any route or caller introduced in Phase 4
+    MUST check is_messaging_enabled() before invoking this function.
+
+    Inputs:
+      - Either (template_id + contact_id) OR (free_text_body + to_phone) is
+        required. Mixing is rejected.
+      - All template/contact lookups are scoped to `user_id` ownership.
+
+    Returns dict:
+      {log_id, success, provider, provider_message_id, provider_status, error_code}
+
+    Raises:
+      ValueError on invalid input or cross-user ownership."""
+    has_template_path = template_id is not None and contact_id is not None
+    has_freetext_path = (free_text_body is not None) and (to_phone is not None)
+    if has_template_path and has_freetext_path:
+        raise ValueError("provide either (template_id + contact_id) or (free_text_body + to_phone), not both")
+    if not has_template_path and not has_freetext_path:
+        raise ValueError("either (template_id + contact_id) or (free_text_body + to_phone) is required")
+
+    rendered_body = None
+    rendered_to = None
+    if has_template_path:
+        with get_db() as db:
+            tpl = _msg_get_my_template(db, user_id, template_id)
+            if not tpl:
+                raise ValueError("template not found or not owned by user")
+            contact = _msg_get_my_contact(db, user_id, contact_id)
+            if not contact:
+                raise ValueError("contact not found or not owned by user")
+        vars_dict = {
+            "first_name": contact["first_name"] or "",
+            "last_name": contact["last_name"] or "",
+            "employee_number": contact["employee_number"] or "",
+            "phone": contact["phone"] or "",
+        }
+        rendered_body = _msg_render_template(tpl["body"], vars_dict)
+        rendered_to = contact["phone"]
+    else:
+        body_clean = (free_text_body or "").strip()
+        if not body_clean:
+            raise ValueError("free_text_body cannot be empty")
+        normalized = _normalize_phone_il(to_phone)
+        if not normalized:
+            raise ValueError("to_phone is not a valid phone number")
+        unknown = _msg_unknown_placeholders(body_clean)
+        if unknown:
+            raise ValueError("free_text_body contains unknown placeholders: " + ", ".join(unknown))
+        rendered_body = body_clean
+        rendered_to = normalized
+
+    provider_cls = _resolve_provider(provider_name)
+    resolved_name = provider_cls.name
+    channel = provider_cls.channel
+    provider = provider_cls()
+
+    try:
+        result = provider.send(rendered_to, rendered_body, sender_id=None, metadata=None)
+        if not isinstance(result, dict) or "success" not in result:
+            result = {
+                "success": False,
+                "provider_message_id": None,
+                "provider_status": "unknown",
+                "provider_cost": 0,
+                "error_code": "unknown",
+                "error_raw": "provider returned malformed result",
+            }
+    except NotImplementedError as exc:
+        result = {
+            "success": False,
+            "provider_message_id": None,
+            "provider_status": "failed",
+            "provider_cost": 0,
+            "error_code": "not_implemented",
+            "error_raw": str(exc),
+        }
+    except Exception as exc:
+        result = {
+            "success": False,
+            "provider_message_id": None,
+            "provider_status": "failed",
+            "provider_cost": 0,
+            "error_code": "unknown",
+            "error_raw": str(exc)[:500],
+        }
+
+    log_id = _msg_log_attempt(
+        uid=user_id,
+        contact_id=(contact_id if has_template_path else None),
+        template_id=(template_id if has_template_path else None),
+        channel=channel,
+        provider_name=resolved_name,
+        to_phone=rendered_to,
+        body_rendered=rendered_body,
+        result=result,
+        fallback_used=False,
+    )
+
+    return {
+        "log_id": log_id,
+        "success": bool(result.get("success")),
+        "provider": resolved_name,
+        "provider_message_id": result.get("provider_message_id"),
+        "provider_status": result.get("provider_status"),
+        "error_code": result.get("error_code"),
+    }
+
+
+# ── End Phase 3: Provider abstraction ──────────────────────────────
 
 
 @app.route("/messaging")

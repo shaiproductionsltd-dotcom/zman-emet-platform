@@ -39,7 +39,8 @@
 ## Next
 
 - [ ] **Messaging V1 — Phase 1 (Contacts + Lists CRUD)** live on staging behind `ENABLE_MESSAGING=1` (2026-04-26). Routes under `/messaging`, scoped per `user_id`. Production unaffected. Brief: `MISSIONS/messaging_and_forms_v1.md`. Packet: `MISSIONS/messaging_v1_packet_01.md`.
-- [ ] **Messaging V1 — Phase 2 (Templates CRUD + preview)** implemented locally behind `ENABLE_MESSAGING` flag and ready for staging QA (2026-04-26). Variables locked: `{{first_name}}`, `{{last_name}}`, `{{employee_number}}`, `{{phone}}`. Save blocked on unknown placeholders. Packet: `MISSIONS/messaging_v1_packet_02.md`. Next phase: provider abstraction.
+- [ ] **Messaging V1 — Phase 2 (Templates CRUD + preview)** live on staging behind `ENABLE_MESSAGING=1` (2026-04-26). Variables locked: `{{first_name}}`, `{{last_name}}`, `{{employee_number}}`, `{{phone}}`. Save blocked on unknown placeholders. Packet: `MISSIONS/messaging_v1_packet_02.md`.
+- [ ] **Messaging V1 — Phase 3 (Provider abstraction, backend-only)** implemented locally (2026-04-26). `MessagingProvider` interface + `MockProvider` + 4 NotImplementedError stubs (Inforu/019/Twilio/Meta) + `dispatch_send_message()` + `msg_logs` table. ZERO new routes, ZERO UI, no real SMS, no API keys. Verification via direct helper calls. Packet: `MISSIONS/messaging_v1_packet_03.md`. Next phase: real provider + send route + quota.
 - [ ] Replace broken/missing Hebrew in the main app without causing another frontend regression
 - [ ] Add a safe translation layer for user-facing UI text
 - [ ] Add a Hebrew/English language switcher for login, dashboard, and script screens
