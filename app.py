@@ -9735,6 +9735,35 @@ def init_db():
         )
         db.execute("CREATE INDEX IF NOT EXISTS idx_msg_logs_user_created ON msg_logs(user_id, created_at)")
         db.execute("CREATE INDEX IF NOT EXISTS idx_msg_logs_provider ON msg_logs(provider)")
+        db.execute(
+            """CREATE TABLE IF NOT EXISTS msg_quota (
+            user_id INTEGER NOT NULL,
+            month TEXT NOT NULL,
+            limit_messages INTEGER NOT NULL DEFAULT 50,
+            used INTEGER NOT NULL DEFAULT 0,
+            top_ups INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (user_id, month))"""
+        )
+        db.execute(
+            """CREATE TABLE IF NOT EXISTS msg_suppression (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            phone TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            added_at TEXT NOT NULL)"""
+        )
+        db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_msg_suppression_user_phone ON msg_suppression(user_id, phone)")
+        db.execute(
+            """CREATE TABLE IF NOT EXISTS msg_send_confirmations (
+            token TEXT PRIMARY KEY,
+            user_id INTEGER NOT NULL,
+            payload_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            consumed_at TEXT)"""
+        )
+        db.execute("CREATE INDEX IF NOT EXISTS idx_msg_send_confirmations_user ON msg_send_confirmations(user_id)")
         # ── End messaging tables ────────────────────────────────────
 
         existing_columns = get_table_columns(db, "users")
@@ -23164,10 +23193,13 @@ def admin_retention():
 
 
 # ════════════════════════════════════════════════════════════════════
-# Messaging V1 — Phases 1+2 (Contacts, Lists, Templates)
-# Strict scope: contacts, lists, templates only. NO sending, NO scheduling, NO providers.
-# Feature-gated by ENABLE_MESSAGING env var. Returns 404 when disabled.
-# All data scoped by session["user_id"] (matches existing convention).
+# Messaging V1 — Phases 1+2+3+4a
+# Phase 1: contacts + lists. Phase 2: templates. Phase 3: provider
+# abstraction (backend-only). Phase 4a: send safety with MOCK provider
+# only — quota, suppression, two-step confirmation, history. NO real
+# SMS, NO external network, NO scheduling, NO WhatsApp, NO 019/Inforu/
+# Twilio/Meta wiring. Feature-gated by ENABLE_MESSAGING env var
+# (returns 404 when disabled). All data scoped by session["user_id"].
 # ════════════════════════════════════════════════════════════════════
 
 
@@ -23231,6 +23263,10 @@ def _msg_nav():
         '<a href="/messaging/contacts" style="padding:8px 14px;background:#f1f5f9;color:#0f172a;border-radius:8px;text-decoration:none;font-size:13px;font-weight:600">אנשי קשר</a>'
         '<a href="/messaging/lists" style="padding:8px 14px;background:#f1f5f9;color:#0f172a;border-radius:8px;text-decoration:none;font-size:13px;font-weight:600">רשימות</a>'
         '<a href="/messaging/templates" style="padding:8px 14px;background:#f1f5f9;color:#0f172a;border-radius:8px;text-decoration:none;font-size:13px;font-weight:600">תבניות</a>'
+        '<a href="/messaging/send" style="padding:8px 14px;background:#dbeafe;color:#1e40af;border-radius:8px;text-decoration:none;font-size:13px;font-weight:600">שליחה</a>'
+        '<a href="/messaging/history" style="padding:8px 14px;background:#f1f5f9;color:#0f172a;border-radius:8px;text-decoration:none;font-size:13px;font-weight:600">היסטוריה</a>'
+        '<a href="/messaging/quota" style="padding:8px 14px;background:#f1f5f9;color:#0f172a;border-radius:8px;text-decoration:none;font-size:13px;font-weight:600">מכסה</a>'
+        '<a href="/messaging/suppression" style="padding:8px 14px;background:#f1f5f9;color:#0f172a;border-radius:8px;text-decoration:none;font-size:13px;font-weight:600">חסומים</a>'
         '</div>'
     )
 
@@ -23854,6 +23890,699 @@ def dispatch_send_message(user_id, template_id=None, contact_id=None,
 # ── End Phase 3: Provider abstraction ──────────────────────────────
 
 
+# ── Phase 4a: Send Safety (mock-only) ──────────────────────────────
+# All sends in this phase route through MockProvider exclusively.
+# No real SMS, no external network, no API keys, no admin route, no
+# vendor wiring. Confirmation is server-token-bound and single-use.
+# Quota and suppression are checked twice (confirm + execute).
+
+_MSG_QUOTA_DEFAULT_FREE = 50
+_MSG_QUOTA_DEFAULT_PAID = 500  # placeholder; not used in 4a (manual top-ups only)
+_MSG_CONFIRMATION_TTL_SECONDS = 300
+_MSG_BANNER_HE = (
+    "מצב פנימי (Phase 4a): ההודעות עוברות דרך ספק הדמיה בלבד. "
+    "לא נשלח SMS אמיתי לאף טלפון."
+)
+
+
+def _msg_current_month():
+    return datetime.utcnow().strftime("%Y-%m")
+
+
+def _msg_get_or_create_quota_row(uid, month=None):
+    month = month or _msg_current_month()
+    now = datetime.utcnow().isoformat()
+    with get_db() as db:
+        row = db.execute(
+            "SELECT user_id, month, limit_messages, used, top_ups FROM msg_quota WHERE user_id=? AND month=?",
+            (uid, month),
+        ).fetchone()
+        if row:
+            return dict(row) if not isinstance(row, dict) else row
+        try:
+            db.execute(
+                "INSERT INTO msg_quota(user_id,month,limit_messages,used,top_ups,updated_at) VALUES (?,?,?,?,?,?)",
+                (uid, month, _MSG_QUOTA_DEFAULT_FREE, 0, 0, now),
+            )
+            db.commit()
+        except Exception as exc:
+            if not is_integrity_error(exc):
+                raise
+        row = db.execute(
+            "SELECT user_id, month, limit_messages, used, top_ups FROM msg_quota WHERE user_id=? AND month=?",
+            (uid, month),
+        ).fetchone()
+        return dict(row) if row and not isinstance(row, dict) else row
+
+
+def _msg_try_increment_quota(uid, month=None):
+    """Atomic increment. Returns True on success, False if quota exhausted."""
+    month = month or _msg_current_month()
+    _msg_get_or_create_quota_row(uid, month)
+    now = datetime.utcnow().isoformat()
+    with get_db() as db:
+        cur = db.execute(
+            "UPDATE msg_quota SET used = used + 1, updated_at = ? "
+            "WHERE user_id=? AND month=? AND used + 1 <= limit_messages + top_ups",
+            (now, uid, month),
+        )
+        db.commit()
+        affected = getattr(cur, "rowcount", None)
+        if affected is None:
+            check = db.execute(
+                "SELECT used, limit_messages, top_ups FROM msg_quota WHERE user_id=? AND month=?",
+                (uid, month),
+            ).fetchone()
+            return bool(check and check["used"] <= (check["limit_messages"] + check["top_ups"]))
+        return affected == 1
+
+
+def _msg_decrement_quota(uid, month=None):
+    """Atomic decrement on dispatcher failure. Never goes below 0."""
+    month = month or _msg_current_month()
+    now = datetime.utcnow().isoformat()
+    with get_db() as db:
+        db.execute(
+            "UPDATE msg_quota SET used = used - 1, updated_at = ? "
+            "WHERE user_id=? AND month=? AND used > 0",
+            (now, uid, month),
+        )
+        db.commit()
+
+
+def _msg_admin_grant_topup(uid, additional_messages, note=None, month=None):
+    """Function-only helper (no HTTP route). Grants top-up messages for the
+    current month. Intended for staging QA via direct Python call only."""
+    if not isinstance(additional_messages, int) or additional_messages <= 0:
+        raise ValueError("additional_messages must be a positive int")
+    month = month or _msg_current_month()
+    _msg_get_or_create_quota_row(uid, month)
+    now = datetime.utcnow().isoformat()
+    with get_db() as db:
+        db.execute(
+            "UPDATE msg_quota SET top_ups = top_ups + ?, updated_at = ? WHERE user_id=? AND month=?",
+            (additional_messages, now, uid, month),
+        )
+        db.commit()
+    return True
+
+
+def _msg_is_suppressed(uid, phone):
+    if not phone:
+        return False
+    with get_db() as db:
+        row = db.execute(
+            "SELECT id FROM msg_suppression WHERE user_id=? AND phone=?",
+            (uid, phone),
+        ).fetchone()
+    return row is not None
+
+
+def _msg_add_suppression(uid, phone_raw, reason="manual"):
+    phone = _normalize_phone_il(phone_raw)
+    if not phone:
+        return False, "מספר טלפון לא תקין"
+    now = datetime.utcnow().isoformat()
+    try:
+        with get_db() as db:
+            db.execute(
+                "INSERT INTO msg_suppression(user_id,phone,reason,added_at) VALUES (?,?,?,?)",
+                (uid, phone, reason, now),
+            )
+            db.commit()
+        return True, None
+    except Exception as exc:
+        if is_integrity_error(exc):
+            return False, "המספר כבר ברשימת החסומים"
+        raise
+
+
+def _msg_remove_suppression(uid, supp_id):
+    with get_db() as db:
+        row = db.execute(
+            "SELECT id FROM msg_suppression WHERE id=? AND user_id=?",
+            (supp_id, uid),
+        ).fetchone()
+        if not row:
+            return False
+        db.execute("DELETE FROM msg_suppression WHERE id=? AND user_id=?", (supp_id, uid))
+        db.commit()
+    return True
+
+
+def _msg_purge_expired_confirmations():
+    """Opportunistic sweep — drops expired-and-unconsumed tokens, plus
+    consumed tokens older than 24h. Called inline from issue/consume to keep
+    the table small without a dedicated cron."""
+    now_iso = datetime.utcnow().isoformat()
+    cutoff_consumed = (datetime.utcnow() - timedelta(hours=24)).isoformat()
+    try:
+        with get_db() as db:
+            db.execute(
+                "DELETE FROM msg_send_confirmations WHERE consumed_at IS NULL AND expires_at < ?",
+                (now_iso,),
+            )
+            db.execute(
+                "DELETE FROM msg_send_confirmations WHERE consumed_at IS NOT NULL AND consumed_at < ?",
+                (cutoff_consumed,),
+            )
+            db.commit()
+    except Exception:
+        pass
+
+
+def _msg_issue_confirmation(uid, payload_dict):
+    _msg_purge_expired_confirmations()
+    token = secrets.token_hex(32)
+    now = datetime.utcnow()
+    expires = now + timedelta(seconds=_MSG_CONFIRMATION_TTL_SECONDS)
+    with get_db() as db:
+        db.execute(
+            "INSERT INTO msg_send_confirmations(token,user_id,payload_json,created_at,expires_at,consumed_at) "
+            "VALUES (?,?,?,?,?,NULL)",
+            (token, uid, json.dumps(payload_dict, ensure_ascii=False), now.isoformat(), expires.isoformat()),
+        )
+        db.commit()
+    return token
+
+
+def _msg_consume_confirmation(uid, token):
+    """Atomic single-use consume. Returns the payload dict on success, or
+    None if the token is missing/expired/consumed/owned-by-someone-else."""
+    if not token or not isinstance(token, str) or len(token) < 32:
+        return None
+    now_iso = datetime.utcnow().isoformat()
+    with get_db() as db:
+        cur = db.execute(
+            "UPDATE msg_send_confirmations SET consumed_at = ? "
+            "WHERE token=? AND user_id=? AND consumed_at IS NULL AND expires_at > ?",
+            (now_iso, token, uid, now_iso),
+        )
+        db.commit()
+        affected = getattr(cur, "rowcount", None)
+        if affected == 0:
+            return None
+        row = db.execute(
+            "SELECT payload_json FROM msg_send_confirmations WHERE token=? AND user_id=?",
+            (token, uid),
+        ).fetchone()
+        if not row:
+            return None
+        if affected is None and row.get("consumed_at") and row["consumed_at"] != now_iso:
+            return None
+        try:
+            return json.loads(row["payload_json"])
+        except Exception:
+            return None
+
+
+def _msg_log_blocked(uid, contact_id, template_id, to_phone, body_rendered, status, error_raw=None):
+    """Write a msg_logs row for a recipient that was blocked BEFORE reaching
+    the dispatcher (suppressed / quota_exceeded). Mirrors dispatcher's log
+    schema so /messaging/history shows a unified view."""
+    fake_result = {
+        "provider_message_id": None,
+        "provider_status": status,
+        "provider_cost": 0,
+        "error_code": status,
+        "error_raw": error_raw,
+    }
+    return _msg_log_attempt(
+        uid=uid,
+        contact_id=contact_id,
+        template_id=template_id,
+        channel="sms",
+        provider_name="mock",
+        to_phone=to_phone,
+        body_rendered=body_rendered,
+        result=fake_result,
+        fallback_used=False,
+    )
+
+
+def _msg_banner_html():
+    return (
+        '<div style="background:#fef3c7;border:1px solid #fbbf24;border-radius:10px;'
+        'padding:12px;margin-bottom:14px;font-size:13px;color:#78350f">'
+        + esc(_MSG_BANNER_HE)
+        + '</div>'
+    )
+
+
+@app.route("/messaging/send", methods=["GET"])
+@login_required
+def messaging_send_composer():
+    if not is_messaging_enabled():
+        return _msg_404()
+    uid = session["user_id"]
+    with get_db() as db:
+        templates = db.execute(
+            "SELECT id, name FROM msg_templates WHERE user_id=? ORDER BY updated_at DESC",
+            (uid,),
+        ).fetchall()
+        contacts = db.execute(
+            "SELECT id, first_name, last_name, phone FROM msg_contacts WHERE user_id=? ORDER BY last_name, first_name",
+            (uid,),
+        ).fetchall()
+        lists = db.execute(
+            """SELECT l.id, l.name, (SELECT COUNT(*) FROM msg_contact_list_members m WHERE m.list_id=l.id) AS n
+            FROM msg_contact_lists l WHERE l.user_id=? ORDER BY l.name""",
+            (uid,),
+        ).fetchall()
+    if not templates:
+        body = (
+            '<div class="card">' + _msg_nav()
+            + '<h2 style="margin:0 0 12px 0">שליחת הודעות</h2>'
+            + '<p style="color:#64748b">צור תחילה תבנית ב<a href="/messaging/templates">תבניות</a>.</p>'
+            + '</div>'
+        )
+        return _msg_layout("שליחה", body)
+    template_options = "".join(
+        '<option value="' + str(t["id"]) + '">' + esc(t["name"]) + '</option>' for t in templates
+    )
+    contact_options = "".join(
+        '<option value="' + str(c["id"]) + '">'
+        + esc(((c["first_name"] or "") + " " + (c["last_name"] or "")).strip() or c["phone"])
+        + ' — ' + esc(c["phone"]) + '</option>'
+        for c in contacts
+    )
+    list_options = "".join(
+        '<option value="' + str(l["id"]) + '">' + esc(l["name"]) + ' (' + str(l["n"]) + ')</option>'
+        for l in lists
+    )
+    body = (
+        '<div class="card">' + _msg_nav()
+        + '<h2 style="margin:0 0 12px 0">שליחת הודעות</h2>'
+        + _msg_banner_html()
+        + '<form method="POST" action="/messaging/send/confirm" style="display:flex;flex-direction:column;gap:10px;padding:14px;background:#f8fafc;border-radius:10px">'
+        + '<label style="font-size:13px;font-weight:600">תבנית</label>'
+        + '<select name="template_id" required style="padding:8px">' + template_options + '</select>'
+        + '<label style="font-size:13px;font-weight:600;margin-top:6px">סוג נמענים</label>'
+        + '<div style="display:flex;gap:14px">'
+        + '<label><input type="radio" name="recipient_mode" value="contact" checked> איש קשר בודד</label>'
+        + '<label><input type="radio" name="recipient_mode" value="list"> רשימת תפוצה</label>'
+        + '</div>'
+        + '<label style="font-size:13px;font-weight:600;margin-top:6px">איש קשר</label>'
+        + ('<select name="contact_id" style="padding:8px">' + contact_options + '</select>' if contacts else '<p style="color:#94a3b8;font-size:12px">אין אנשי קשר. הוסף ב<a href="/messaging/contacts">אנשי קשר</a>.</p>')
+        + '<label style="font-size:13px;font-weight:600;margin-top:6px">רשימה</label>'
+        + ('<select name="list_id" style="padding:8px">' + list_options + '</select>' if lists else '<p style="color:#94a3b8;font-size:12px">אין רשימות. צור ב<a href="/messaging/lists">רשימות</a>.</p>')
+        + '<button type="submit" class="btn btn-blue" style="align-self:flex-start;margin-top:10px">המשך לאישור</button>'
+        + '</form>'
+        + '</div>'
+    )
+    return _msg_layout("שליחה", body)
+
+
+@app.route("/messaging/send/confirm", methods=["POST"])
+@login_required
+def messaging_send_confirm():
+    if not is_messaging_enabled():
+        return _msg_404()
+    uid = session["user_id"]
+    template_id_raw = (request.form.get("template_id") or "").strip()
+    mode = (request.form.get("recipient_mode") or "").strip()
+    if not template_id_raw.isdigit() or mode not in ("contact", "list"):
+        add_flash('<span style="color:#b91c1c">קלט לא תקין</span>')
+        return redirect("/messaging/send")
+    template_id = int(template_id_raw)
+    with get_db() as db:
+        tpl = _msg_get_my_template(db, uid, template_id)
+        if not tpl:
+            return _msg_404()
+        contacts_to_send = []
+        if mode == "contact":
+            cid_raw = (request.form.get("contact_id") or "").strip()
+            if not cid_raw.isdigit():
+                add_flash('<span style="color:#b91c1c">לא נבחר איש קשר</span>')
+                return redirect("/messaging/send")
+            c = _msg_get_my_contact(db, uid, int(cid_raw))
+            if not c:
+                return _msg_404()
+            contacts_to_send.append(dict(c) if not isinstance(c, dict) else c)
+        else:
+            lid_raw = (request.form.get("list_id") or "").strip()
+            if not lid_raw.isdigit():
+                add_flash('<span style="color:#b91c1c">לא נבחרה רשימה</span>')
+                return redirect("/messaging/send")
+            lst = _msg_get_my_list(db, uid, int(lid_raw))
+            if not lst:
+                return _msg_404()
+            members = db.execute(
+                """SELECT c.* FROM msg_contacts c
+                JOIN msg_contact_list_members m ON m.contact_id=c.id
+                WHERE m.list_id=? AND c.user_id=?
+                ORDER BY c.last_name, c.first_name""",
+                (int(lid_raw), uid),
+            ).fetchall()
+            for c in members:
+                contacts_to_send.append(dict(c) if not isinstance(c, dict) else c)
+    if not contacts_to_send:
+        add_flash('<span style="color:#b91c1c">אין נמענים</span>')
+        return redirect("/messaging/send")
+    seen_phones = set()
+    deduped = []
+    for c in contacts_to_send:
+        if c["phone"] in seen_phones:
+            continue
+        seen_phones.add(c["phone"])
+        deduped.append(c)
+    suppressed_set = set()
+    for c in deduped:
+        if _msg_is_suppressed(uid, c["phone"]):
+            suppressed_set.add(c["phone"])
+    payload_recipients = []
+    suppressed_recipients = []
+    for c in deduped:
+        vars_dict = {
+            "first_name": c["first_name"] or "",
+            "last_name": c["last_name"] or "",
+            "employee_number": c["employee_number"] or "",
+            "phone": c["phone"] or "",
+        }
+        rendered = _msg_render_template(tpl["body"], vars_dict)
+        rec = {
+            "contact_id": c["id"],
+            "phone": c["phone"],
+            "name": ((c["first_name"] or "") + " " + (c["last_name"] or "")).strip() or c["phone"],
+            "body_rendered": rendered,
+            "preflight_suppressed": c["phone"] in suppressed_set,
+        }
+        if rec["preflight_suppressed"]:
+            suppressed_recipients.append(rec)
+        else:
+            payload_recipients.append(rec)
+    # Include suppressed recipients in the token payload too, so execute can
+    # log a blocked row for each (audit trail). Dispatcher is NEVER called
+    # for these; execute uses the preflight_suppressed flag to gate.
+    all_recipients_for_payload = payload_recipients + suppressed_recipients
+    qrow = _msg_get_or_create_quota_row(uid)
+    remaining = (qrow["limit_messages"] + qrow["top_ups"]) - qrow["used"]
+    quota_warning = ""
+    if len(payload_recipients) > remaining:
+        quota_warning = (
+            '<div style="background:#fee2e2;border:1px solid #fecaca;color:#991b1b;'
+            'padding:10px;border-radius:8px;margin-bottom:10px;font-size:13px">'
+            + esc(f"שים לב: יש לך {remaining} הודעות נותרות החודש, אך נבחרו {len(payload_recipients)} נמענים. ")
+            + esc(f"הודעות מעבר למכסה ייחסמו ויתועדו ביומן.")
+            + '</div>'
+        )
+    if not payload_recipients and not suppressed_recipients:
+        add_flash('<span style="color:#b91c1c">אין נמענים</span>')
+        return redirect("/messaging/send")
+    if not payload_recipients:
+        body = (
+            '<div class="card">' + _msg_nav()
+            + '<h2>אין נמענים זמינים</h2>'
+            + '<p>כל הנמענים שנבחרו מופיעים ברשימת החסומים שלך.</p>'
+            + '<a href="/messaging/send" class="btn btn-blue" style="text-decoration:none;display:inline-block">חזרה</a>'
+            + '</div>'
+        )
+        return _msg_layout("שליחה", body)
+    payload = {
+        "template_id": tpl["id"],
+        "template_name": tpl["name"],
+        "recipients": all_recipients_for_payload,
+    }
+    token = _msg_issue_confirmation(uid, payload)
+    rows_html = ""
+    for r in payload_recipients:
+        rows_html += (
+            '<tr><td style="padding:8px;border-bottom:1px solid #f1f5f9">' + esc(r["name"]) + '</td>'
+            + '<td style="padding:8px;border-bottom:1px solid #f1f5f9;direction:ltr;text-align:right">' + esc(r["phone"]) + '</td>'
+            + '<td style="padding:8px;border-bottom:1px solid #f1f5f9;white-space:pre-wrap;color:#475569;font-size:13px">' + esc(r["body_rendered"]) + '</td></tr>'
+        )
+    suppressed_html = ""
+    if suppressed_recipients:
+        sr_rows = "".join(
+            '<li style="font-size:12px;color:#7c2d12">'
+            + esc(r["name"]) + ' — ' + esc(r["phone"]) + '</li>'
+            for r in suppressed_recipients
+        )
+        suppressed_html = (
+            '<div style="background:#fef3c7;border:1px solid #fcd34d;border-radius:8px;padding:10px;margin-bottom:10px;font-size:13px">'
+            + '<strong>' + esc(f"{len(suppressed_recipients)} נמענים נחסמו ברשימת ההסרה שלך:") + '</strong>'
+            + '<ul style="margin:6px 0 0 0;padding-inline-start:18px">' + sr_rows + '</ul>'
+            + '</div>'
+        )
+    body = (
+        '<div class="card">' + _msg_nav()
+        + '<h2 style="margin:0 0 12px 0">אישור שליחה — ' + esc(tpl["name"]) + '</h2>'
+        + _msg_banner_html()
+        + quota_warning
+        + suppressed_html
+        + '<p style="color:#64748b;font-size:13px">' + esc(f"להלן {len(payload_recipients)} נמענים מוכנים לשליחה. בדוק ואשר.") + '</p>'
+        + '<table style="width:100%;border-collapse:collapse;background:#fff;border:1px solid #e2e8f0;border-radius:10px;overflow:hidden;margin:10px 0">'
+        + '<thead><tr style="background:#f1f5f9"><th style="padding:8px;text-align:right">שם</th><th style="padding:8px;text-align:right">טלפון</th><th style="padding:8px;text-align:right">תוכן</th></tr></thead>'
+        + '<tbody>' + rows_html + '</tbody></table>'
+        + '<form method="POST" action="/messaging/send/execute" style="display:flex;gap:8px;margin-top:14px">'
+        + '<input type="hidden" name="token" value="' + esc(token) + '">'
+        + '<button type="submit" class="btn btn-blue">אשר ושלח</button>'
+        + '<a href="/messaging/send" class="btn" style="background:#f1f5f9;color:#0f172a;text-decoration:none;padding:9px 18px;border-radius:8px;font-size:13px;font-weight:600">ביטול</a>'
+        + '</form>'
+        + '</div>'
+    )
+    return _msg_layout("אישור שליחה", body)
+
+
+@app.route("/messaging/send/execute", methods=["POST"])
+@login_required
+def messaging_send_execute():
+    if not is_messaging_enabled():
+        return _msg_404()
+    uid = session["user_id"]
+    token = (request.form.get("token") or "").strip()
+    payload = _msg_consume_confirmation(uid, token)
+    if not payload:
+        add_flash('<span style="color:#b91c1c">אישור פג תוקף או שכבר בוצע</span>')
+        return redirect("/messaging/send")
+    template_id = payload.get("template_id")
+    template_name = payload.get("template_name", "")
+    recipients = payload.get("recipients") or []
+    sent_ok = 0
+    sent_fail = 0
+    suppressed_now = 0
+    quota_blocked = 0
+    for r in recipients:
+        contact_id = r.get("contact_id")
+        phone = r.get("phone")
+        body_rendered = r.get("body_rendered") or ""
+        # Two-layer suppression check: preflight flag from confirm, AND fresh
+        # DB check at execute. Either positive → blocked, dispatcher NOT called.
+        if r.get("preflight_suppressed") or _msg_is_suppressed(uid, phone):
+            _msg_log_blocked(uid, contact_id, template_id, phone, body_rendered, "suppressed",
+                             error_raw="recipient on suppression list")
+            suppressed_now += 1
+            continue
+        if not _msg_try_increment_quota(uid):
+            _msg_log_blocked(uid, contact_id, template_id, phone, body_rendered, "quota_exceeded",
+                             error_raw="monthly quota exhausted")
+            quota_blocked += 1
+            continue
+        try:
+            res = dispatch_send_message(
+                user_id=uid,
+                template_id=template_id,
+                contact_id=contact_id,
+                provider_name="mock",
+            )
+        except Exception as exc:
+            _msg_decrement_quota(uid)
+            _msg_log_blocked(uid, contact_id, template_id, phone, body_rendered, "failed",
+                             error_raw=("dispatcher exception: " + str(exc))[:500])
+            sent_fail += 1
+            continue
+        if res.get("success"):
+            sent_ok += 1
+        else:
+            _msg_decrement_quota(uid)
+            sent_fail += 1
+    summary_rows = [
+        ("נשלחו (mock)", sent_ok, "#047857"),
+        ("חסומים", suppressed_now, "#b45309"),
+        ("מעל המכסה", quota_blocked, "#b91c1c"),
+        ("כשלים בספק", sent_fail, "#991b1b"),
+    ]
+    rows_html = "".join(
+        '<div style="display:flex;justify-content:space-between;padding:10px;background:#f8fafc;border-radius:8px;margin-bottom:6px">'
+        + '<span style="font-weight:600;color:#0f172a">' + esc(label) + '</span>'
+        + '<span style="font-weight:700;color:' + color + '">' + str(count) + '</span>'
+        + '</div>'
+        for label, count, color in summary_rows
+    )
+    body = (
+        '<div class="card">' + _msg_nav()
+        + '<h2 style="margin:0 0 12px 0">סיכום שליחה — ' + esc(template_name) + '</h2>'
+        + _msg_banner_html()
+        + rows_html
+        + '<div style="display:flex;gap:8px;margin-top:14px">'
+        + '<a href="/messaging/history" class="btn btn-blue" style="text-decoration:none;display:inline-block">צפייה בהיסטוריה</a>'
+        + '<a href="/messaging/send" class="btn" style="background:#f1f5f9;color:#0f172a;text-decoration:none;padding:9px 18px;border-radius:8px;font-size:13px;font-weight:600">שליחה נוספת</a>'
+        + '</div>'
+        + '</div>'
+    )
+    return _msg_layout("סיכום שליחה", body)
+
+
+@app.route("/messaging/history", methods=["GET"])
+@login_required
+def messaging_history():
+    if not is_messaging_enabled():
+        return _msg_404()
+    uid = session["user_id"]
+    page_raw = (request.args.get("page") or "1").strip()
+    try:
+        page = max(1, int(page_raw))
+    except ValueError:
+        page = 1
+    per_page = 50
+    offset = (page - 1) * per_page
+    with get_db() as db:
+        rows = db.execute(
+            "SELECT id, contact_id, template_id, channel, provider, provider_status, "
+            "provider_message_id, provider_cost, error_code, to_phone, body_rendered, created_at "
+            "FROM msg_logs WHERE user_id=? ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
+            (uid, per_page + 1, offset),
+        ).fetchall()
+    has_next = len(rows) > per_page
+    rows = rows[:per_page]
+    rows_html = ""
+    for r in rows:
+        status = r["provider_status"] or ""
+        color = "#047857" if status == "delivered" else ("#b45309" if status == "suppressed" else ("#b91c1c" if status in ("failed", "quota_exceeded") else "#475569"))
+        body_short = (r["body_rendered"] or "")
+        if len(body_short) > 100:
+            body_short = body_short[:100] + "…"
+        rows_html += (
+            '<tr>'
+            + '<td style="padding:8px;border-bottom:1px solid #f1f5f9;direction:ltr;text-align:right;white-space:nowrap">' + esc(r["to_phone"] or "") + '</td>'
+            + '<td style="padding:8px;border-bottom:1px solid #f1f5f9;color:' + color + ';font-weight:600">' + esc(status) + '</td>'
+            + '<td style="padding:8px;border-bottom:1px solid #f1f5f9">' + esc(r["provider"] or "") + '</td>'
+            + '<td style="padding:8px;border-bottom:1px solid #f1f5f9;font-size:12px;color:#64748b;white-space:pre-wrap">' + esc(body_short) + '</td>'
+            + '<td style="padding:8px;border-bottom:1px solid #f1f5f9;font-size:12px;color:#94a3b8;white-space:nowrap">' + esc(r["created_at"] or "") + '</td>'
+            + '</tr>'
+        )
+    if not rows_html:
+        rows_html = '<tr><td colspan="5" style="text-align:center;padding:20px;color:#94a3b8">אין רשומות עדיין</td></tr>'
+    nav_links = ""
+    if page > 1:
+        nav_links += '<a href="/messaging/history?page=' + str(page - 1) + '" class="btn" style="background:#f1f5f9;color:#0f172a;text-decoration:none;padding:6px 14px;border-radius:6px;font-size:12px;font-weight:600">‹ הקודם</a> '
+    if has_next:
+        nav_links += '<a href="/messaging/history?page=' + str(page + 1) + '" class="btn" style="background:#f1f5f9;color:#0f172a;text-decoration:none;padding:6px 14px;border-radius:6px;font-size:12px;font-weight:600">הבא ›</a>'
+    body = (
+        '<div class="card">' + _msg_nav()
+        + '<h2 style="margin:0 0 12px 0">היסטוריית שליחה</h2>'
+        + '<table style="width:100%;border-collapse:collapse;background:#fff;border:1px solid #e2e8f0;border-radius:10px;overflow:hidden">'
+        + '<thead><tr style="background:#f1f5f9"><th style="padding:8px;text-align:right">טלפון</th><th style="padding:8px;text-align:right">סטטוס</th><th style="padding:8px;text-align:right">ספק</th><th style="padding:8px;text-align:right">תוכן</th><th style="padding:8px;text-align:right">זמן</th></tr></thead>'
+        + '<tbody>' + rows_html + '</tbody></table>'
+        + '<div style="margin-top:12px">' + nav_links + '</div>'
+        + '</div>'
+    )
+    return _msg_layout("היסטוריה", body)
+
+
+@app.route("/messaging/quota", methods=["GET"])
+@login_required
+def messaging_quota_view():
+    if not is_messaging_enabled():
+        return _msg_404()
+    uid = session["user_id"]
+    qrow = _msg_get_or_create_quota_row(uid)
+    total_allowed = qrow["limit_messages"] + qrow["top_ups"]
+    used = qrow["used"]
+    remaining = max(0, total_allowed - used)
+    pct = int(round(min(used, total_allowed) * 100 / total_allowed)) if total_allowed > 0 else 0
+    body = (
+        '<div class="card">' + _msg_nav()
+        + '<h2 style="margin:0 0 12px 0">מכסת הודעות — ' + esc(qrow["month"]) + '</h2>'
+        + '<div style="background:#f8fafc;border-radius:10px;padding:14px">'
+        + '<div style="display:flex;justify-content:space-between;font-size:14px;margin-bottom:10px">'
+        + '<span>נוצל: <strong>' + str(used) + '</strong></span>'
+        + '<span>נותר: <strong style="color:#047857">' + str(remaining) + '</strong></span>'
+        + '<span>סך הכל: <strong>' + str(total_allowed) + '</strong></span>'
+        + '</div>'
+        + '<div style="background:#e2e8f0;border-radius:999px;height:10px;overflow:hidden">'
+        + '<div style="background:#3b82f6;height:100%;width:' + str(pct) + '%"></div>'
+        + '</div>'
+        + '<p style="font-size:12px;color:#64748b;margin-top:10px">הוספת מכסה תוספתית מתבצעת ידנית כעת. פנה למנהל המערכת אם נדרש.</p>'
+        + '</div>'
+        + '</div>'
+    )
+    return _msg_layout("מכסה", body)
+
+
+@app.route("/messaging/suppression", methods=["GET"])
+@login_required
+def messaging_suppression_list():
+    if not is_messaging_enabled():
+        return _msg_404()
+    uid = session["user_id"]
+    with get_db() as db:
+        rows = db.execute(
+            "SELECT id, phone, reason, added_at FROM msg_suppression WHERE user_id=? ORDER BY added_at DESC",
+            (uid,),
+        ).fetchall()
+    rows_html = ""
+    for r in rows:
+        rows_html += (
+            '<tr>'
+            + '<td style="padding:8px;border-bottom:1px solid #f1f5f9;direction:ltr;text-align:right">' + esc(r["phone"]) + '</td>'
+            + '<td style="padding:8px;border-bottom:1px solid #f1f5f9;font-size:12px;color:#64748b">' + esc(r["reason"] or "") + '</td>'
+            + '<td style="padding:8px;border-bottom:1px solid #f1f5f9;font-size:12px;color:#94a3b8">' + esc(r["added_at"] or "") + '</td>'
+            + '<td style="padding:8px;border-bottom:1px solid #f1f5f9;white-space:nowrap">'
+            + '<form method="POST" action="/messaging/suppression/' + str(r["id"]) + '/remove" style="display:inline" onsubmit="return confirm(\'להסיר מהרשימה?\')">'
+            + '<button type="submit" class="btn" style="padding:4px 10px;font-size:12px;background:#fee2e2;color:#991b1b;border:1px solid #fecaca">הסר</button>'
+            + '</form>'
+            + '</td></tr>'
+        )
+    if not rows_html:
+        rows_html = '<tr><td colspan="4" style="text-align:center;padding:20px;color:#94a3b8">אין מספרים חסומים</td></tr>'
+    body = (
+        '<div class="card">' + _msg_nav()
+        + '<h2 style="margin:0 0 12px 0">מספרים חסומים</h2>'
+        + '<p style="color:#64748b;font-size:13px;margin-bottom:14px">מספרים ברשימה זו ייחסמו לפני כל שליחה. הסרה אוטומטית בעקבות "STOP" / "הסר" תופעל בשלב מאוחר יותר; ניתן להוסיף ידנית כעת.</p>'
+        + '<form method="POST" action="/messaging/suppression/add" style="display:flex;gap:6px;margin-bottom:14px;padding:12px;background:#f8fafc;border-radius:10px">'
+        + '<input name="phone" placeholder="טלפון להוספה" required style="flex:1;padding:8px;direction:ltr">'
+        + '<button type="submit" class="btn btn-blue">הוסף לחסומים</button>'
+        + '</form>'
+        + '<table style="width:100%;border-collapse:collapse;background:#fff;border:1px solid #e2e8f0;border-radius:10px;overflow:hidden">'
+        + '<thead><tr style="background:#f1f5f9"><th style="padding:8px;text-align:right">טלפון</th><th style="padding:8px;text-align:right">סיבה</th><th style="padding:8px;text-align:right">נוסף ב</th><th style="padding:8px;text-align:right">פעולה</th></tr></thead>'
+        + '<tbody>' + rows_html + '</tbody></table>'
+        + '</div>'
+    )
+    return _msg_layout("חסומים", body)
+
+
+@app.route("/messaging/suppression/add", methods=["POST"])
+@login_required
+def messaging_suppression_add():
+    if not is_messaging_enabled():
+        return _msg_404()
+    uid = session["user_id"]
+    phone_raw = request.form.get("phone") or ""
+    ok, err = _msg_add_suppression(uid, phone_raw, reason="manual")
+    if not ok:
+        add_flash('<span style="color:#b91c1c">' + esc(err) + '</span>')
+    else:
+        add_flash('<span style="color:#047857">המספר נוסף לרשימת החסומים</span>')
+    return redirect("/messaging/suppression")
+
+
+@app.route("/messaging/suppression/<int:supp_id>/remove", methods=["POST"])
+@login_required
+def messaging_suppression_remove(supp_id):
+    if not is_messaging_enabled():
+        return _msg_404()
+    uid = session["user_id"]
+    ok = _msg_remove_suppression(uid, supp_id)
+    if not ok:
+        return _msg_404()
+    add_flash('<span style="color:#047857">המספר הוסר מהרשימה</span>')
+    return redirect("/messaging/suppression")
+
+
+# ── End Phase 4a: Send Safety ──────────────────────────────────────
+
+
 @app.route("/messaging")
 @login_required
 def messaging_hub():
@@ -24318,7 +25047,7 @@ def messaging_lists_members_remove(list_id, contact_id):
 
 
 # ════════════════════════════════════════════════════════════════════
-# End Messaging V1 — Phases 1+2
+# End Messaging V1 — Phases 1+2+3+4a
 # ════════════════════════════════════════════════════════════════════
 
 
