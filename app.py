@@ -23647,14 +23647,173 @@ class InforuProvider(MessagingProvider):
     estimate_cost = _stub_method("inforu")
 
 
+# ── Phase 4b: 019 adapter (test endpoint only) ────────────────────
+# OneNineProvider hits ONLY the documented test endpoint, which accepts
+# the same request shape and returns the same response shape as the
+# vendor's production endpoint but does not actually submit the SMS.
+# The vendor's production endpoint URL is intentionally NOT referenced
+# anywhere in this file — that introduction belongs to Phase 5 with
+# separate sign-off.
+_ONENINE_TEST_URL = "https://019sms.co.il/api/test"
+_ONENINE_TIMEOUT = 20
+_ONENINE_MAX_BODY = 1005
+_ONENINE_MAX_SOURCE = 11
+_ONENINE_ERROR_MAP = {
+    1: "unknown",
+    2: "unknown",
+    3: "auth_failed",
+    4: "vendor_unavailable",
+    5: "rate_limited",
+    6: "vendor_unavailable",
+    7: "unknown",
+    8: "invalid_recipient",
+    9: "invalid_recipient",
+    10: "auth_failed",
+    11: "auth_failed",
+    12: "vendor_unavailable",
+    16: "rate_limited",
+    17: "content_rejected",
+    18: "content_rejected",
+    998: "vendor_unavailable",
+    999: "vendor_unavailable",
+}
+
+
+def _onenine_convert_phone(e164):
+    """Convert stored E.164 (+972...) to 019's documented format (05...).
+    Returns None if input is not a recognizable Israeli mobile."""
+    if not e164 or not isinstance(e164, str):
+        return None
+    if e164.startswith("+972"):
+        rest = e164[4:]
+        if rest and rest.isdigit() and 8 <= len(rest) <= 9:
+            return "0" + rest
+    return None
+
+
 class OneNineProvider(MessagingProvider):
     name = "019"
     channel = "sms"
-    requires_secrets = ("ONENINE_USERNAME", "ONENINE_API_TOKEN")
-    send = _stub_method("019")
-    get_status = _stub_method("019")
-    normalize_error = _stub_method("019")
-    estimate_cost = _stub_method("019")
+    requires_secrets = ("ONENINE_USERNAME", "ONENINE_API_TOKEN", "ONENINE_SOURCE")
+
+    def send(self, to_phone, body, sender_id=None, metadata=None):
+        username = (os.environ.get("ONENINE_USERNAME") or "").strip()
+        token = (os.environ.get("ONENINE_API_TOKEN") or "").strip()
+        source_env = (os.environ.get("ONENINE_SOURCE") or "").strip()
+        if not username or not token or not source_env:
+            return {
+                "success": False,
+                "provider_message_id": None,
+                "provider_status": "failed",
+                "provider_cost": 0,
+                "error_code": "auth_failed",
+                "error_raw": "missing 019 credentials",
+            }
+        normalized = _normalize_phone_il(to_phone)
+        if not normalized:
+            return {
+                "success": False,
+                "provider_message_id": None,
+                "provider_status": "failed",
+                "provider_cost": 0,
+                "error_code": "invalid_recipient",
+                "error_raw": "phone failed E.164 normalization",
+            }
+        converted = _onenine_convert_phone(normalized)
+        if not converted:
+            return {
+                "success": False,
+                "provider_message_id": None,
+                "provider_status": "failed",
+                "provider_cost": 0,
+                "error_code": "invalid_recipient",
+                "error_raw": "phone not an Israeli mobile",
+            }
+        source = source_env.lstrip("+")[:_ONENINE_MAX_SOURCE]
+        message_text = (body or "")[:_ONENINE_MAX_BODY]
+        request_body = {
+            "username": username,
+            "source": source,
+            "destinations": {"phone": converted},
+            "message": message_text,
+            "tag": uuid.uuid4().hex[:16],
+        }
+        try:
+            data = json.dumps(request_body, ensure_ascii=False).encode("utf-8")
+            req = urllib.request.Request(
+                _ONENINE_TEST_URL,
+                data=data,
+                method="POST",
+                headers={
+                    "Authorization": "Bearer " + token,
+                    "Content-Type": "application/json",
+                    "Accept": "application/json",
+                },
+            )
+            with urllib.request.urlopen(req, timeout=_ONENINE_TIMEOUT) as resp:
+                raw = resp.read()
+                try:
+                    parsed = json.loads(raw) if raw else {}
+                except Exception:
+                    parsed = {}
+        except Exception as exc:
+            return {
+                "success": False,
+                "provider_message_id": None,
+                "provider_status": "failed",
+                "provider_cost": 0,
+                "error_code": "vendor_unavailable",
+                "error_raw": (str(exc) or type(exc).__name__)[:500],
+            }
+        status_val = parsed.get("status") if isinstance(parsed, dict) else None
+        try:
+            status_int = int(status_val) if status_val is not None else None
+        except (TypeError, ValueError):
+            status_int = None
+        if status_int == 0:
+            pmid = None
+            if isinstance(parsed, dict):
+                pmid = parsed.get("message_id") or parsed.get("id")
+                if not pmid and isinstance(parsed.get("messages"), list) and parsed["messages"]:
+                    first = parsed["messages"][0]
+                    if isinstance(first, dict):
+                        pmid = first.get("id") or first.get("message_id")
+            if not pmid:
+                pmid = "019-test-" + uuid.uuid4().hex[:16]
+            return {
+                "success": True,
+                "provider_message_id": str(pmid),
+                "provider_status": "delivered",
+                "provider_cost": 0,
+                "error_code": None,
+                "error_raw": None,
+            }
+        mapped = _ONENINE_ERROR_MAP.get(status_int, "unknown")
+        msg_field = ""
+        if isinstance(parsed, dict):
+            msg_field = str(parsed.get("message") or parsed.get("error") or "")[:500]
+        return {
+            "success": False,
+            "provider_message_id": None,
+            "provider_status": "failed",
+            "provider_cost": 0,
+            "error_code": mapped,
+            "error_raw": ("019 status=" + str(status_val) + " " + msg_field).strip()[:500],
+        }
+
+    def get_status(self, provider_message_id):
+        return {"provider_status": "unknown", "raw": None}
+
+    def normalize_error(self, raw_error):
+        try:
+            code = int(raw_error)
+        except (TypeError, ValueError):
+            return "unknown"
+        return _ONENINE_ERROR_MAP.get(code, "unknown")
+
+    def estimate_cost(self, message_meta):
+        return 0
+# ── End Phase 4b: 019 adapter ──────────────────────────────────────
 
 
 class TwilioProvider(MessagingProvider):
