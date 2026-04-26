@@ -23691,6 +23691,43 @@ def _onenine_convert_phone(e164):
     return None
 
 
+# Phase 5 additions — gated, manual-only, single-recipient real send.
+# The production endpoint URL is a NEW constant. It coexists with the test
+# URL; the adapter chooses between them based on a multi-layer gate.
+_ONENINE_PROD_URL = "https://019sms.co.il/api"
+_ONENINE_STAGING_HOST_TOKEN = "zman-emet-platform.onrender.com"
+_ONENINE_USE_REAL_ENV = "ONENINE_USE_REAL"
+_ONENINE_PILOT_RECIPIENT_ENV = "ONENINE_PILOT_RECIPIENT"
+
+
+def _onenine_validate_source(raw_source):
+    """Hardened source validator per 019 docs (numeric, no leading '+',
+    1..11 chars). Used in real mode only; 4b test path keeps lenient
+    truncation behavior to preserve existing smoke."""
+    if raw_source is None:
+        return None
+    s = str(raw_source).strip()
+    if not s:
+        return None
+    if s.startswith("+"):
+        s = s[1:]
+    if not s or len(s) > 11:
+        return None
+    if not s.isdigit():
+        return None
+    return s
+
+
+def _onenine_is_staging_environment():
+    """Positive staging allowlist. Real mode is permitted ONLY when
+    APP_BASE_URL contains the staging service host. Missing, empty, or
+    any other environment → False (fail-closed)."""
+    base = (os.environ.get("APP_BASE_URL") or "").strip().lower()
+    if not base:
+        return False
+    return _ONENINE_STAGING_HOST_TOKEN in base
+
+
 class OneNineProvider(MessagingProvider):
     name = "019"
     channel = "sms"
@@ -23729,7 +23766,60 @@ class OneNineProvider(MessagingProvider):
                 "error_code": "invalid_recipient",
                 "error_raw": "phone not an Israeli mobile",
             }
+        # ── Phase 5 real-mode gate (defense in depth) ────────────────
+        # Default target is the 4b test endpoint. Real mode requires ALL
+        # of the following to flip the target to the production URL:
+        #   1. ONENINE_USE_REAL == "1"
+        #   2. APP_BASE_URL identifies the staging service (positive allowlist)
+        #   3. ONENINE_PILOT_RECIPIENT env var is set
+        #   4. normalized destination phone equals ONENINE_PILOT_RECIPIENT exactly
+        #   5. source passes hardened numeric validation
+        # Any single failure => return without making a network call.
+        target_url = _ONENINE_TEST_URL
         source = source_env.lstrip("+")[:_ONENINE_MAX_SOURCE]
+        use_real = (os.environ.get(_ONENINE_USE_REAL_ENV) or "").strip() == "1"
+        if use_real:
+            if not _onenine_is_staging_environment():
+                return {
+                    "success": False,
+                    "provider_message_id": None,
+                    "provider_status": "failed",
+                    "provider_cost": 0,
+                    "error_code": "auth_failed",
+                    "error_raw": "phase5: not on staging",
+                }
+            allowlist = (os.environ.get(_ONENINE_PILOT_RECIPIENT_ENV) or "").strip()
+            if not allowlist:
+                return {
+                    "success": False,
+                    "provider_message_id": None,
+                    "provider_status": "failed",
+                    "provider_cost": 0,
+                    "error_code": "auth_failed",
+                    "error_raw": "phase5: pilot recipient not set",
+                }
+            if normalized != allowlist:
+                return {
+                    "success": False,
+                    "provider_message_id": None,
+                    "provider_status": "failed",
+                    "provider_cost": 0,
+                    "error_code": "invalid_recipient",
+                    "error_raw": "phase5: destination not on pilot allowlist",
+                }
+            hardened_source = _onenine_validate_source(source_env)
+            if not hardened_source:
+                return {
+                    "success": False,
+                    "provider_message_id": None,
+                    "provider_status": "failed",
+                    "provider_cost": 0,
+                    "error_code": "auth_failed",
+                    "error_raw": "phase5: source failed hardened validation",
+                }
+            source = hardened_source
+            target_url = _ONENINE_PROD_URL
+        # ── End Phase 5 real-mode gate ──────────────────────────────
         message_text = (body or "")[:_ONENINE_MAX_BODY]
         request_body = {
             "username": username,
@@ -23741,7 +23831,7 @@ class OneNineProvider(MessagingProvider):
         try:
             data = json.dumps(request_body, ensure_ascii=False).encode("utf-8")
             req = urllib.request.Request(
-                _ONENINE_TEST_URL,
+                target_url,
                 data=data,
                 method="POST",
                 headers={
