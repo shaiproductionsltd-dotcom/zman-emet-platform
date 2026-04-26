@@ -2,6 +2,7 @@
 from zipfile import BadZipFile, ZIP_DEFLATED, ZipFile
 from collections import defaultdict
 from io import BytesIO
+import base64
 import calendar
 import csv
 from datetime import date, datetime, time, timedelta
@@ -23906,14 +23907,256 @@ class OneNineProvider(MessagingProvider):
 # ── End Phase 4b: 019 adapter ──────────────────────────────────────
 
 
+# ── Phase 5T: Twilio pilot adapter ─────────────────────────────────
+# Twilio is a TEMPORARY pilot provider only. Default stays MockProvider.
+# Real send is gated by 5 independent layers (USE_REAL flag + positive
+# staging allowlist + pilot recipient set + destination equality + valid
+# E.164 From). Twilio has no documented test endpoint, so any successful
+# network call would deliver a real SMS — gates are absolute.
+# 4a UI never calls this adapter. 019 adapter is untouched.
+_TWILIO_MESSAGES_URL_TEMPLATE = "https://api.twilio.com/2010-04-01/Accounts/{sid}/Messages.json"
+_TWILIO_TIMEOUT = 20
+_TWILIO_MAX_BODY = 1600
+_TWILIO_USE_REAL_ENV = "TWILIO_USE_REAL"
+_TWILIO_PILOT_RECIPIENT_ENV = "TWILIO_PILOT_RECIPIENT"
+_TWILIO_STAGING_HOST_TOKEN = "zman-emet-platform.onrender.com"
+_TWILIO_ERROR_MAP = {
+    20003: "auth_failed",
+    20404: "auth_failed",
+    20429: "rate_limited",
+    21211: "invalid_recipient",
+    21217: "invalid_recipient",
+    21408: "invalid_recipient",
+    21610: "invalid_recipient",
+    21611: "auth_failed",
+    21614: "invalid_recipient",
+    21660: "auth_failed",
+    30003: "invalid_recipient",
+    30004: "content_rejected",
+    30005: "invalid_recipient",
+    30006: "invalid_recipient",
+    30007: "content_rejected",
+    30008: "unknown",
+}
+
+
+def _twilio_validate_from(raw_from):
+    """Validate TWILIO_FROM as an E.164 phone number. Phase 5T accepts
+    only E.164 ('+' followed by 8..15 digits). Alphanumeric Sender IDs
+    are deferred to a later phase."""
+    if raw_from is None:
+        return None
+    s = str(raw_from).strip()
+    if not s or not s.startswith("+"):
+        return None
+    digits = s[1:]
+    if not digits.isdigit():
+        return None
+    if not (8 <= len(digits) <= 15):
+        return None
+    return s
+
+
+def _twilio_is_staging_environment():
+    """Positive staging allowlist. Real Twilio send is permitted ONLY
+    when APP_BASE_URL contains the staging service host. Missing, empty,
+    or any other environment → False (fail-closed)."""
+    base = (os.environ.get("APP_BASE_URL") or "").strip().lower()
+    if not base:
+        return False
+    return _TWILIO_STAGING_HOST_TOKEN in base
+
+
 class TwilioProvider(MessagingProvider):
     name = "twilio"
     channel = "sms"
     requires_secrets = ("TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_FROM")
-    send = _stub_method("twilio")
-    get_status = _stub_method("twilio")
-    normalize_error = _stub_method("twilio")
-    estimate_cost = _stub_method("twilio")
+
+    def send(self, to_phone, body, sender_id=None, metadata=None):
+        account_sid = (os.environ.get("TWILIO_ACCOUNT_SID") or "").strip()
+        auth_token = (os.environ.get("TWILIO_AUTH_TOKEN") or "").strip()
+        from_raw = (os.environ.get("TWILIO_FROM") or "").strip()
+        if not account_sid or not auth_token or not from_raw:
+            return {
+                "success": False,
+                "provider_message_id": None,
+                "provider_status": "failed",
+                "provider_cost": 0,
+                "error_code": "auth_failed",
+                "error_raw": "missing twilio credentials",
+            }
+        normalized = _normalize_phone_il(to_phone)
+        if not normalized:
+            return {
+                "success": False,
+                "provider_message_id": None,
+                "provider_status": "failed",
+                "provider_cost": 0,
+                "error_code": "invalid_recipient",
+                "error_raw": "phone failed E.164 normalization",
+            }
+        # ── Phase 5T five-layer real-mode gate ───────────────────────
+        # Layer 1: explicit opt-in
+        use_real = (os.environ.get(_TWILIO_USE_REAL_ENV) or "").strip() == "1"
+        if not use_real:
+            return {
+                "success": False,
+                "provider_message_id": None,
+                "provider_status": "failed",
+                "provider_cost": 0,
+                "error_code": "auth_failed",
+                "error_raw": "phase5t: TWILIO_USE_REAL not set",
+            }
+        # Layer 2: positive staging allowlist
+        if not _twilio_is_staging_environment():
+            return {
+                "success": False,
+                "provider_message_id": None,
+                "provider_status": "failed",
+                "provider_cost": 0,
+                "error_code": "auth_failed",
+                "error_raw": "phase5t: not on staging",
+            }
+        # Layer 3: pilot recipient set
+        allowlist = (os.environ.get(_TWILIO_PILOT_RECIPIENT_ENV) or "").strip()
+        if not allowlist:
+            return {
+                "success": False,
+                "provider_message_id": None,
+                "provider_status": "failed",
+                "provider_cost": 0,
+                "error_code": "auth_failed",
+                "error_raw": "phase5t: pilot recipient not set",
+            }
+        # Layer 4: destination equality
+        if normalized != allowlist:
+            return {
+                "success": False,
+                "provider_message_id": None,
+                "provider_status": "failed",
+                "provider_cost": 0,
+                "error_code": "invalid_recipient",
+                "error_raw": "phase5t: destination not on pilot allowlist",
+            }
+        # Layer 5: hardened From validation
+        from_validated = _twilio_validate_from(from_raw)
+        if not from_validated:
+            return {
+                "success": False,
+                "provider_message_id": None,
+                "provider_status": "failed",
+                "provider_cost": 0,
+                "error_code": "auth_failed",
+                "error_raw": "phase5t: TWILIO_FROM failed E.164 validation",
+            }
+        # ── End gate; build and POST ─────────────────────────────────
+        message_text = (body or "")[:_TWILIO_MAX_BODY]
+        form = {
+            "From": from_validated,
+            "To": normalized,
+            "Body": message_text,
+        }
+        try:
+            data = urlencode(form).encode("utf-8")
+            basic = base64.b64encode((account_sid + ":" + auth_token).encode("utf-8")).decode("ascii")
+            url = _TWILIO_MESSAGES_URL_TEMPLATE.format(sid=account_sid)
+            req = urllib.request.Request(
+                url,
+                data=data,
+                method="POST",
+                headers={
+                    "Authorization": "Basic " + basic,
+                    "Content-Type": "application/x-www-form-urlencoded",
+                    "Accept": "application/json",
+                },
+            )
+            with urllib.request.urlopen(req, timeout=_TWILIO_TIMEOUT) as resp:
+                http_status = resp.status
+                raw = resp.read()
+                try:
+                    parsed = json.loads(raw) if raw else {}
+                except Exception:
+                    parsed = {}
+        except urllib.error.HTTPError as exc:
+            try:
+                err_body = exc.read().decode("utf-8", errors="replace")
+                parsed = json.loads(err_body) if err_body else {}
+            except Exception:
+                parsed = {}
+            code_val = parsed.get("code") if isinstance(parsed, dict) else None
+            try:
+                code_int = int(code_val) if code_val is not None else None
+            except (TypeError, ValueError):
+                code_int = None
+            if exc.code >= 500:
+                mapped = "vendor_unavailable"
+            elif code_int is not None:
+                mapped = _TWILIO_ERROR_MAP.get(code_int, "unknown")
+            else:
+                mapped = "unknown"
+            msg_field = ""
+            if isinstance(parsed, dict):
+                msg_field = str(parsed.get("message") or "")[:300]
+            return {
+                "success": False,
+                "provider_message_id": None,
+                "provider_status": "failed",
+                "provider_cost": 0,
+                "error_code": mapped,
+                "error_raw": ("twilio http=" + str(exc.code) + " code=" + str(code_val) + " " + msg_field).strip()[:500],
+            }
+        except Exception as exc:
+            return {
+                "success": False,
+                "provider_message_id": None,
+                "provider_status": "failed",
+                "provider_cost": 0,
+                "error_code": "vendor_unavailable",
+                "error_raw": (str(exc) or type(exc).__name__)[:500],
+            }
+        # 2xx response path
+        body_error_code = parsed.get("error_code") if isinstance(parsed, dict) else None
+        if body_error_code in (None, "", 0, "0"):
+            sid_val = parsed.get("sid") if isinstance(parsed, dict) else None
+            status_val = parsed.get("status") if isinstance(parsed, dict) else None
+            return {
+                "success": True,
+                "provider_message_id": str(sid_val) if sid_val else None,
+                "provider_status": str(status_val) if status_val else "queued",
+                "provider_cost": 0,
+                "error_code": None,
+                "error_raw": None,
+            }
+        try:
+            be_int = int(body_error_code)
+        except (TypeError, ValueError):
+            be_int = None
+        mapped = _TWILIO_ERROR_MAP.get(be_int, "unknown") if be_int is not None else "unknown"
+        body_msg = ""
+        if isinstance(parsed, dict):
+            body_msg = str(parsed.get("error_message") or parsed.get("message") or "")[:300]
+        return {
+            "success": False,
+            "provider_message_id": None,
+            "provider_status": "failed",
+            "provider_cost": 0,
+            "error_code": mapped,
+            "error_raw": ("twilio code=" + str(body_error_code) + " " + body_msg).strip()[:500],
+        }
+
+    def get_status(self, provider_message_id):
+        return {"provider_status": "unknown", "raw": None}
+
+    def normalize_error(self, raw_error):
+        try:
+            code = int(raw_error)
+        except (TypeError, ValueError):
+            return "unknown"
+        return _TWILIO_ERROR_MAP.get(code, "unknown")
+
+    def estimate_cost(self, message_meta):
+        return 0
+# ── End Phase 5T: Twilio pilot adapter ─────────────────────────────
 
 
 class MetaCloudProvider(MessagingProvider):
