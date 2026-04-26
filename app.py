@@ -9677,6 +9677,35 @@ def init_db():
         db.execute("CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_user ON password_reset_tokens(user_id)")
         db.execute("CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_hash ON password_reset_tokens(token_hash)")
 
+        # ── Messaging V1 — Phase 1 (Contacts + Lists only) ──────────
+        db.execute(
+            """CREATE TABLE IF NOT EXISTS msg_contacts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            first_name TEXT,
+            last_name TEXT,
+            employee_number TEXT,
+            phone TEXT NOT NULL,
+            created_at TEXT NOT NULL)"""
+        )
+        db.execute("CREATE INDEX IF NOT EXISTS idx_msg_contacts_user ON msg_contacts(user_id)")
+        db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_msg_contacts_user_phone ON msg_contacts(user_id, phone)")
+        db.execute(
+            """CREATE TABLE IF NOT EXISTS msg_contact_lists (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            created_at TEXT NOT NULL)"""
+        )
+        db.execute("CREATE INDEX IF NOT EXISTS idx_msg_contact_lists_user ON msg_contact_lists(user_id)")
+        db.execute(
+            """CREATE TABLE IF NOT EXISTS msg_contact_list_members (
+            list_id INTEGER NOT NULL,
+            contact_id INTEGER NOT NULL,
+            PRIMARY KEY (list_id, contact_id))"""
+        )
+        # ── End messaging tables ────────────────────────────────────
+
         existing_columns = get_table_columns(db, "users")
         desired_columns = {
             "company_name": "TEXT",
@@ -23101,6 +23130,545 @@ def admin_retention():
         '</div></div>'
     )
     return render("שימור מידע", body)
+
+
+# ════════════════════════════════════════════════════════════════════
+# Messaging V1 — Phase 1 (Contacts + Lists CRUD only)
+# Strict scope: NO sending, NO templates, NO scheduling, NO providers.
+# Feature-gated by ENABLE_MESSAGING env var. Returns 404 when disabled.
+# All data scoped by session["user_id"] (matches existing convention).
+# ════════════════════════════════════════════════════════════════════
+
+
+def is_messaging_enabled():
+    return os.environ.get("ENABLE_MESSAGING", "0").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _msg_404():
+    return ("Not Found", 404)
+
+
+def _normalize_phone_il(raw):
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    if not text:
+        return None
+    has_plus = text.startswith("+")
+    digits = re.sub(r"\D", "", text)
+    if not digits:
+        return None
+    if has_plus:
+        if 8 <= len(digits) <= 15:
+            return "+" + digits
+        return None
+    if digits.startswith("972"):
+        if 11 <= len(digits) <= 13:
+            return "+" + digits
+        return None
+    if digits.startswith("0"):
+        if 9 <= len(digits) <= 10:
+            return "+972" + digits[1:]
+        return None
+    if 8 <= len(digits) <= 9:
+        return "+972" + digits
+    return None
+
+
+def _msg_get_my_contact(db, user_id, contact_id):
+    return db.execute(
+        "SELECT * FROM msg_contacts WHERE id=? AND user_id=?",
+        (contact_id, user_id),
+    ).fetchone()
+
+
+def _msg_get_my_list(db, user_id, list_id):
+    return db.execute(
+        "SELECT * FROM msg_contact_lists WHERE id=? AND user_id=?",
+        (list_id, user_id),
+    ).fetchone()
+
+
+def _msg_layout(title, inner):
+    return render(title, inner, lang="he", topbar_greeting="שלום, ", logout_label="התנתק")
+
+
+def _msg_nav():
+    return (
+        '<div style="display:flex;gap:8px;margin-bottom:18px;flex-wrap:wrap">'
+        '<a href="/messaging" style="padding:8px 14px;background:#eef2ff;color:#3730a3;border-radius:8px;text-decoration:none;font-size:13px;font-weight:600">בית</a>'
+        '<a href="/messaging/contacts" style="padding:8px 14px;background:#f1f5f9;color:#0f172a;border-radius:8px;text-decoration:none;font-size:13px;font-weight:600">אנשי קשר</a>'
+        '<a href="/messaging/lists" style="padding:8px 14px;background:#f1f5f9;color:#0f172a;border-radius:8px;text-decoration:none;font-size:13px;font-weight:600">רשימות</a>'
+        '</div>'
+    )
+
+
+@app.route("/messaging")
+@login_required
+def messaging_hub():
+    if not is_messaging_enabled():
+        return _msg_404()
+    uid = session["user_id"]
+    with get_db() as db:
+        n_contacts = db.execute("SELECT COUNT(*) AS c FROM msg_contacts WHERE user_id=?", (uid,)).fetchone()["c"]
+        n_lists = db.execute("SELECT COUNT(*) AS c FROM msg_contact_lists WHERE user_id=?", (uid,)).fetchone()["c"]
+    body = (
+        '<div class="card">'
+        + _msg_nav()
+        + '<h2 style="margin:0 0 10px 0">מודול הודעות</h2>'
+        + '<p style="color:#64748b;margin:0 0 18px 0">שלב 1 — ניהול אנשי קשר ורשימות תפוצה. שליחה, תבניות ומכסות יתווספו בשלבים הבאים.</p>'
+        + '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px">'
+        + '<a href="/messaging/contacts" style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:14px;padding:16px;text-decoration:none;color:#0f172a">'
+        + '<div style="font-size:24px;margin-bottom:6px">👥</div>'
+        + '<div style="font-weight:700;margin-bottom:4px">אנשי קשר</div>'
+        + f'<div style="font-size:12px;color:#64748b">{n_contacts} אנשי קשר במאגר</div>'
+        + '</a>'
+        + '<a href="/messaging/lists" style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:14px;padding:16px;text-decoration:none;color:#0f172a">'
+        + '<div style="font-size:24px;margin-bottom:6px">📋</div>'
+        + '<div style="font-weight:700;margin-bottom:4px">רשימות תפוצה</div>'
+        + f'<div style="font-size:12px;color:#64748b">{n_lists} רשימות פעילות</div>'
+        + '</a>'
+        + '</div>'
+        + '</div>'
+    )
+    return _msg_layout("הודעות", body)
+
+
+@app.route("/messaging/contacts", methods=["GET"])
+@login_required
+def messaging_contacts():
+    if not is_messaging_enabled():
+        return _msg_404()
+    uid = session["user_id"]
+    with get_db() as db:
+        rows = db.execute(
+            "SELECT * FROM msg_contacts WHERE user_id=? ORDER BY created_at DESC, id DESC",
+            (uid,),
+        ).fetchall()
+    rows_html = ""
+    for r in rows:
+        rows_html += (
+            '<tr>'
+            + '<td>' + esc(r["first_name"] or "") + '</td>'
+            + '<td>' + esc(r["last_name"] or "") + '</td>'
+            + '<td>' + esc(r["employee_number"] or "") + '</td>'
+            + '<td style="direction:ltr;text-align:right">' + esc(r["phone"]) + '</td>'
+            + '<td style="white-space:nowrap">'
+            + '<form method="POST" action="/messaging/contacts/' + str(r["id"]) + '/edit" style="display:inline-flex;gap:4px;align-items:center;flex-wrap:wrap">'
+            + '<input name="first_name" value="' + esc(r["first_name"] or "") + '" placeholder="שם" style="width:80px;padding:4px;font-size:12px">'
+            + '<input name="last_name" value="' + esc(r["last_name"] or "") + '" placeholder="משפחה" style="width:80px;padding:4px;font-size:12px">'
+            + '<input name="employee_number" value="' + esc(r["employee_number"] or "") + '" placeholder="מס׳" style="width:60px;padding:4px;font-size:12px">'
+            + '<input name="phone" value="' + esc(r["phone"]) + '" placeholder="טלפון" style="width:110px;padding:4px;font-size:12px;direction:ltr">'
+            + '<button type="submit" class="btn btn-blue" style="padding:4px 10px;font-size:12px">עדכן</button>'
+            + '</form>'
+            + '<form method="POST" action="/messaging/contacts/' + str(r["id"]) + '/delete" style="display:inline" onsubmit="return confirm(\'למחוק איש קשר?\')">'
+            + '<button type="submit" class="btn" style="padding:4px 10px;font-size:12px;background:#fee2e2;color:#991b1b;border:1px solid #fecaca">מחק</button>'
+            + '</form>'
+            + '</td>'
+            + '</tr>'
+        )
+    if not rows_html:
+        rows_html = '<tr><td colspan="5" style="text-align:center;padding:20px;color:#94a3b8">אין אנשי קשר עדיין</td></tr>'
+
+    body = (
+        '<div class="card">'
+        + _msg_nav()
+        + '<h2 style="margin:0 0 12px 0">אנשי קשר</h2>'
+        + '<form method="POST" action="/messaging/contacts/new" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:18px;padding:12px;background:#f8fafc;border-radius:10px">'
+        + '<input name="first_name" placeholder="שם פרטי" style="flex:1;min-width:120px;padding:8px">'
+        + '<input name="last_name" placeholder="שם משפחה" style="flex:1;min-width:120px;padding:8px">'
+        + '<input name="employee_number" placeholder="מס׳ עובד" style="flex:1;min-width:100px;padding:8px">'
+        + '<input name="phone" placeholder="טלפון (חובה)" required style="flex:1;min-width:140px;padding:8px;direction:ltr">'
+        + '<button type="submit" class="btn btn-blue">הוסף איש קשר</button>'
+        + '</form>'
+        + '<form method="POST" action="/messaging/contacts/import" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:18px;padding:12px;background:#fef3c7;border-radius:10px;align-items:flex-start">'
+        + '<div style="flex:1;min-width:280px">'
+        + '<div style="font-size:13px;font-weight:600;margin-bottom:6px">ייבוא מ-CSV (טור חובה: phone; אופציונלי: first_name, last_name, employee_number)</div>'
+        + '<textarea name="csv_text" placeholder="phone,first_name,last_name,employee_number\n050-1234567,דני,כהן,101" rows="3" style="width:100%;padding:6px;font-family:monospace;font-size:12px"></textarea>'
+        + '</div>'
+        + '<button type="submit" class="btn btn-blue">ייבא</button>'
+        + '</form>'
+        + '<table style="width:100%;border-collapse:collapse;background:#fff;border:1px solid #e2e8f0;border-radius:10px;overflow:hidden">'
+        + '<thead><tr style="background:#f1f5f9"><th style="padding:8px;text-align:right">שם פרטי</th><th style="padding:8px;text-align:right">שם משפחה</th><th style="padding:8px;text-align:right">מס׳ עובד</th><th style="padding:8px;text-align:right">טלפון</th><th style="padding:8px;text-align:right">פעולות</th></tr></thead>'
+        + '<tbody>' + rows_html + '</tbody>'
+        + '</table>'
+        + '</div>'
+    )
+    return _msg_layout("אנשי קשר", body)
+
+
+@app.route("/messaging/contacts/new", methods=["POST"])
+@login_required
+def messaging_contacts_new():
+    if not is_messaging_enabled():
+        return _msg_404()
+    uid = session["user_id"]
+    first_name = (request.form.get("first_name") or "").strip()[:80]
+    last_name = (request.form.get("last_name") or "").strip()[:80]
+    employee_number = (request.form.get("employee_number") or "").strip()[:40]
+    phone_raw = request.form.get("phone") or ""
+    phone = _normalize_phone_il(phone_raw)
+    if not phone:
+        add_flash('<span style="color:#b91c1c">מספר טלפון לא תקין</span>')
+        return redirect("/messaging/contacts")
+    with get_db() as db:
+        existing = db.execute(
+            "SELECT id FROM msg_contacts WHERE user_id=? AND phone=?",
+            (uid, phone),
+        ).fetchone()
+        if existing:
+            add_flash('<span style="color:#b91c1c">איש קשר עם טלפון זה כבר קיים</span>')
+            return redirect("/messaging/contacts")
+        db.execute(
+            "INSERT INTO msg_contacts(user_id,first_name,last_name,employee_number,phone,created_at) VALUES (?,?,?,?,?,?)",
+            (uid, first_name or None, last_name or None, employee_number or None, phone, datetime.utcnow().isoformat()),
+        )
+        db.commit()
+    add_flash('<span style="color:#047857">איש קשר נוסף</span>')
+    return redirect("/messaging/contacts")
+
+
+@app.route("/messaging/contacts/import", methods=["POST"])
+@login_required
+def messaging_contacts_import():
+    if not is_messaging_enabled():
+        return _msg_404()
+    uid = session["user_id"]
+    csv_text = (request.form.get("csv_text") or "").strip()
+    if not csv_text:
+        add_flash('<span style="color:#b91c1c">לא הוזן טקסט לייבוא</span>')
+        return redirect("/messaging/contacts")
+    added = 0
+    skipped = 0
+    errors = []
+    try:
+        from io import StringIO
+        reader = csv.DictReader(StringIO(csv_text))
+        if not reader.fieldnames or "phone" not in [f.strip().lower() for f in reader.fieldnames]:
+            add_flash('<span style="color:#b91c1c">חסר עמוד phone בכותרות ה-CSV</span>')
+            return redirect("/messaging/contacts")
+        # Normalize header lookup
+        with get_db() as db:
+            for idx, row in enumerate(reader, start=2):
+                norm = {(k or "").strip().lower(): (v or "").strip() for k, v in row.items()}
+                phone = _normalize_phone_il(norm.get("phone"))
+                if not phone:
+                    skipped += 1
+                    if len(errors) < 5:
+                        errors.append(f"שורה {idx}: טלפון לא תקין")
+                    continue
+                exists = db.execute(
+                    "SELECT id FROM msg_contacts WHERE user_id=? AND phone=?",
+                    (uid, phone),
+                ).fetchone()
+                if exists:
+                    skipped += 1
+                    continue
+                db.execute(
+                    "INSERT INTO msg_contacts(user_id,first_name,last_name,employee_number,phone,created_at) VALUES (?,?,?,?,?,?)",
+                    (
+                        uid,
+                        (norm.get("first_name") or None),
+                        (norm.get("last_name") or None),
+                        (norm.get("employee_number") or None),
+                        phone,
+                        datetime.utcnow().isoformat(),
+                    ),
+                )
+                added += 1
+            db.commit()
+    except Exception as exc:
+        add_flash('<span style="color:#b91c1c">שגיאת ייבוא: ' + esc(str(exc)) + '</span>')
+        return redirect("/messaging/contacts")
+    msg = f'נוספו {added}, דולגו {skipped}'
+    if errors:
+        msg += " (" + "; ".join(errors) + ")"
+    add_flash('<span style="color:#047857">' + esc(msg) + '</span>')
+    return redirect("/messaging/contacts")
+
+
+@app.route("/messaging/contacts/<int:contact_id>/edit", methods=["POST"])
+@login_required
+def messaging_contacts_edit(contact_id):
+    if not is_messaging_enabled():
+        return _msg_404()
+    uid = session["user_id"]
+    first_name = (request.form.get("first_name") or "").strip()[:80]
+    last_name = (request.form.get("last_name") or "").strip()[:80]
+    employee_number = (request.form.get("employee_number") or "").strip()[:40]
+    phone_raw = request.form.get("phone") or ""
+    phone = _normalize_phone_il(phone_raw)
+    if not phone:
+        add_flash('<span style="color:#b91c1c">מספר טלפון לא תקין</span>')
+        return redirect("/messaging/contacts")
+    with get_db() as db:
+        existing = _msg_get_my_contact(db, uid, contact_id)
+        if not existing:
+            return _msg_404()
+        # Check phone conflict on a *different* contact
+        clash = db.execute(
+            "SELECT id FROM msg_contacts WHERE user_id=? AND phone=? AND id<>?",
+            (uid, phone, contact_id),
+        ).fetchone()
+        if clash:
+            add_flash('<span style="color:#b91c1c">קיים איש קשר אחר עם אותו טלפון</span>')
+            return redirect("/messaging/contacts")
+        db.execute(
+            "UPDATE msg_contacts SET first_name=?, last_name=?, employee_number=?, phone=? WHERE id=? AND user_id=?",
+            (first_name or None, last_name or None, employee_number or None, phone, contact_id, uid),
+        )
+        db.commit()
+    add_flash('<span style="color:#047857">איש קשר עודכן</span>')
+    return redirect("/messaging/contacts")
+
+
+@app.route("/messaging/contacts/<int:contact_id>/delete", methods=["POST"])
+@login_required
+def messaging_contacts_delete(contact_id):
+    if not is_messaging_enabled():
+        return _msg_404()
+    uid = session["user_id"]
+    with get_db() as db:
+        existing = _msg_get_my_contact(db, uid, contact_id)
+        if not existing:
+            return _msg_404()
+        db.execute("DELETE FROM msg_contact_list_members WHERE contact_id=?", (contact_id,))
+        db.execute("DELETE FROM msg_contacts WHERE id=? AND user_id=?", (contact_id, uid))
+        db.commit()
+    add_flash('<span style="color:#047857">איש קשר נמחק</span>')
+    return redirect("/messaging/contacts")
+
+
+@app.route("/messaging/lists", methods=["GET"])
+@login_required
+def messaging_lists():
+    if not is_messaging_enabled():
+        return _msg_404()
+    uid = session["user_id"]
+    with get_db() as db:
+        lists = db.execute(
+            """SELECT l.*, (SELECT COUNT(*) FROM msg_contact_list_members m WHERE m.list_id=l.id) AS member_count
+            FROM msg_contact_lists l WHERE l.user_id=? ORDER BY l.created_at DESC, l.id DESC""",
+            (uid,),
+        ).fetchall()
+    rows_html = ""
+    for l in lists:
+        rows_html += (
+            '<tr>'
+            + '<td>'
+            + '<form method="POST" action="/messaging/lists/' + str(l["id"]) + '/rename" style="display:inline-flex;gap:4px;align-items:center">'
+            + '<input name="name" value="' + esc(l["name"]) + '" style="padding:4px;font-size:13px">'
+            + '<button type="submit" class="btn btn-blue" style="padding:4px 10px;font-size:12px">שנה שם</button>'
+            + '</form>'
+            + '</td>'
+            + '<td>' + str(l["member_count"]) + '</td>'
+            + '<td style="white-space:nowrap">'
+            + '<a href="/messaging/lists/' + str(l["id"]) + '/members" class="btn" style="padding:4px 10px;font-size:12px;background:#dbeafe;color:#1e40af;border:1px solid #bfdbfe;text-decoration:none">חברים</a>'
+            + '<form method="POST" action="/messaging/lists/' + str(l["id"]) + '/delete" style="display:inline;margin-inline-start:4px" onsubmit="return confirm(\'למחוק רשימה?\')">'
+            + '<button type="submit" class="btn" style="padding:4px 10px;font-size:12px;background:#fee2e2;color:#991b1b;border:1px solid #fecaca">מחק</button>'
+            + '</form>'
+            + '</td>'
+            + '</tr>'
+        )
+    if not rows_html:
+        rows_html = '<tr><td colspan="3" style="text-align:center;padding:20px;color:#94a3b8">אין רשימות עדיין</td></tr>'
+
+    body = (
+        '<div class="card">'
+        + _msg_nav()
+        + '<h2 style="margin:0 0 12px 0">רשימות תפוצה</h2>'
+        + '<form method="POST" action="/messaging/lists/new" style="display:flex;gap:6px;margin-bottom:18px;padding:12px;background:#f8fafc;border-radius:10px">'
+        + '<input name="name" placeholder="שם רשימה חדשה" required style="flex:1;padding:8px">'
+        + '<button type="submit" class="btn btn-blue">צור רשימה</button>'
+        + '</form>'
+        + '<table style="width:100%;border-collapse:collapse;background:#fff;border:1px solid #e2e8f0;border-radius:10px;overflow:hidden">'
+        + '<thead><tr style="background:#f1f5f9"><th style="padding:8px;text-align:right">שם</th><th style="padding:8px;text-align:right">חברים</th><th style="padding:8px;text-align:right">פעולות</th></tr></thead>'
+        + '<tbody>' + rows_html + '</tbody>'
+        + '</table>'
+        + '</div>'
+    )
+    return _msg_layout("רשימות תפוצה", body)
+
+
+@app.route("/messaging/lists/new", methods=["POST"])
+@login_required
+def messaging_lists_new():
+    if not is_messaging_enabled():
+        return _msg_404()
+    uid = session["user_id"]
+    name = (request.form.get("name") or "").strip()[:80]
+    if not name:
+        add_flash('<span style="color:#b91c1c">שם רשימה לא יכול להיות ריק</span>')
+        return redirect("/messaging/lists")
+    with get_db() as db:
+        db.execute(
+            "INSERT INTO msg_contact_lists(user_id,name,created_at) VALUES (?,?,?)",
+            (uid, name, datetime.utcnow().isoformat()),
+        )
+        db.commit()
+    add_flash('<span style="color:#047857">רשימה נוצרה</span>')
+    return redirect("/messaging/lists")
+
+
+@app.route("/messaging/lists/<int:list_id>/rename", methods=["POST"])
+@login_required
+def messaging_lists_rename(list_id):
+    if not is_messaging_enabled():
+        return _msg_404()
+    uid = session["user_id"]
+    name = (request.form.get("name") or "").strip()[:80]
+    if not name:
+        add_flash('<span style="color:#b91c1c">שם רשימה לא יכול להיות ריק</span>')
+        return redirect("/messaging/lists")
+    with get_db() as db:
+        existing = _msg_get_my_list(db, uid, list_id)
+        if not existing:
+            return _msg_404()
+        db.execute("UPDATE msg_contact_lists SET name=? WHERE id=? AND user_id=?", (name, list_id, uid))
+        db.commit()
+    add_flash('<span style="color:#047857">שם הרשימה עודכן</span>')
+    return redirect("/messaging/lists")
+
+
+@app.route("/messaging/lists/<int:list_id>/delete", methods=["POST"])
+@login_required
+def messaging_lists_delete(list_id):
+    if not is_messaging_enabled():
+        return _msg_404()
+    uid = session["user_id"]
+    with get_db() as db:
+        existing = _msg_get_my_list(db, uid, list_id)
+        if not existing:
+            return _msg_404()
+        db.execute("DELETE FROM msg_contact_list_members WHERE list_id=?", (list_id,))
+        db.execute("DELETE FROM msg_contact_lists WHERE id=? AND user_id=?", (list_id, uid))
+        db.commit()
+    add_flash('<span style="color:#047857">רשימה נמחקה</span>')
+    return redirect("/messaging/lists")
+
+
+@app.route("/messaging/lists/<int:list_id>/members", methods=["GET"])
+@login_required
+def messaging_lists_members(list_id):
+    if not is_messaging_enabled():
+        return _msg_404()
+    uid = session["user_id"]
+    with get_db() as db:
+        existing = _msg_get_my_list(db, uid, list_id)
+        if not existing:
+            return _msg_404()
+        members = db.execute(
+            """SELECT c.* FROM msg_contacts c
+            JOIN msg_contact_list_members m ON m.contact_id=c.id
+            WHERE m.list_id=? AND c.user_id=?
+            ORDER BY c.last_name, c.first_name""",
+            (list_id, uid),
+        ).fetchall()
+        all_contacts = db.execute(
+            "SELECT * FROM msg_contacts WHERE user_id=? ORDER BY last_name, first_name",
+            (uid,),
+        ).fetchall()
+    member_ids = {m["id"] for m in members}
+    members_html = ""
+    for c in members:
+        members_html += (
+            '<tr>'
+            + '<td>' + esc((c["first_name"] or "") + " " + (c["last_name"] or "")) + '</td>'
+            + '<td style="direction:ltr;text-align:right">' + esc(c["phone"]) + '</td>'
+            + '<td>'
+            + '<form method="POST" action="/messaging/lists/' + str(list_id) + '/members/' + str(c["id"]) + '/remove" style="display:inline">'
+            + '<button type="submit" class="btn" style="padding:4px 10px;font-size:12px;background:#fee2e2;color:#991b1b;border:1px solid #fecaca">הסר</button>'
+            + '</form>'
+            + '</td>'
+            + '</tr>'
+        )
+    if not members_html:
+        members_html = '<tr><td colspan="3" style="text-align:center;padding:14px;color:#94a3b8">אין חברים ברשימה</td></tr>'
+
+    options_html = ""
+    for c in all_contacts:
+        if c["id"] in member_ids:
+            continue
+        label = ((c["first_name"] or "") + " " + (c["last_name"] or "")).strip() or c["phone"]
+        options_html += '<option value="' + str(c["id"]) + '">' + esc(label) + ' — ' + esc(c["phone"]) + '</option>'
+
+    body = (
+        '<div class="card">'
+        + _msg_nav()
+        + '<h2 style="margin:0 0 6px 0">חברי רשימה: ' + esc(existing["name"]) + '</h2>'
+        + '<p style="color:#64748b;margin:0 0 14px 0"><a href="/messaging/lists" style="color:#3b82f6">‹ חזרה לרשימות</a></p>'
+        + '<form method="POST" action="/messaging/lists/' + str(list_id) + '/members/add" style="display:flex;gap:6px;margin-bottom:18px;padding:12px;background:#f8fafc;border-radius:10px;align-items:center;flex-wrap:wrap">'
+        + '<select name="contact_id" required style="flex:1;min-width:240px;padding:8px">'
+        + '<option value="">— בחר איש קשר להוספה —</option>'
+        + options_html
+        + '</select>'
+        + '<button type="submit" class="btn btn-blue">הוסף לרשימה</button>'
+        + '</form>'
+        + '<table style="width:100%;border-collapse:collapse;background:#fff;border:1px solid #e2e8f0;border-radius:10px;overflow:hidden">'
+        + '<thead><tr style="background:#f1f5f9"><th style="padding:8px;text-align:right">שם</th><th style="padding:8px;text-align:right">טלפון</th><th style="padding:8px;text-align:right">פעולה</th></tr></thead>'
+        + '<tbody>' + members_html + '</tbody>'
+        + '</table>'
+        + '</div>'
+    )
+    return _msg_layout("חברי רשימה", body)
+
+
+@app.route("/messaging/lists/<int:list_id>/members/add", methods=["POST"])
+@login_required
+def messaging_lists_members_add(list_id):
+    if not is_messaging_enabled():
+        return _msg_404()
+    uid = session["user_id"]
+    contact_id_raw = (request.form.get("contact_id") or "").strip()
+    if not contact_id_raw.isdigit():
+        return redirect("/messaging/lists/" + str(list_id) + "/members")
+    contact_id = int(contact_id_raw)
+    with get_db() as db:
+        l = _msg_get_my_list(db, uid, list_id)
+        if not l:
+            return _msg_404()
+        c = _msg_get_my_contact(db, uid, contact_id)
+        if not c:
+            return _msg_404()
+        existing = db.execute(
+            "SELECT 1 FROM msg_contact_list_members WHERE list_id=? AND contact_id=?",
+            (list_id, contact_id),
+        ).fetchone()
+        if not existing:
+            db.execute(
+                "INSERT INTO msg_contact_list_members(list_id,contact_id) VALUES (?,?)",
+                (list_id, contact_id),
+            )
+            db.commit()
+    add_flash('<span style="color:#047857">איש הקשר נוסף לרשימה</span>')
+    return redirect("/messaging/lists/" + str(list_id) + "/members")
+
+
+@app.route("/messaging/lists/<int:list_id>/members/<int:contact_id>/remove", methods=["POST"])
+@login_required
+def messaging_lists_members_remove(list_id, contact_id):
+    if not is_messaging_enabled():
+        return _msg_404()
+    uid = session["user_id"]
+    with get_db() as db:
+        l = _msg_get_my_list(db, uid, list_id)
+        if not l:
+            return _msg_404()
+        c = _msg_get_my_contact(db, uid, contact_id)
+        if not c:
+            return _msg_404()
+        db.execute(
+            "DELETE FROM msg_contact_list_members WHERE list_id=? AND contact_id=?",
+            (list_id, contact_id),
+        )
+        db.commit()
+    add_flash('<span style="color:#047857">איש הקשר הוסר מהרשימה</span>')
+    return redirect("/messaging/lists/" + str(list_id) + "/members")
+
+
+# ════════════════════════════════════════════════════════════════════
+# End Messaging V1 — Phase 1
+# ════════════════════════════════════════════════════════════════════
 
 
 @app.route("/internal/cleanup", methods=["POST"])

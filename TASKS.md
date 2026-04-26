@@ -38,6 +38,7 @@
 
 ## Next
 
+- [ ] **Messaging V1 — Phase 1 (Contacts + Lists CRUD)** implemented locally behind `ENABLE_MESSAGING` flag and ready for staging QA (2026-04-26). Routes under `/messaging`, scoped per `user_id`, no sending yet. Brief: `MISSIONS/messaging_and_forms_v1.md`. Packet: `MISSIONS/messaging_v1_packet_01.md`. Next phase: templates CRUD.
 - [ ] Replace broken/missing Hebrew in the main app without causing another frontend regression
 - [ ] Add a safe translation layer for user-facing UI text
 - [ ] Add a Hebrew/English language switcher for login, dashboard, and script screens
